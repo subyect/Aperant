@@ -1056,6 +1056,7 @@ export class AgentManager extends EventEmitter {
 
     // Resolve the spec directory from specId
     const project = projectStore.getProjects().find((p) => p.id === projectId || p.path === projectPath);
+    const task = project ? projectStore.getTasks(project.id).find((candidate) => candidate.id === taskId || candidate.specId === specId) : undefined;
     const specsBaseDir = getSpecsDir(project?.autoBuildPath);
     const specDir = path.join(projectPath, specsBaseDir, specId);
 
@@ -1088,6 +1089,14 @@ export class AgentManager extends EventEmitter {
         worktreePath = result.worktreePath;
         // Spec dir in the worktree (spec files were copied by createOrGetWorktree)
         worktreeSpecDir = path.join(worktreePath, specsBaseDir, specId);
+        const syncCheck = await syncWorktreeWithBaseBranch(projectPath, worktreePath, baseBranch);
+        if (syncCheck.conflicted && project && task) {
+          const conflictFiles = syncCheck.conflictFiles ?? [];
+          console.warn(
+            `[AgentManager] Coding worktree for ${specId} has base-sync conflicts; adding recovery subtask: ${conflictFiles.join(', ') || 'unknown files'}`
+          );
+          this.persistBaseSyncConflictForCoding(project, task, conflictFiles, syncCheck.skippedReason ?? 'base_sync_conflict');
+        }
         console.warn(`[AgentManager] Task ${taskId} will run in worktree: ${worktreePath}`);
       } catch (err) {
         console.error(`[AgentManager] Failed to create worktree for ${taskId}:`, err);
