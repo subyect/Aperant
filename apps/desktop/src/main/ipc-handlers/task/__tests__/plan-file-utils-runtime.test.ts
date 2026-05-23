@@ -97,4 +97,14 @@ describe('plan-file runtime guards', () => {
     expect(plan.executionPhase).toBe('coding');
     expect(plan.recoveryNote).toBe('Blocked terminal phase complete: 1/2 subtasks complete.');
   });
+
+  it('does not let transient idle progress overwrite an active runtime phase', () => {
+    expect(persistPlanPhaseSync(planPath, 'idle', 'project-1')).toBe(false);
+
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+
+    expect(plan.status).toBe('in_progress');
+    expect(plan.xstateState).toBe('coding');
+    expect(plan.executionPhase).toBe('coding');
+  });
 });

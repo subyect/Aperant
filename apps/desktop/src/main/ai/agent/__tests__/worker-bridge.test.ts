@@ -18,9 +18,11 @@ vi.mock('worker_threads', () => {
     postMessage = vi.fn();
     terminate = vi.fn().mockResolvedValue(0);
     workerData: unknown;
-    constructor(_path: string, opts?: { workerData?: unknown }) {
+    options: unknown;
+    constructor(_path: string, opts?: { workerData?: unknown; resourceLimits?: unknown }) {
       super();
       this.workerData = opts?.workerData;
+      this.options = opts;
       createdWorkers.push(this);
     }
   }
@@ -28,10 +30,10 @@ vi.mock('worker_threads', () => {
   return { Worker: MockWorkerImpl };
 });
 
-function getWorker(): EventEmitter & { postMessage: ReturnType<typeof vi.fn>; terminate: ReturnType<typeof vi.fn> } {
+function getWorker(): EventEmitter & { postMessage: ReturnType<typeof vi.fn>; terminate: ReturnType<typeof vi.fn>; options?: unknown } {
   const w = createdWorkers[createdWorkers.length - 1];
   if (!w) throw new Error('No worker created');
-  return w as EventEmitter & { postMessage: ReturnType<typeof vi.fn>; terminate: ReturnType<typeof vi.fn> };
+  return w as EventEmitter & { postMessage: ReturnType<typeof vi.fn>; terminate: ReturnType<typeof vi.fn>; options?: unknown };
 }
 
 vi.mock('electron', () => ({
@@ -117,6 +119,17 @@ describe('WorkerBridge', () => {
       bridge.spawn(createConfig());
       expect(bridge.isActive).toBe(true);
       expect(createdWorkers.length).toBe(1);
+    });
+
+    it('sets worker resource limits so worker OOM does not abort the app process', () => {
+      bridge.spawn(createConfig());
+
+      expect(getWorker().options).toMatchObject({
+        resourceLimits: {
+          maxOldGenerationSizeMb: 768,
+          maxYoungGenerationSizeMb: 128,
+        },
+      });
     });
 
     it('throws if worker already active', () => {
@@ -264,15 +277,37 @@ describe('WorkerBridge', () => {
   // ---------------------------------------------------------------------------
 
   describe('crash handling', () => {
-    it('emits error and cleans up on worker error event', () => {
+    it('emits error, exit, and cleans up on worker error event', () => {
       const errorHandler = vi.fn();
+      const exitHandler = vi.fn();
       bridge.on('error', errorHandler);
+      bridge.on('exit', exitHandler);
       bridge.spawn(createConfig());
 
       getWorker().emit('error', new Error('Worker crashed'));
 
       expect(errorHandler).toHaveBeenCalledWith('task-123', 'Worker crashed', 'proj-456');
+      expect(exitHandler).toHaveBeenCalledWith('task-123', 1, 'task-execution', 'proj-456');
       expect(bridge.isActive).toBe(false);
+    });
+
+    it('reports worker out-of-memory as a recoverable worker failure', () => {
+      const errorHandler = vi.fn();
+      const exitHandler = vi.fn();
+      bridge.on('error', errorHandler);
+      bridge.on('exit', exitHandler);
+      bridge.spawn(createConfig());
+
+      const error = new Error('Worker terminated due to reaching memory limit: JS heap out of memory') as Error & { code?: string };
+      error.code = 'ERR_WORKER_OUT_OF_MEMORY';
+      getWorker().emit('error', error);
+
+      expect(errorHandler).toHaveBeenCalledWith(
+        'task-123',
+        expect.stringContaining('Worker exceeded memory limit (768MB old generation)'),
+        'proj-456',
+      );
+      expect(exitHandler).toHaveBeenCalledWith('task-123', 1, 'task-execution', 'proj-456');
     });
 
     it('emits exit on worker exit event (non-zero code)', () => {

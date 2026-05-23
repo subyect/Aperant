@@ -39,6 +39,7 @@ import { getToolPath } from '../cli-tool-manager';
 import { getIsolatedGitEnv } from '../utils/git-isolation';
 import { cleanupWorktree } from '../utils/worktree-cleanup';
 import { writeFileAtomicSync } from '../utils/atomic-file';
+import { checkSubtasksCompletion } from '../task-plan-guards';
 
 const DEFAULT_MAX_PARALLEL_TASKS = 3;
 
@@ -462,6 +463,7 @@ export class AgentManager extends EventEmitter {
     const specDir = path.join(project.path, specsBaseDir, task.specId);
     const specFilePath = path.join(specDir, AUTO_BUILD_PATHS.SPEC_FILE);
     const hasSpec = existsSync(specFilePath);
+    const hasPlanSubtasks = this.taskHasPlanSubtasks(project, task);
 
     try {
       if ((task.status === 'ai_review' || this.shouldRetryTerminalAgentError(project, task)) && allSubtasksComplete) {
@@ -471,10 +473,12 @@ export class AgentManager extends EventEmitter {
         return true;
       }
 
-      this.persistRuntimeState(project, task, 'in_progress', 'in_progress', 'coding', 'coding');
-
-      if (!hasSpec) {
-        console.warn(`[AgentManager] Startup recovery resuming spec creation for ${task.specId}`);
+      if (!hasSpec || !hasPlanSubtasks) {
+        this.persistRuntimeState(project, task, 'in_progress', 'in_progress', 'planning', 'planning');
+        console.warn(
+          `[AgentManager] Startup recovery resuming planning for ${task.specId} ` +
+          `(hasSpec=${hasSpec}, hasPlanSubtasks=${hasPlanSubtasks})`
+        );
         await this.startSpecCreation(
           task.id,
           project.path,
@@ -487,6 +491,7 @@ export class AgentManager extends EventEmitter {
         return true;
       }
 
+      this.persistRuntimeState(project, task, 'in_progress', 'in_progress', 'coding', 'coding');
       console.warn(`[AgentManager] Startup recovery resuming coding for ${task.specId}`);
       await this.startTaskExecution(
         task.id,
@@ -507,6 +512,22 @@ export class AgentManager extends EventEmitter {
       console.warn(`[AgentManager] Startup recovery could not resume ${task.specId}:`, error);
       return false;
     }
+  }
+
+  private taskHasPlanSubtasks(project: Project, task: Task): boolean {
+    if (task.subtasks.length > 0) return true;
+
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as Record<string, unknown>;
+        if (checkSubtasksCompletion(plan).totalCount > 0) return true;
+      } catch {
+        // Ignore unreadable plans; startup recovery will surface the task state normally.
+      }
+    }
+
+    return false;
   }
 
   private shouldRetryTerminalAgentError(project: Project, task: Task): boolean {

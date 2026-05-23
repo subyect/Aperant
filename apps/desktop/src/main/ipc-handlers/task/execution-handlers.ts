@@ -346,50 +346,28 @@ export function registerTaskExecutionHandlers(
       const specFilePath = path.join(specDir, AUTO_BUILD_PATHS.SPEC_FILE);
       const hasSpec = existsSync(specFilePath);
 
-      // Check if this task needs spec creation first (no spec file = not yet created)
-      // OR if it has a spec but no implementation plan subtasks (spec created, needs planning/building)
+      // Check if this task needs planning first. Ideation imports can create a
+      // placeholder spec.md and empty implementation_plan.json; those must go
+      // through spec/planning again before coding starts.
       const needsSpecCreation = !hasSpec;
-      // FIX (#1562): Check actual plan file for subtasks, not just task.subtasks.length.
-      // When a task crashes during planning, it may have spec.md but an empty/missing
-      // implementation_plan.json. Previously, this path would call startTaskExecution
-      // (run.py) which expects subtasks to exist. Now we check the actual plan file.
-      const needsImplementation = hasSpec && !planHasSubtasks;
+      const needsPlanCreation = hasSpec && !planHasSubtasks;
 
-      console.warn('[TASK_START] hasSpec:', hasSpec, 'planHasSubtasks:', planHasSubtasks, 'needsSpecCreation:', needsSpecCreation, 'needsImplementation:', needsImplementation);
+      console.warn('[TASK_START] hasSpec:', hasSpec, 'planHasSubtasks:', planHasSubtasks, 'needsSpecCreation:', needsSpecCreation, 'needsPlanCreation:', needsPlanCreation);
 
       // Get base branch: task-level override takes precedence over project settings
       const baseBranch = task.metadata?.baseBranch || project.settings?.mainBranch;
 
-      if (needsSpecCreation) {
-        // No spec file - need to run spec_runner.py to create the spec
+      if (needsSpecCreation || needsPlanCreation) {
+        // No usable plan yet - run the spec/planning agent. When spec.md exists
+        // already, this replaces the placeholder ideation spec with a detailed
+        // spec and implementation_plan.json before build execution begins.
         const taskDescription = task.description || task.title;
-        console.warn('[TASK_START] Starting spec creation for:', task.specId, 'in:', specDir, 'baseBranch:', baseBranch);
+        console.warn('[TASK_START] Starting planning for:', task.specId, 'in:', specDir, 'baseBranch:', baseBranch);
 
         // Start spec creation process - pass the existing spec directory
         // so spec_runner uses it instead of creating a new one
         // Also pass baseBranch so worktrees are created from the correct branch
         agentManager.startSpecCreation(taskId, project.path, taskDescription, specDir, task.metadata, baseBranch, project.id);
-      } else if (needsImplementation) {
-        // Spec exists but no valid subtasks in implementation plan
-        // FIX (#1562): Use startTaskExecution (run.py) which will create the planner
-        // agent session to generate the implementation plan. run.py handles the case
-        // where implementation_plan.json is missing or has no subtasks - the planner
-        // agent will generate the plan before the coder starts.
-        console.warn('[TASK_START] Starting task execution (no valid subtasks in plan) for:', task.specId);
-        agentManager.startTaskExecution(
-          taskId,
-          project.path,
-          task.specId,
-          {
-            parallel: false,  // Sequential for planning phase
-            workers: 1,
-            baseBranch,
-            useWorktree: task.metadata?.useWorktree,
-            useLocalBranch: task.metadata?.useLocalBranch,
-            pushNewBranches: task.metadata?.pushNewBranches
-          },
-          project.id
-        );
       } else if (planNeedsQaValidation) {
         console.warn('[TASK_START] All subtasks are complete but QA is not approved; starting QA for:', task.specId);
         persistSpecQaReviewStateSync(project, task.specId);
@@ -839,35 +817,18 @@ export function registerTaskExecutionHandlers(
 	              // Invalid/corrupt plan file - treat as no subtasks
 	            }
 	          }
-          const needsImplementation = hasSpec && !updatePlanHasSubtasks;
+          const needsPlanCreation = hasSpec && !updatePlanHasSubtasks;
 
-          console.warn('[TASK_UPDATE_STATUS] hasSpec:', hasSpec, 'needsSpecCreation:', needsSpecCreation, 'needsImplementation:', needsImplementation);
+          console.warn('[TASK_UPDATE_STATUS] hasSpec:', hasSpec, 'needsSpecCreation:', needsSpecCreation, 'needsPlanCreation:', needsPlanCreation);
 
           // Get base branch: task-level override takes precedence over project settings
           const baseBranchForUpdate = task.metadata?.baseBranch || project.settings?.mainBranch;
 
-          if (needsSpecCreation) {
-            // No spec file - need to run spec_runner.py to create the spec
+          if (needsSpecCreation || needsPlanCreation) {
+            // No usable plan yet - run spec/planning before coding.
             const taskDescription = task.description || task.title;
-            console.warn('[TASK_UPDATE_STATUS] Starting spec creation for:', task.specId);
+            console.warn('[TASK_UPDATE_STATUS] Starting planning for:', task.specId);
             agentManager.startSpecCreation(taskId, project.path, taskDescription, specDir, task.metadata, baseBranchForUpdate, project.id);
-          } else if (needsImplementation) {
-            // Spec exists but no subtasks - run run.py to create implementation plan and execute
-            console.warn('[TASK_UPDATE_STATUS] Starting task execution (no subtasks) for:', task.specId);
-            agentManager.startTaskExecution(
-              taskId,
-              project.path,
-              task.specId,
-              {
-                parallel: false,
-                workers: 1,
-                baseBranch: baseBranchForUpdate,
-                useWorktree: task.metadata?.useWorktree,
-                useLocalBranch: task.metadata?.useLocalBranch,
-                pushNewBranches: task.metadata?.pushNewBranches
-              },
-              project.id
-            );
 	          } else if (updatePlanNeedsQaValidation) {
 	            console.warn('[TASK_UPDATE_STATUS] All subtasks complete but QA is not approved; starting QA for:', task.specId);
 	            persistSpecQaReviewStateSync(project, task.specId);
@@ -1322,8 +1283,11 @@ export function registerTaskExecutionHandlers(
 
             // Update plan status for restart - write to ALL locations
             if (plan) {
+              const restartHasPlanSubtasks = checkSubtasksCompletion(plan).totalCount > 0;
               plan.status = 'in_progress';
               plan.planStatus = 'in_progress';
+              plan.xstateState = restartHasPlanSubtasks ? 'coding' : 'planning';
+              plan.executionPhase = restartHasPlanSubtasks ? 'coding' : 'planning';
               const restartPlanContent = JSON.stringify(plan, null, 2);
               for (const pathToUpdate of planPathsToUpdate) {
                 try {
@@ -1355,14 +1319,16 @@ export function registerTaskExecutionHandlers(
             const specFilePath = path.join(mainSpecDir, AUTO_BUILD_PATHS.SPEC_FILE);
             const hasSpec = existsSync(specFilePath);
             const needsSpecCreation = !hasSpec;
+            const hasPlanSubtasksForRestart = plan ? checkSubtasksCompletion(plan).totalCount > 0 : false;
+            const needsPlanCreation = hasSpec && !hasPlanSubtasksForRestart;
 
             // Get base branch: task-level override takes precedence over project settings
             const baseBranchForRecovery = task.metadata?.baseBranch || project.settings?.mainBranch;
 
-            if (needsSpecCreation) {
-              // No spec file - need to run spec_runner.py to create the spec
+            if (needsSpecCreation || needsPlanCreation) {
+              // No usable implementation plan - run planning before coding.
               const taskDescription = task.description || task.title;
-              console.warn(`[Recovery] Starting spec creation for: ${task.specId}`);
+              console.warn(`[Recovery] Starting planning for: ${task.specId}`);
               agentManager.startSpecCreation(taskId, project.path, taskDescription, mainSpecDir, task.metadata, baseBranchForRecovery, project.id);
             } else {
               // Spec exists - run task execution

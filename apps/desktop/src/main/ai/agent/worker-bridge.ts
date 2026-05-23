@@ -26,6 +26,9 @@ import type {
 import type { SessionResult } from '../session/types';
 import { ProgressTracker } from '../session/progress-tracker';
 
+const WORKER_OLD_GENERATION_LIMIT_MB = 768;
+const WORKER_YOUNG_GENERATION_LIMIT_MB = 128;
+
 // ESM-compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,6 +50,18 @@ function resolveWorkerPath(): string {
   // because the Rollup input key is 'ai/agent/worker'.
   // __dirname resolves to out/main/ at runtime, so we need the subdirectory.
   return path.join(__dirname, 'ai', 'agent', 'worker.js');
+}
+
+function formatWorkerError(error: Error): string {
+  const code = (error as Error & { code?: string }).code ?? '';
+  const rawMessage = error.message || String(error);
+  const isOutOfMemory = code === 'ERR_WORKER_OUT_OF_MEMORY'
+    || /out of memory|heap limit|heap out of memory|allocation failed/i.test(rawMessage);
+
+  if (!isOutOfMemory) return rawMessage;
+
+  return `Worker exceeded memory limit (${WORKER_OLD_GENERATION_LIMIT_MB}MB old generation). ` +
+    'The task worker was stopped so Aperant can recover instead of crashing.';
 }
 
 // =============================================================================
@@ -98,6 +113,10 @@ export class WorkerBridge extends EventEmitter {
 
     this.worker = new Worker(workerPath, {
       workerData: workerConfig,
+      resourceLimits: {
+        maxOldGenerationSizeMb: WORKER_OLD_GENERATION_LIMIT_MB,
+        maxYoungGenerationSizeMb: WORKER_YOUNG_GENERATION_LIMIT_MB,
+      },
     });
 
     this.worker.on('message', (message: WorkerMessage) => {
@@ -105,7 +124,9 @@ export class WorkerBridge extends EventEmitter {
     });
 
     this.worker.on('error', (error: Error) => {
-      this.emitTyped('error', this.taskId, error.message, this.projectId);
+      if (!this.worker) return;
+      this.emitTyped('error', this.taskId, formatWorkerError(error), this.projectId);
+      this.emitTyped('exit', this.taskId, 1, this.processType, this.projectId);
       this.cleanup();
     });
 

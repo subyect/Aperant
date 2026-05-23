@@ -401,6 +401,21 @@ export function persistPlanPhaseSync(
       };
     }
 
+    const currentXState = typeof plan.xstateState === 'string' ? plan.xstateState : '';
+    const isActiveRuntimeState = plan.status === 'in_progress'
+      || plan.status === 'ai_review'
+      || currentXState === 'planning'
+      || currentXState === 'coding'
+      || currentXState === 'qa_review'
+      || currentXState === 'qa_fixing';
+
+    // ProgressTracker can briefly emit "idle" while a worker is starting or
+    // resetting. Do not let that overwrite active planning/coding state in the
+    // plan file; the task detail view restores from executionPhase.
+    if (phase === 'idle' && isActiveRuntimeState) {
+      return false;
+    }
+
     // Store the execution phase for restoration
     plan.executionPhase = phase;
 
