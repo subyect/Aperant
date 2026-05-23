@@ -343,36 +343,16 @@ export class ProjectStore {
       }
     }
 
-    // 3. Deduplicate tasks by ID
-    // CRITICAL FIX: Don't blindly prefer worktree - it may be stale!
-    // If main project task is "done", it should win over worktree's "in_progress".
-    // Worktrees can linger after completion, containing outdated task data.
+    // 3. Deduplicate tasks by ID. Main is the source of truth for terminal
+    // tasks, but active worktrees carry the freshest running progress.
     const taskMap = new Map<string, Task>();
     for (const task of allTasks) {
       const existing = taskMap.get(task.id);
       if (!existing) {
-        // First occurrence wins
         taskMap.set(task.id, task);
       } else {
-        // PREFER MAIN PROJECT over worktree - main has current user changes
-        // Only use status priority when both are from same location
-        const existingIsMain = existing.location === 'main';
-        const newIsMain = task.location === 'main';
-
-        if (existingIsMain && !newIsMain) {
-        } else if (!existingIsMain && newIsMain) {
-          // New is main, replace existing worktree
+        if (this.shouldReplaceTaskCandidate(existing, task)) {
           taskMap.set(task.id, task);
-        } else {
-          // Same location - use status priority to determine which is more complete
-          const existingPriority = TASK_STATUS_PRIORITY[existing.status] || 0;
-          const newPriority = TASK_STATUS_PRIORITY[task.status] || 0;
-
-          if (newPriority > existingPriority) {
-            // New version has higher priority (more complete status)
-            taskMap.set(task.id, task);
-          }
-          // Otherwise keep existing version
         }
       }
     }
@@ -383,6 +363,87 @@ export class ProjectStore {
     this.tasksCache.set(projectId, { tasks, timestamp: now });
 
     return tasks;
+  }
+
+  private shouldReplaceTaskCandidate(existing: Task, candidate: Task): boolean {
+    if (existing.location === candidate.location) {
+      return this.isMoreCurrentTask(candidate, existing);
+    }
+
+    const existingIsWorktree = existing.location === 'worktree';
+    const candidateIsWorktree = candidate.location === 'worktree';
+
+    if (candidateIsWorktree) {
+      return this.shouldPreferWorktreeTask(candidate, existing);
+    }
+
+    if (existingIsWorktree) {
+      return !this.shouldPreferWorktreeTask(existing, candidate);
+    }
+
+    return this.isMoreCurrentTask(candidate, existing);
+  }
+
+  private shouldPreferWorktreeTask(worktreeTask: Task, mainTask: Task): boolean {
+    if (mainTask.location !== 'main') {
+      return this.isMoreCurrentTask(worktreeTask, mainTask);
+    }
+
+    if (this.isTerminalMainTask(mainTask)) {
+      return false;
+    }
+
+    const worktreeCompleted = this.completedSubtaskCount(worktreeTask);
+    const mainCompleted = this.completedSubtaskCount(mainTask);
+    if (worktreeCompleted > mainCompleted) {
+      return true;
+    }
+
+    const mainPassive = mainTask.status === 'backlog' || mainTask.status === 'queue';
+    if (mainPassive && this.isActiveWorktreeTask(worktreeTask)) {
+      return true;
+    }
+
+    const worktreePriority = TASK_STATUS_PRIORITY[worktreeTask.status] || 0;
+    const mainPriority = TASK_STATUS_PRIORITY[mainTask.status] || 0;
+    if (worktreePriority > mainPriority && worktreeTask.updatedAt.getTime() >= mainTask.updatedAt.getTime()) {
+      return true;
+    }
+
+    return worktreeTask.updatedAt.getTime() > mainTask.updatedAt.getTime() && this.isActiveWorktreeTask(worktreeTask);
+  }
+
+  private isMoreCurrentTask(candidate: Task, existing: Task): boolean {
+    const candidatePriority = TASK_STATUS_PRIORITY[candidate.status] || 0;
+    const existingPriority = TASK_STATUS_PRIORITY[existing.status] || 0;
+    if (candidatePriority !== existingPriority) {
+      return candidatePriority > existingPriority;
+    }
+
+    const candidateCompleted = this.completedSubtaskCount(candidate);
+    const existingCompleted = this.completedSubtaskCount(existing);
+    if (candidateCompleted !== existingCompleted) {
+      return candidateCompleted > existingCompleted;
+    }
+
+    return candidate.updatedAt.getTime() > existing.updatedAt.getTime();
+  }
+
+  private isTerminalMainTask(task: Task): boolean {
+    return task.location === 'main' && (task.status === 'done' || task.status === 'pr_created');
+  }
+
+  private isActiveWorktreeTask(task: Task): boolean {
+    return task.location === 'worktree' && (
+      task.status === 'in_progress' ||
+      task.status === 'ai_review' ||
+      task.status === 'human_review' ||
+      task.status === 'error'
+    );
+  }
+
+  private completedSubtaskCount(task: Task): number {
+    return task.subtasks.filter((subtask) => subtask.status === 'completed').length;
   }
 
   /**

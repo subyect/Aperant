@@ -98,6 +98,8 @@ export interface QAPromptContext {
   maxIterations: number;
   /** Whether processing human feedback */
   isHumanFeedback?: boolean;
+  /** Exact human feedback from QA_FIX_REQUEST.md */
+  humanFeedback?: string;
   /** Previous error context for self-correction */
   previousError?: QAErrorContext;
 }
@@ -266,6 +268,7 @@ export class QALoop extends EventEmitter {
         if (status === 'approved') {
           await this.recordIteration(iteration, 'approved', [], iterationDuration);
           await this.writeReports('approved');
+          await this.clearHumanFeedback();
           return this.outcome(true, iteration, Date.now() - startTime);
         }
 
@@ -296,9 +299,12 @@ export class QALoop extends EventEmitter {
           this.emitTyped('qa-fix-start', iteration);
           this.sessionNumber++;
 
+          const humanFeedback = await this.readHumanFeedback();
           const fixPrompt = await this.config.generatePrompt('qa_fixer', {
             iteration,
             maxIterations,
+            isHumanFeedback: Boolean(humanFeedback),
+            humanFeedback: humanFeedback ?? undefined,
           });
 
           const fixResult = await this.config.runSession({
@@ -431,6 +437,23 @@ export class QALoop extends EventEmitter {
     }
   }
 
+  private async readHumanFeedback(): Promise<string | null> {
+    try {
+      const content = await readFile(join(this.config.specDir, 'QA_FIX_REQUEST.md'), 'utf-8');
+      return content.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async clearHumanFeedback(): Promise<void> {
+    try {
+      await unlink(join(this.config.specDir, 'QA_FIX_REQUEST.md'));
+    } catch {
+      // No feedback to clear or removal failed; non-fatal after approval.
+    }
+  }
+
   /**
    * Process human feedback by running the fixer agent first.
    */
@@ -439,10 +462,12 @@ export class QALoop extends EventEmitter {
     this.emitTyped('qa-fix-start', 0);
     this.sessionNumber++;
 
+    const humanFeedback = await this.readHumanFeedback();
     const fixPrompt = await this.config.generatePrompt('qa_fixer', {
       iteration: 0,
       maxIterations: this.config.maxIterations ?? MAX_QA_ITERATIONS,
       isHumanFeedback: true,
+      humanFeedback: humanFeedback ?? undefined,
     });
 
     const result = await this.config.runSession({
@@ -456,15 +481,6 @@ export class QALoop extends EventEmitter {
       cliModel: this.config.cliModel,
       cliThinking: this.config.cliThinking,
     });
-
-    // Remove fix request file unless transient error
-    if (result.outcome !== 'rate_limited' && result.outcome !== 'auth_failure') {
-      try {
-        await unlink(join(this.config.specDir, 'QA_FIX_REQUEST.md'));
-      } catch {
-        // Ignore removal failure
-      }
-    }
 
     this.emitTyped('qa-fix-complete', 0);
   }

@@ -409,17 +409,44 @@ describe('QALoop', () => {
     });
 
     const runSession = vi.fn().mockResolvedValue(makeSessionResult('completed'));
-    const config = makeConfig({ runSession, maxIterations: 5 });
+    const generatePrompt = vi.fn().mockResolvedValue('system prompt');
+    const config = makeConfig({ generatePrompt, runSession, maxIterations: 5 });
     const loop = new QALoop(config);
     const outcome = await loop.run();
 
     // Fixer should have been invoked for human feedback
     const calls = runSession.mock.calls as Array<[QASessionRunConfig]>;
     expect(calls.some((c) => c[0].agentType === 'qa_fixer')).toBe(true);
-    // Fix request file should be deleted
+    expect(generatePrompt).toHaveBeenCalledWith('qa_fixer', expect.objectContaining({
+      isHumanFeedback: true,
+      humanFeedback: 'Fix this please',
+    }));
+    // Fix request file should be deleted only after approval
     expect(mockUnlink).toHaveBeenCalledWith(path.join(SPEC_DIR, 'QA_FIX_REQUEST.md'));
     // Overall outcome should still reflect the QA result
     expect(outcome.approved).toBe(true);
+  });
+
+  it('keeps QA_FIX_REQUEST.md when feedback has not reached approval', async () => {
+    let planReadCount = 0;
+    mockReadFile.mockImplementation((path: string) => {
+      if (path.endsWith('QA_FIX_REQUEST.md')) return Promise.resolve('Fix this please');
+      if (path.endsWith('implementation_plan.json')) {
+        planReadCount++;
+        if (planReadCount === 1) return Promise.resolve(completedPlan());
+        return Promise.resolve(completedPlan('rejected'));
+      }
+      return Promise.reject(new Error('ENOENT'));
+    });
+
+    const runSession = vi.fn().mockResolvedValue(makeSessionResult('completed'));
+    const config = makeConfig({ runSession, maxIterations: 1 });
+    const loop = new QALoop(config);
+    const outcome = await loop.run();
+
+    expect(outcome.approved).toBe(false);
+    expect(outcome.reason).toBe('max_iterations');
+    expect(mockUnlink).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------

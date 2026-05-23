@@ -229,34 +229,33 @@ export async function iterateSubtasks(
       continue;
     }
 
-    // Post-session: if the session completed or hit max_steps (not error), ensure the
-    // subtask is marked as completed. The coder agent is instructed to update
-    // implementation_plan.json itself, but it doesn't always do so reliably.
-    if (result.outcome === 'completed' || result.outcome === 'max_steps' || result.outcome === 'context_window') {
-      await ensureSubtaskMarkedCompleted(config.specDir, subtask.id);
+    const completionState = await readSubtaskCompletionState(config.specDir, subtask.id);
+    const subtaskCompleted = completionState.status === 'completed';
 
-      // Re-stamp executionPhase on the worktree plan after the coder session.
-      // The coder model's Edit/Write calls can overwrite executionPhase with a
-      // stale value (read before persistPlanPhaseSync ran). Since the model is
-      // no longer writing, we can safely correct it here.
-      await restampExecutionPhase(config.specDir, 'coding');
-
-      // Sync updated phases to main project plan (worktree mode).
-      // This keeps the main plan current during execution, not just on exit.
-      if (config.sourceSpecDir) {
-        await syncPhasesToMain(config.specDir, config.sourceSpecDir);
-      }
-
-      // Extract insights from the session (opt-in, never blocks the build)
-      if (config.extractInsights) {
-        extractInsightsAfterSession(config, subtask, result).then((insights) => {
-          if (insights) config.onInsightsExtracted?.(subtask.id, insights);
-        }).catch(() => { /* insight extraction is non-blocking */ });
-      }
+    if (!subtaskCompleted) {
+      const reason = buildRetryReason(result, completionState.status);
+      await markSubtaskRetryRequired(config.specDir, subtask.id, reason, result.outcome);
     }
 
-    // For errors, the subtask will be retried on next loop iteration
-    // (implementation_plan.json status remains in_progress or pending)
+    // Re-stamp executionPhase on the worktree plan after the coder session.
+    // The coder model's Edit/Write calls can overwrite executionPhase with a
+    // stale value (read before persistPlanPhaseSync ran). Since the model is
+    // no longer writing, we can safely correct it here.
+    await restampExecutionPhase(config.specDir, 'coding');
+
+    // Sync updated phases to main project plan (worktree mode).
+    // This keeps the main plan current during execution, not just on exit.
+    if (config.sourceSpecDir) {
+      await syncPhasesToMain(config.specDir, config.sourceSpecDir);
+    }
+
+    // Extract insights only when the plan itself proves completion. A finished
+    // session, max_steps, or context_window is not proof that the subtask is done.
+    if (subtaskCompleted && config.extractInsights) {
+      extractInsightsAfterSession(config, subtask, result).then((insights) => {
+        if (insights) config.onInsightsExtracted?.(subtask.id, insights);
+      }).catch(() => { /* insight extraction is non-blocking */ });
+    }
 
     // Delay before next iteration
     if (config.autoContinueDelayMs > 0) {
@@ -271,43 +270,86 @@ export async function iterateSubtasks(
 // Post-Session Processing
 // =============================================================================
 
-/**
- * Ensure a subtask is marked as completed in implementation_plan.json.
- *
- * The coder agent is instructed to update the subtask status itself, but it
- * doesn't always do so reliably. This function is called after each successful
- * coder session as a fallback: if the subtask is still pending or in_progress,
- * it is marked completed with a timestamp.
- *
- * Only ADD/UPDATE fields — never removes existing data.
- */
-async function ensureSubtaskMarkedCompleted(
+async function readSubtaskCompletionState(
   specDir: string,
   subtaskId: string,
+): Promise<{ found: boolean; status?: string }> {
+  const planPath = join(specDir, 'implementation_plan.json');
+  try {
+    const raw = await readFile(planPath, 'utf-8');
+    const plan = safeParseJson<ImplementationPlan>(raw);
+    if (!plan) return { found: false }; // JSON corrupt beyond repair
+
+    for (const phase of plan.phases) {
+      for (const subtask of phase.subtasks) {
+        const withLegacyId = subtask as PlanSubtask & { subtask_id?: string };
+        const id = subtask.id ?? withLegacyId.subtask_id;
+        if (id === subtaskId) {
+          return { found: true, status: subtask.status };
+        }
+      }
+    }
+
+    return { found: false };
+  } catch {
+    return { found: false };
+  }
+}
+
+function buildRetryReason(
+  result: SessionResult,
+  currentStatus: string | undefined,
+): string {
+  if (result.outcome === 'completed') {
+    return `Agent session ended without marking the subtask completed in implementation_plan.json (current status: ${currentStatus ?? 'missing'}). Retrying until the plan proves completion.`;
+  }
+  if (result.outcome === 'max_steps') {
+    return 'Agent hit the max step limit before the subtask was marked completed. Retrying the subtask.';
+  }
+  if (result.outcome === 'context_window') {
+    return 'Agent hit the context window before the subtask was marked completed. Retrying the subtask.';
+  }
+  return result.error?.message ?? `Agent session ended with outcome "${result.outcome}". Retrying the subtask.`;
+}
+
+/**
+ * Keep unfinished subtasks retryable after a session ends.
+ *
+ * A session outcome is not completion proof. Only implementation_plan.json with
+ * the specific subtask marked completed can advance the loop.
+ */
+async function markSubtaskRetryRequired(
+  specDir: string,
+  subtaskId: string,
+  reason: string,
+  outcome: SessionResult['outcome'],
 ): Promise<void> {
   const planPath = join(specDir, 'implementation_plan.json');
   try {
     const raw = await readFile(planPath, 'utf-8');
     const plan = safeParseJson<ImplementationPlan>(raw);
-    if (!plan) return; // JSON corrupt beyond repair
+    if (!plan) return;
     let updated = false;
 
     for (const phase of plan.phases) {
       for (const subtask of phase.subtasks) {
-        // Normalize subtask_id → id (Fix 2: planner sometimes writes subtask_id)
-        const withLegacyId = subtask as PlanSubtask & { subtask_id?: string };
-        if (withLegacyId.subtask_id && !subtask.id) {
-          subtask.id = withLegacyId.subtask_id;
-          updated = true;
-        }
+        const withLegacyId = subtask as PlanSubtask & {
+          subtask_id?: string;
+          last_error?: string;
+          last_attempt_outcome?: string;
+          last_attempt_at?: string;
+        };
+        const id = subtask.id ?? withLegacyId.subtask_id;
+        if (id !== subtaskId || subtask.status === 'completed') continue;
 
-        // Mark this specific subtask as completed if it isn't already
-        if (subtask.id === subtaskId && subtask.status !== 'completed') {
-          subtask.status = 'completed';
-          (subtask as PlanSubtask & { completed_at?: string }).completed_at =
-            new Date().toISOString();
-          updated = true;
+        if (!subtask.id && withLegacyId.subtask_id) {
+          subtask.id = withLegacyId.subtask_id;
         }
+        subtask.status = 'pending';
+        withLegacyId.last_error = reason;
+        withLegacyId.last_attempt_outcome = outcome;
+        withLegacyId.last_attempt_at = new Date().toISOString();
+        updated = true;
       }
     }
 
@@ -315,7 +357,7 @@ async function ensureSubtaskMarkedCompleted(
       await writeFile(planPath, JSON.stringify(plan, null, 2));
     }
   } catch {
-    // Non-fatal: if we can't update the plan the loop will retry or mark stuck
+    // Non-fatal: if we can't update the plan the loop will retry or mark stuck.
   }
 }
 

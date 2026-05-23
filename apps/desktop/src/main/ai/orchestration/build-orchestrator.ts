@@ -471,10 +471,22 @@ export class BuildOrchestrator extends EventEmitter {
       return { success: false, error: 'Build cancelled' };
     }
 
-    if (iteratorResult.stuckSubtasks.length > 0 && iteratorResult.completedSubtasks === 0) {
+    const completion = await this.readSubtaskCompletion();
+
+    if (iteratorResult.stuckSubtasks.length > 0) {
       return {
         success: false,
-        error: `All subtasks stuck: ${iteratorResult.stuckSubtasks.join(', ')}`,
+        error: `Coding incomplete: stuck subtasks remain (${iteratorResult.stuckSubtasks.join(', ')}). Completed ${completion.completed}/${completion.total}.`,
+      };
+    }
+
+    if (completion.completed < completion.total) {
+      const pending = completion.pendingIds.length > 0
+        ? ` Pending subtasks: ${completion.pendingIds.join(', ')}.`
+        : '';
+      return {
+        success: false,
+        error: `Coding incomplete: completed ${completion.completed}/${completion.total}.${pending}`,
       };
     }
 
@@ -704,6 +716,34 @@ export class BuildOrchestrator extends EventEmitter {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  private async readSubtaskCompletion(): Promise<{ total: number; completed: number; pendingIds: string[] }> {
+    const planPath = join(this.config.specDir, 'implementation_plan.json');
+    try {
+      const raw = await readFile(planPath, 'utf-8');
+      const plan = safeParseJson<ImplementationPlan>(raw);
+      if (!plan) return { total: 0, completed: 0, pendingIds: [] };
+
+      let total = 0;
+      let completed = 0;
+      const pendingIds: string[] = [];
+
+      for (const phase of plan.phases) {
+        for (const subtask of phase.subtasks) {
+          total++;
+          if (subtask.status === 'completed') {
+            completed++;
+          } else {
+            pendingIds.push(subtask.id);
+          }
+        }
+      }
+
+      return { total, completed, pendingIds };
+    } catch {
+      return { total: 0, completed: 0, pendingIds: [] };
     }
   }
 

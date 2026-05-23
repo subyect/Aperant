@@ -264,6 +264,44 @@ describe('ProjectStore', () => {
   });
 
   describe('getTasks', () => {
+    function makePlan(options: {
+      feature: string;
+      status: string;
+      subtaskStatuses: string[];
+      updatedAt: string;
+    }) {
+      return {
+        feature: options.feature,
+        workflow_type: 'feature',
+        services_involved: [],
+        status: options.status,
+        phases: [
+          {
+            phase: 1,
+            name: 'Phase 1',
+            type: 'implementation',
+            subtasks: options.subtaskStatuses.map((status, index) => ({
+              id: `subtask-${index + 1}`,
+              title: `Subtask ${index + 1}`,
+              description: `Subtask ${index + 1}`,
+              status,
+            })),
+          },
+        ],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: options.updatedAt,
+        spec_file: 'spec.md',
+      };
+    }
+
+    function writeSpec(specRoot: string, specId: string, plan: Record<string, unknown>): void {
+      const specsDir = path.join(specRoot, specId);
+      mkdirSync(specsDir, { recursive: true });
+      writeFileSync(path.join(specsDir, 'implementation_plan.json'), JSON.stringify(plan));
+      writeFileSync(path.join(specsDir, 'spec.md'), `# ${plan.feature}\n\n## Overview\n\nTest task.\n`);
+    }
+
     it('should return empty array for non-existent project', async () => {
       const { ProjectStore } = await import('../project-store');
       const store = new ProjectStore();
@@ -530,6 +568,76 @@ describe('ProjectStore', () => {
       const tasks = store.getTasks(project.id);
 
       expect(tasks[0].status).toBe('done');
+    });
+
+    it('prefers active worktree progress over stale main queue status', async () => {
+      const specId = '007-worktree-progress';
+      writeSpec(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs'),
+        specId,
+        makePlan({
+          feature: 'Worktree Progress',
+          status: 'queue',
+          subtaskStatuses: ['pending', 'pending', 'pending'],
+          updatedAt: '2024-01-01T00:00:00Z',
+        }),
+      );
+      writeSpec(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId, '.auto-claude', 'specs'),
+        specId,
+        makePlan({
+          feature: 'Worktree Progress',
+          status: 'in_progress',
+          subtaskStatuses: ['completed', 'pending', 'pending'],
+          updatedAt: '2024-01-02T00:00:00Z',
+        }),
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].location).toBe('worktree');
+      expect(tasks[0].status).toBe('in_progress');
+      expect(tasks[0].subtasks.filter((subtask) => subtask.status === 'completed')).toHaveLength(1);
+    });
+
+    it('keeps main terminal task over lingering active worktree data', async () => {
+      const specId = '008-terminal-main';
+      writeSpec(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs'),
+        specId,
+        makePlan({
+          feature: 'Terminal Main',
+          status: 'done',
+          subtaskStatuses: ['completed', 'completed'],
+          updatedAt: '2024-01-03T00:00:00Z',
+        }),
+      );
+      writeSpec(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId, '.auto-claude', 'specs'),
+        specId,
+        makePlan({
+          feature: 'Terminal Main',
+          status: 'in_progress',
+          subtaskStatuses: ['completed', 'pending'],
+          updatedAt: '2024-01-04T00:00:00Z',
+        }),
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].location).toBe('main');
+      expect(tasks[0].status).toBe('done');
+      expect(tasks[0].subtasks.every((subtask) => subtask.status === 'completed')).toBe(true);
     });
 
     it('should prefer original task description from requirements.json over plan description', async () => {

@@ -3,7 +3,36 @@ import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { restampExecutionPhase } from '../subtask-iterator';
+import { iterateSubtasks, restampExecutionPhase } from '../subtask-iterator';
+import type { SessionResult } from '../../session/types';
+
+function sessionResult(outcome: SessionResult['outcome']): SessionResult {
+  return {
+    outcome,
+    error: outcome === 'error' ? new Error('session failed') : undefined,
+    totalSteps: 1,
+    lastMessage: '',
+  } as unknown as SessionResult;
+}
+
+function planWithStatus(status: string) {
+  return {
+    feature: 'test',
+    phases: [
+      {
+        name: 'Phase 1',
+        subtasks: [
+          {
+            id: '1.1',
+            title: 'Do work',
+            description: 'Do the work',
+            status,
+          },
+        ],
+      },
+    ],
+  };
+}
 
 // =============================================================================
 // restampExecutionPhase
@@ -66,5 +95,86 @@ describe('restampExecutionPhase', () => {
     await writeFile(planPath, '{ this is not valid json }{{{');
 
     await expect(restampExecutionPhase(tmpDir, 'coding')).resolves.toBeUndefined();
+  });
+});
+
+describe('iterateSubtasks completion proof', () => {
+  let tmpDir: string;
+  let planPath: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'subtask-iterator-test-'));
+    planPath = join(tmpDir, 'implementation_plan.json');
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('does not mark a subtask completed only because the session completed', async () => {
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed'),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(0);
+    expect(result.stuckSubtasks).toEqual(['1.1']);
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('without marking the subtask completed');
+  });
+
+  it('counts a subtask completed when the agent updates the plan', async () => {
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => {
+        const plan = planWithStatus('completed');
+        await writeFile(planPath, JSON.stringify(plan, null, 2));
+        return sessionResult('completed');
+      },
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string }> }>;
+    };
+
+    expect(result.completedSubtasks).toBe(1);
+    expect(result.stuckSubtasks).toEqual([]);
+    expect(written.phases[0].subtasks[0].status).toBe('completed');
+  });
+
+  it('retries instead of completing when the session hits max steps', async () => {
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('max_steps'),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+
+    expect(result.completedSubtasks).toBe(0);
+    expect(result.stuckSubtasks).toEqual(['1.1']);
+    expect(written.phases[0].subtasks[0].status).toBe('pending');
+    expect(written.phases[0].subtasks[0].last_error).toContain('max step limit');
   });
 });

@@ -755,9 +755,13 @@ async function runQALoop(
     projectDir: session.projectDir,
     abortSignal: abortController.signal,
 
-    generatePrompt: async (agentType, _context) => {
+    generatePrompt: async (agentType, context) => {
       const promptName = agentType === 'qa_fixer' ? 'qa_fixer' : 'qa_reviewer';
-      return assemblePrompt(promptName, session);
+      let prompt = await assemblePrompt(promptName, session);
+      if (context.humanFeedback) {
+        prompt += `\n\n## Human Feedback\n\nThe user supplied QA feedback in QA_FIX_REQUEST.md. Treat it as the primary fix request until QA approves:\n\n${context.humanFeedback}`;
+      }
+      return prompt;
     },
 
     runSession: async (runConfig) => {
@@ -1243,7 +1247,7 @@ function buildKickoffMessage(agentType: AgentType, specDir: string, projectDir: 
     case 'qa_reviewer':
       return `Review the implementation in ${projectDir} against the specification in ${specDir}/spec.md. Write your findings to ${specDir}/qa_report.md with a clear "Status: PASSED" or "Status: FAILED" line.`;
     case 'qa_fixer':
-      return `Read ${specDir}/qa_report.md for the issues found by QA review. Fix all issues in ${projectDir}. After fixing, update ${specDir}/qa_report.md to indicate fixes have been applied.`;
+      return `If ${specDir}/QA_FIX_REQUEST.md exists, read it first and treat the human feedback as the primary fix request. Then read ${specDir}/qa_report.md for QA issues. Fix all issues in ${projectDir}. After fixing, update ${specDir}/qa_report.md to indicate fixes have been applied.`;
     default:
       return `Complete the task described in your system prompt. Spec directory: ${specDir}. Project directory: ${projectDir}`;
   }
@@ -1261,7 +1265,7 @@ function buildFallbackPrompt(agentType: AgentType, specDir: string, projectDir: 
     case 'qa_reviewer':
       return `You are a QA reviewer. Review the implementation in ${projectDir} against the spec in ${specDir}/spec.md. Write your findings to ${specDir}/qa_report.md with "Status: PASSED" or "Status: FAILED".`;
     case 'qa_fixer':
-      return `You are a QA fixer. Read ${specDir}/qa_report.md for the issues found by QA review. Fix the issues in ${projectDir}. After fixing, update ${specDir}/implementation_plan.json qa_signoff status to "fixes_applied".`;
+      return `You are a QA fixer. If ${specDir}/QA_FIX_REQUEST.md exists, read it first and treat the human feedback as the primary fix request. Then read ${specDir}/qa_report.md for QA issues. Fix the issues in ${projectDir}. After fixing, update ${specDir}/implementation_plan.json qa_signoff status to "fixes_applied".`;
     default:
       return `You are an AI agent. Complete the task described in ${specDir}/spec.md for the project at ${projectDir}.`;
   }
