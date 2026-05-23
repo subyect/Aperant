@@ -27,7 +27,7 @@ import { buildThinkingProviderOptions } from '../config/types';
 import { shouldUseOpenAIInstructions } from '../providers/openai-instructions';
 import { createStreamHandler } from './stream-handler';
 import type { FullStreamPart } from './stream-handler';
-import { classifyError, isAuthenticationError, isRateLimitError } from './error-classifier';
+import { classifyError, ErrorCode, isAuthenticationError, isRateLimitError } from './error-classifier';
 import { ProgressTracker } from './progress-tracker';
 import type {
   SessionConfig,
@@ -58,6 +58,9 @@ const CONTEXT_WINDOW_ABORT_THRESHOLD = 0.90;
 
 /** Unique reason string for context-window aborts (used in catch to distinguish from user cancel) */
 const CONTEXT_WINDOW_ABORT_REASON = '__context_window_exhausted__';
+
+/** Unique reason string for terminal provider stream errors. */
+const TERMINAL_STREAM_ERROR_ABORT_REASON = '__terminal_stream_error__';
 
 /** Agent types that should receive a convergence nudge when 75% of steps are used.
  *  These are agents that must write file-based output (verdict/report) to be useful. */
@@ -295,9 +298,16 @@ async function executeStream(
   const streamInactivityController = new AbortController();
   const STREAM_INACTIVITY_REASON = '__stream_inactivity_timeout__';
 
+  // AI SDK fullStream can emit provider failures as parts instead of throwing.
+  // Treat account-level failures as terminal so orchestration can pause/switch
+  // instead of immediately starting another request in the same worker loop.
+  const terminalStreamErrorController = new AbortController();
+  let terminalStreamError: SessionError | null = null;
+
   const signals: AbortSignal[] = [
     contextWindowAbortController.signal,
     streamInactivityController.signal,
+    terminalStreamErrorController.signal,
   ];
   if (config.abortSignal) signals.push(config.abortSignal);
   const mergedAbortSignal = AbortSignal.any(signals);
@@ -312,6 +322,12 @@ async function executeStream(
   const emitEvent: SessionEventCallback = (event) => {
     // Feed progress tracker
     progressTracker.processEvent(event);
+    if (event.type === 'error' && isTerminalStreamError(event.error)) {
+      terminalStreamError = event.error;
+      if (!terminalStreamErrorController.signal.aborted) {
+        terminalStreamErrorController.abort(TERMINAL_STREAM_ERROR_ABORT_REASON);
+      }
+    }
     // Track tool calls in memory state for injection decisions
     if (stepMemoryState && event.type === 'tool-call') {
       stepMemoryState.recordToolCall(event.toolName, event.args);
@@ -495,6 +511,14 @@ async function executeStream(
     // Stream-level errors (network, abort, etc.)
     const summary = streamHandler.getSummary();
 
+    if (
+      terminalStreamErrorController.signal.aborted &&
+      terminalStreamErrorController.signal.reason === TERMINAL_STREAM_ERROR_ABORT_REASON &&
+      terminalStreamError
+    ) {
+      return buildStreamErrorResult(terminalStreamError, summary, messages);
+    }
+
     // Check if this was a stream inactivity timeout
     if (
       streamInactivityController.signal.aborted &&
@@ -551,6 +575,10 @@ async function executeStream(
 
   // Gather final summary from stream handler
   const summary = streamHandler.getSummary();
+
+  if (terminalStreamError) {
+    return buildStreamErrorResult(terminalStreamError, summary, messages);
+  }
 
   // Determine outcome
   let outcome: SessionOutcome = 'completed';
@@ -662,6 +690,38 @@ function buildErrorResult(
     messages: [],
     toolCallCount: 0,
     durationMs: Date.now() - startTime,
+  };
+}
+
+function isTerminalStreamError(error: SessionError): boolean {
+  return (
+    error.code === ErrorCode.RATE_LIMITED ||
+    error.code === ErrorCode.AUTH_FAILURE ||
+    error.code === ErrorCode.BILLING_ERROR ||
+    isRateLimitError(error.message) ||
+    isAuthenticationError(error.message)
+  );
+}
+
+function buildStreamErrorResult(
+  error: SessionError,
+  summary: { stepsExecuted: number; usage: TokenUsage; toolCallCount: number },
+  messages: SessionMessage[],
+): Omit<SessionResult, 'durationMs'> {
+  let outcome: SessionOutcome = 'error';
+  if (error.code === ErrorCode.RATE_LIMITED || isRateLimitError(error.message)) {
+    outcome = 'rate_limited';
+  } else if (error.code === ErrorCode.AUTH_FAILURE || isAuthenticationError(error.message)) {
+    outcome = 'auth_failure';
+  }
+
+  return {
+    outcome,
+    stepsExecuted: summary.stepsExecuted,
+    usage: summary.usage,
+    error,
+    messages,
+    toolCallCount: summary.toolCallCount,
   };
 }
 

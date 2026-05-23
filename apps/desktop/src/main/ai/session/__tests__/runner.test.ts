@@ -192,6 +192,29 @@ describe('runAgentSession', () => {
     expect(result.stepsExecuted).toBe(0);
   });
 
+  it('should stop and classify rate limits emitted as stream error parts', async () => {
+    const events: StreamEvent[] = [];
+
+    mockStreamText.mockReturnValue(
+      createMockStreamResult([
+        {
+          type: 'error',
+          error: new Error('failed after 3 attempts. last error: the usage limit has been reached'),
+        },
+      ]),
+    );
+
+    const result = await runAgentSession(createMockConfig(), {
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(result.outcome).toBe('rate_limited');
+    expect(result.error).toBeDefined();
+    expect(result.error!.code).toBe('rate_limited');
+    expect(result.error!.message).toContain('usage limit');
+    expect(events.some((event) => event.type === 'error' && event.error.code === 'rate_limited')).toBe(true);
+  });
+
   it('should classify generic errors', async () => {
     mockStreamText.mockImplementation(() => {
       throw new Error('Network error');
