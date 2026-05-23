@@ -46,8 +46,8 @@ const AUTO_CONTINUE_DELAY_MS = 3_000;
 /** Maximum planning validation retries before failing */
 const MAX_PLANNING_VALIDATION_RETRIES = 3;
 
-/** Maximum retries for a single subtask before marking stuck */
-const MAX_SUBTASK_RETRIES = 3;
+/** Maximum retries for a single subtask before marking stuck on hard failures */
+const MAX_SUBTASK_RETRIES = 12;
 
 /** Delay before retrying after an error (ms) */
 const ERROR_RETRY_DELAY_MS = 5_000;

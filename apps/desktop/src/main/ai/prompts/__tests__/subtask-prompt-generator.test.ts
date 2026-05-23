@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -33,6 +33,36 @@ describe('generateSubtaskPrompt', () => {
       expect(prompt).toContain('Do not ask the user for confirmation');
       expect(prompt).toContain('Never ask whether to proceed to the next step');
       expect(prompt).toContain('set ONLY this subtask');
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it('injects human review feedback into coder subtasks', async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), 'subtask-prompt-feedback-'));
+    const specDir = join(projectDir, '.auto-claude', 'specs', '001-test');
+
+    try {
+      await mkdir(specDir, { recursive: true });
+      await writeFile(
+        join(specDir, 'QA_FIX_REQUEST.md'),
+        '# QA Fix Request\n\nStatus: REJECTED\n\n## Feedback\n\nPlease preserve pagination when the tag filter is active.\n',
+      );
+
+      const prompt = await generateSubtaskPrompt({
+        projectDir,
+        specDir,
+        subtask: {
+          id: '2.3',
+          description: 'Preserve pagination behavior.',
+          phaseName: 'Backend',
+          status: 'pending',
+        },
+      });
+
+      expect(prompt).toContain('HUMAN REVIEW FEEDBACK');
+      expect(prompt).toContain('Please preserve pagination when the tag filter is active.');
+      expect(prompt).toContain('Do not ignore it just because QA has not run yet.');
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }

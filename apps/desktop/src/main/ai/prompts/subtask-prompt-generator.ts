@@ -52,6 +52,18 @@ function detectWorktreeIsolation(projectDir: string): [boolean, string | null] {
   return [false, null];
 }
 
+function readHumanFeedback(specDir: string): string | null {
+  const feedbackPath = join(specDir, 'QA_FIX_REQUEST.md');
+  if (!existsSync(feedbackPath)) return null;
+
+  try {
+    const content = readFileSync(feedbackPath, 'utf-8').trim();
+    return content || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Generate the worktree isolation warning section for prompts.
  * Mirrors generate_worktree_isolation_warning() from Python.
@@ -254,6 +266,17 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
     if (subtask.lastAttemptOutcome) {
       sections.push(`**Last agent outcome:** ${subtask.lastAttemptOutcome}\n`);
     }
+    if (
+      subtask.lastAttemptOutcome === 'completed' &&
+      subtask.lastError?.includes('without marking the subtask completed')
+    ) {
+      sections.push(
+        `\nThe previous agent said the work was complete, but the plan still shows this subtask as unfinished. ` +
+        `First verify the current code and tests. If the subtask is actually complete, update ONLY subtask ` +
+        `\`${subtask.id}\` to \`"completed"\` in implementation_plan.json and record the verification evidence. ` +
+        `If it is not complete, finish the missing implementation before updating the plan.\n`
+      );
+    }
     if (recoveryHints && recoveryHints.length > 0) {
       sections.push('**Previous attempt insights:**');
       for (const hint of recoveryHints) {
@@ -261,6 +284,16 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
       }
       sections.push('');
     }
+  }
+
+  const humanFeedback = readHumanFeedback(specDir);
+  if (humanFeedback) {
+    sections.push(
+      `\n## HUMAN REVIEW FEEDBACK\n\n` +
+      `The user rejected a previous result. Treat this feedback as mandatory context while completing the current subtask. ` +
+      `Do not ignore it just because QA has not run yet.\n\n` +
+      `${humanFeedback}\n`
+    );
   }
 
   // 4. Files section

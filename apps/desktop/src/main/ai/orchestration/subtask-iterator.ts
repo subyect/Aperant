@@ -176,12 +176,17 @@ export async function iterateSubtasks(
     const currentAttempt = (attemptCounts.get(subtask.id) ?? 0) + 1;
     attemptCounts.set(subtask.id, currentAttempt);
 
-    // Check if stuck
-    if (currentAttempt > config.maxRetries) {
+    // Check if stuck. Soft retry states get a larger budget because they are
+    // usually recoverable provider/plan-marker failures, not implementation
+    // dead ends.
+    const maxAttemptsForSubtask = shouldKeepRetryingSubtask(subtask)
+      ? config.maxRetries * 3
+      : config.maxRetries;
+    if (currentAttempt > maxAttemptsForSubtask) {
       stuckSubtasks.push(subtask.id);
       config.onSubtaskStuck?.(
         subtaskInfo,
-        `Exceeded max retries (${config.maxRetries})`,
+        `Exceeded max retries (${maxAttemptsForSubtask})`,
       );
       continue;
     }
@@ -320,6 +325,21 @@ function buildRetryReason(
     return 'Agent hit the context window before the subtask was marked completed. Retrying the subtask.';
   }
   return result.error?.message ?? `Agent session ended with outcome "${result.outcome}". Retrying the subtask.`;
+}
+
+function shouldKeepRetryingSubtask(subtask: PlanSubtask): boolean {
+  if (
+    subtask.last_attempt_outcome === 'completed' &&
+    subtask.last_error?.includes('without marking the subtask completed')
+  ) {
+    return true;
+  }
+
+  if (subtask.last_error?.includes('Stream inactivity timeout')) {
+    return true;
+  }
+
+  return false;
 }
 
 /**

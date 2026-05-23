@@ -158,6 +158,53 @@ function writeQaFixRequestToSpecDir(
   );
 }
 
+function readPlanCompletionForSpecDir(
+  targetSpecDir: string
+): ReturnType<typeof checkSubtasksCompletion> | null {
+  const planContent = safeReadFileSync(path.join(targetSpecDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN));
+  if (!planContent) return null;
+
+  const plan = safeParseJson<Record<string, unknown>>(planContent);
+  if (!plan) return null;
+
+  return checkSubtasksCompletion(plan);
+}
+
+function markHumanFeedbackPendingInSpecDir(
+  targetSpecDir: string,
+  feedback: string | undefined,
+  resumeCoding: boolean
+): void {
+  const planPath = path.join(targetSpecDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
+  const planContent = safeReadFileSync(planPath);
+  if (!planContent) return;
+
+  const plan = safeParseJson<Record<string, unknown>>(planContent);
+  if (!plan) return;
+
+  delete plan.qa_signoff;
+  delete plan.final_acceptance;
+  plan.human_feedback_pending = {
+    requested_at: new Date().toISOString(),
+    preview: feedback?.slice(0, 500) ?? null,
+  };
+
+  if (resumeCoding) {
+    plan.status = 'in_progress';
+    plan.planStatus = 'in_progress';
+    plan.xstateState = 'coding';
+    plan.executionPhase = 'coding';
+  } else {
+    plan.status = 'ai_review';
+    plan.planStatus = 'review';
+    plan.xstateState = 'qa_fixing';
+    plan.executionPhase = 'qa_fixing';
+  }
+
+  plan.updated_at = new Date().toISOString();
+  writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+}
+
 /**
  * Register task execution handlers (start, stop, review, status management, recovery)
  */
@@ -540,18 +587,71 @@ export function registerTaskExecutionHandlers(
           return { success: false, error: 'Failed to write QA fix request file' };
         }
 
+        const effectiveFeedbackSpecDir = worktreeSpecDir && existsSync(path.join(worktreeSpecDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN))
+          ? worktreeSpecDir
+          : specDir;
+        const completion = readPlanCompletionForSpecDir(effectiveFeedbackSpecDir);
+        const resumeCodingForFeedback = Boolean(
+          completion &&
+          completion.totalCount > 0 &&
+          !completion.allCompleted
+        );
+
+        for (const targetSpecDir of feedbackSpecDirs) {
+          try {
+            markHumanFeedbackPendingInSpecDir(targetSpecDir, feedback, resumeCodingForFeedback);
+          } catch (error) {
+            console.warn('[TASK_REVIEW] Failed to mark human feedback state:', targetSpecDir, error);
+          }
+        }
+
         // Clear stale tracking state before starting new QA process
         taskStateManager.prepareForRestart(taskId);
 
-        taskStateManager.handleUiEvent(
-          taskId,
-          { type: 'QA_FIXING_STARTED', iteration: 0 },
-          task,
-          project
-        );
+        if (resumeCodingForFeedback) {
+          console.warn('[TASK_REVIEW] Feedback submitted while build is incomplete; resuming coding for:', task.specId);
+          cancelFallbackTimer(taskId);
 
-        console.warn('[TASK_REVIEW] Starting QA process for feedback with projectPath:', project.path);
-        agentManager.startQAProcess(taskId, project.path, task.specId, project.id);
+          const watchSpecDir = getSpecDirForWatcher(project.path, specsBaseDir, task.specId);
+          fileWatcher.watch(taskId, watchSpecDir).catch((err) => {
+            console.error(`[TASK_REVIEW] Failed to watch spec dir for ${taskId}:`, err);
+          });
+
+          const baseBranchForReview = task.metadata?.baseBranch || project.settings?.mainBranch;
+          agentManager.startTaskExecution(
+            taskId,
+            project.path,
+            task.specId,
+            {
+              parallel: false,
+              workers: 1,
+              baseBranch: baseBranchForReview,
+              useWorktree: task.metadata?.useWorktree,
+              useLocalBranch: task.metadata?.useLocalBranch,
+              pushNewBranches: task.metadata?.pushNewBranches
+            },
+            project.id
+          );
+
+          if (getMainWindow()) {
+            getMainWindow()?.webContents.send(
+              IPC_CHANNELS.TASK_STATUS_CHANGE,
+              taskId,
+              'in_progress',
+              project.id
+            );
+          }
+        } else {
+          taskStateManager.handleUiEvent(
+            taskId,
+            { type: 'QA_FIXING_STARTED', iteration: 0 },
+            task,
+            project
+          );
+
+          console.warn('[TASK_REVIEW] Starting QA process for feedback with projectPath:', project.path);
+          agentManager.startQAProcess(taskId, project.path, task.specId, project.id);
+        }
 
       }
 
