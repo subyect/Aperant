@@ -395,6 +395,12 @@ async function run(): Promise<void> {
         projectCapabilities: session.mcpOptions?.projectCapabilities,
         agentMcpAdd: session.mcpOptions?.agentMcpAdd,
         agentMcpRemove: session.mcpOptions?.agentMcpRemove,
+        customServerIds: session.mcpOptions?.customServerIds,
+      }, {
+        specDir: session.specDir,
+        memoryMcpUrl: session.mcpOptions?.memoryMcpUrl,
+        linearApiKey: session.mcpOptions?.linearApiKey,
+        customMcpServers: session.mcpOptions?.customMcpServers as never,
       });
       if (mcpClients.length > 0) {
         postLog(`MCP initialized: ${mcpClients.map(c => c.serverId).join(', ')}`);

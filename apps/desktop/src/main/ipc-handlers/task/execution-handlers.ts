@@ -16,7 +16,9 @@ import {
   persistPlanStatus,
   createPlanIfNotExists,
   resetStuckSubtasks,
-  hasPlanWithSubtasks
+  hasPlanWithSubtasks,
+  repairFalseCompletedSubtasksForSpec,
+  persistSpecQaReviewStateSync
 } from './plan-file-utils';
 import { writeFileAtomicSync } from '../../utils/atomic-file';
 import { findTaskWorktree } from '../../worktree-paths';
@@ -25,6 +27,12 @@ import { getIsolatedGitEnv, detectWorktreeBranch } from '../../utils/git-isolati
 import { cancelFallbackTimer } from '../agent-events-handlers';
 import { readSettingsFile } from '../../settings-utils';
 import type { ProviderAccount } from '../../../shared/types/provider-account';
+import {
+  checkSubtasksCompletion,
+  doneStatusHasIncompleteSubtasks,
+  isQASignoffApproved,
+  planHasFailedValidation,
+} from '../../task-plan-guards';
 
 /**
  * Check if any provider account is configured (API key or OAuth).
@@ -50,25 +58,6 @@ function safeReadFileSync(filePath: string): string | null {
     }
     return null;
   }
-}
-
-/**
- * Helper function to check subtask completion status
- */
-function checkSubtasksCompletion(plan: Record<string, unknown> | null): {
-  allSubtasks: Array<{ status: string }>;
-  completedCount: number;
-  totalCount: number;
-  allCompleted: boolean;
-} {
-  const allSubtasks = (plan?.phases as Array<{ subtasks?: Array<{ status: string }> }> | undefined)?.flatMap(phase =>
-    phase.subtasks || []
-  ) || [];
-  const completedCount = allSubtasks.filter(s => s.status === 'completed').length;
-  const totalCount = allSubtasks.length;
-  const allCompleted = totalCount > 0 && completedCount === totalCount;
-
-  return { allSubtasks, completedCount, totalCount, allCompleted };
 }
 
 /**
@@ -219,11 +208,16 @@ export function registerTaskExecutionHandlers(
       );
       const planFilePath = path.join(specDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
       let planHasSubtasks = false;
+      let planNeedsQaValidation = false;
       const planContent = safeReadFileSync(planFilePath);
       if (planContent) {
         try {
           const plan = JSON.parse(planContent);
-          planHasSubtasks = checkSubtasksCompletion(plan).totalCount > 0;
+          const completion = checkSubtasksCompletion(plan);
+          planHasSubtasks = completion.totalCount > 0;
+          planNeedsQaValidation = completion.totalCount > 0
+            && completion.allCompleted
+            && (!isQASignoffApproved(plan.qa_signoff) || planHasFailedValidation(plan));
         } catch {
           // Invalid/corrupt plan file - treat as no subtasks
         }
@@ -281,6 +275,7 @@ export function registerTaskExecutionHandlers(
       if (resetResult.success && resetResult.resetCount > 0) {
         console.warn(`[TASK_START] Reset ${resetResult.resetCount} stuck subtask(s) before starting`);
       }
+      await repairFalseCompletedSubtasksForSpec(project, task.specId);
 
       // Start file watcher for this task
       // Use worktree path if it exists, since the backend writes implementation_plan.json there
@@ -338,6 +333,11 @@ export function registerTaskExecutionHandlers(
           },
           project.id
         );
+      } else if (planNeedsQaValidation) {
+        console.warn('[TASK_START] All subtasks are complete but QA is not approved; starting QA for:', task.specId);
+        persistSpecQaReviewStateSync(project, task.specId);
+        taskStateManager.handleUiEvent(taskId, { type: 'QA_STARTED', iteration: 0, maxIterations: 3 }, task, project);
+        agentManager.startQAProcess(taskId, project.path, task.specId, project.id);
       } else {
         // Task has subtasks, start normal execution
         // Note: Parallel execution is handled internally by the agent, not via CLI flags
@@ -713,16 +713,30 @@ export function registerTaskExecutionHandlers(
       const specsBaseDir = getSpecsDir(project.autoBuildPath);
       const specDir = path.join(project.path, specsBaseDir, task.specId);
       const planPath = getPlanPath(project, task);
+      let effectiveStatus = status;
+      if (status === 'done' || status === 'pr_created') {
+        try {
+          const planContentForDone = safeReadFileSync(planPath);
+          const planForDone = planContentForDone ? JSON.parse(planContentForDone) : null;
+          const doneGuard = doneStatusHasIncompleteSubtasks(planForDone);
+          if (doneGuard.incomplete) {
+            console.warn(`[TASK_UPDATE_STATUS] Blocking ${status}: ${doneGuard.completedCount}/${doneGuard.totalCount} subtasks complete`);
+            effectiveStatus = 'in_progress';
+          }
+        } catch {
+          // Leave manual status flow to persistPlanStatus, which will guard terminal writes again.
+        }
+      }
 
       try {
-        const handledByMachine = taskStateManager.handleManualStatusChange(taskId, status, task, project);
+        const handledByMachine = taskStateManager.handleManualStatusChange(taskId, effectiveStatus, task, project);
         if (!handledByMachine) {
           // Use shared utility for thread-safe plan file updates (legacy/manual override)
-          const persisted = await persistPlanStatus(planPath, status, project.id);
+          const persisted = await persistPlanStatus(planPath, effectiveStatus, project.id);
 
           if (!persisted) {
             // If no implementation plan exists yet, create a basic one
-            await createPlanIfNotExists(planPath, task, status);
+            await createPlanIfNotExists(planPath, task, effectiveStatus);
             // Invalidate cache after creating new plan
             projectStore.invalidateTasksCache(project.id);
           }
@@ -730,13 +744,13 @@ export function registerTaskExecutionHandlers(
 
         // Auto-stop task when status changes AWAY from 'in_progress' and process IS running
         // This handles the case where user drags a running task back to Planning/backlog
-        if (status !== 'in_progress' && agentManager.isRunning(taskId)) {
+        if (effectiveStatus !== 'in_progress' && agentManager.isRunning(taskId)) {
           console.warn('[TASK_UPDATE_STATUS] Stopping task due to status change away from in_progress:', taskId);
           agentManager.killTask(taskId);
         }
 
         // Auto-start task when status changes to 'in_progress' and no process is running
-        if (status === 'in_progress' && !agentManager.isRunning(taskId)) {
+        if (effectiveStatus === 'in_progress' && !agentManager.isRunning(taskId)) {
           // Clear stale tracking state before starting a new process
           taskStateManager.prepareForRestart(taskId);
           const mainWindow = getMainWindow();
@@ -793,6 +807,7 @@ export function registerTaskExecutionHandlers(
           if (resetResult.success && resetResult.resetCount > 0) {
             console.warn(`[TASK_UPDATE_STATUS] Reset ${resetResult.resetCount} stuck subtask(s) before starting`);
           }
+          await repairFalseCompletedSubtasksForSpec(project, task.specId);
 
           // Start file watcher for this task
           // Use worktree path if it exists, since the backend writes implementation_plan.json there
@@ -807,16 +822,21 @@ export function registerTaskExecutionHandlers(
           const needsSpecCreation = !hasSpec;
           // FIX (#1562): Check actual plan file for subtasks, not just task.subtasks.length
           const updatePlanFilePath = path.join(specDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
-          let updatePlanHasSubtasks = false;
-          const updatePlanContent = safeReadFileSync(updatePlanFilePath);
-          if (updatePlanContent) {
-            try {
-              const plan = JSON.parse(updatePlanContent);
-              updatePlanHasSubtasks = checkSubtasksCompletion(plan).totalCount > 0;
-            } catch {
-              // Invalid/corrupt plan file - treat as no subtasks
-            }
-          }
+	          let updatePlanHasSubtasks = false;
+	          let updatePlanNeedsQaValidation = false;
+	          const updatePlanContent = safeReadFileSync(updatePlanFilePath);
+	          if (updatePlanContent) {
+	            try {
+	              const plan = JSON.parse(updatePlanContent);
+	              const completion = checkSubtasksCompletion(plan);
+	              updatePlanHasSubtasks = completion.totalCount > 0;
+	              updatePlanNeedsQaValidation = completion.totalCount > 0
+	                && completion.allCompleted
+	                && (!isQASignoffApproved(plan.qa_signoff) || planHasFailedValidation(plan));
+	            } catch {
+	              // Invalid/corrupt plan file - treat as no subtasks
+	            }
+	          }
           const needsImplementation = hasSpec && !updatePlanHasSubtasks;
 
           console.warn('[TASK_UPDATE_STATUS] hasSpec:', hasSpec, 'needsSpecCreation:', needsSpecCreation, 'needsImplementation:', needsImplementation);
@@ -846,7 +866,12 @@ export function registerTaskExecutionHandlers(
               },
               project.id
             );
-          } else {
+	          } else if (updatePlanNeedsQaValidation) {
+	            console.warn('[TASK_UPDATE_STATUS] All subtasks complete but QA is not approved; starting QA for:', task.specId);
+	            persistSpecQaReviewStateSync(project, task.specId);
+	            taskStateManager.handleUiEvent(taskId, { type: 'QA_STARTED', iteration: 0, maxIterations: 3 }, task, project);
+	            agentManager.startQAProcess(taskId, project.path, task.specId, project.id);
+	          } else {
             // Task has subtasks, start normal execution
             // Note: Parallel execution is handled internally by the agent
             console.warn('[TASK_UPDATE_STATUS] Starting task execution (has subtasks) for:', task.specId);
@@ -1056,12 +1081,10 @@ export function registerTaskExecutionHandlers(
           // Analyze subtask statuses to determine appropriate recovery status
           const { completedCount, totalCount, allCompleted } = checkSubtasksCompletion(plan);
 
-          if (totalCount > 0) {
-            if (allCompleted) {
-              // All subtasks completed - should go to review (ai_review or human_review based on source)
-              // For recovery, human_review is safer as it requires manual verification
-              newStatus = 'human_review';
-            } else if (completedCount > 0) {
+	          if (totalCount > 0) {
+	            if (allCompleted) {
+	              newStatus = isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined) ? 'human_review' : 'ai_review';
+	            } else if (completedCount > 0) {
               // Some subtasks completed, some still pending - task is in progress
               newStatus = 'in_progress';
             }
@@ -1096,10 +1119,10 @@ export function registerTaskExecutionHandlers(
           plan.recoveryNote = `Task recovered from stuck state at ${new Date().toISOString()}`;
 
           // Check if task is actually stuck or just completed and waiting for merge
-          const { allCompleted } = checkSubtasksCompletion(plan);
+	          const { allCompleted } = checkSubtasksCompletion(plan);
 
-          if (allCompleted) {
-            console.log('[Recovery] Task is fully complete (all subtasks done), setting to human_review without restart');
+	          if (allCompleted && isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined)) {
+	            console.log('[Recovery] Task is fully complete and QA-approved, setting to human_review without restart');
             // Don't reset any subtasks - task is done!
             // Just update status in plan file (project store reads from file, no separate update needed)
             plan.status = 'human_review';

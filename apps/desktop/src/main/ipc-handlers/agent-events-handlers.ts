@@ -14,12 +14,26 @@ import type { ProcessType, ExecutionProgressData } from "../agent";
 import { titleGenerator } from "../title-generator";
 import { fileWatcher } from "../file-watcher";
 import { notificationService } from "../notification-service";
-import { persistPlanLastEventSync, getPlanPath, persistPlanPhaseSync, persistPlanStatusAndReasonSync, hasPlanWithSubtasks, syncPlanPhasesToMainSync } from "./task/plan-file-utils";
+import {
+  persistPlanLastEventSync,
+  getPlanPath,
+  persistPlanPhaseSync,
+  persistPlanStatusAndReasonSync,
+  hasPlanWithSubtasks,
+  syncPlanPhasesToMainSync,
+  recoverApprovedQASignoffForSpec,
+  persistSpecQaReviewStateSync,
+} from "./task/plan-file-utils";
 import { findTaskWorktree } from "../worktree-paths";
 import { findTaskAndProject } from "./task/shared";
 import { safeSendToRenderer } from "./utils";
 import { getClaudeProfileManager } from "../claude-profile-manager";
 import { taskStateManager } from "../task-state-manager";
+import {
+  preserveCompletedSubtasks,
+  restampPlanFromXState,
+  planNeedsContinuationAfterExit,
+} from "../task-plan-guards";
 
 // Timeout for fallback safety net to check if task is still stuck after process exit
 const STUCK_TASK_FALLBACK_TIMEOUT_MS = 500;
@@ -192,7 +206,39 @@ export function registerAgenteventsHandlers(
     // The agent writes subtask statuses to the worktree; the main plan's phases
     // may be stale. Syncing ensures getTasks() dedup (which prefers main) sees correct data.
     if (finalPlan?.phases && exitTask && exitProject) {
-      syncPlanPhasesToMainSync(getPlanPath(exitProject, exitTask), finalPlan.phases, exitProjectId);
+      syncPlanPhasesToMainSync(getPlanPath(exitProject, exitTask), finalPlan as unknown as Record<string, unknown>, exitProjectId);
+    }
+
+    if (finalPlan && exitTask && exitProject && processType !== "spec-creation") {
+      const continuationMode = planNeedsContinuationAfterExit(finalPlan as unknown as Record<string, unknown>, code);
+      if (continuationMode) {
+        const baseBranch = exitTask.metadata?.baseBranch || exitProject.settings?.mainBranch;
+        console.warn(`[agent-events-handlers] Continuing ${taskId} after worker exit in ${continuationMode} mode`);
+        taskStateManager.prepareForRestart(taskId);
+        if (continuationMode === "qa") {
+          persistSpecQaReviewStateSync(exitProject, exitTask.specId);
+          taskStateManager.handleUiEvent(taskId, { type: 'QA_STARTED', iteration: 0, maxIterations: 3 }, exitTask, exitProject);
+          agentManager.startQAProcess(taskId, exitProject.path, exitTask.specId, exitProject.id);
+        } else {
+          persistPlanStatusAndReasonSync(getPlanPath(exitProject, exitTask), 'in_progress', undefined, exitProject.id, 'coding', 'coding');
+          taskStateManager.handleUiEvent(taskId, { type: 'USER_RESUMED' }, exitTask, exitProject);
+          agentManager.startTaskExecution(
+            taskId,
+            exitProject.path,
+            exitTask.specId,
+            {
+              parallel: false,
+              workers: 1,
+              baseBranch,
+              useWorktree: exitTask.metadata?.useWorktree,
+              useLocalBranch: exitTask.metadata?.useLocalBranch,
+              pushNewBranches: exitTask.metadata?.pushNewBranches,
+            },
+            exitProject.id
+          );
+        }
+        return;
+      }
     }
 
     fileWatcher.unwatch(taskId).catch((err) => {
@@ -287,6 +333,10 @@ export function registerAgenteventsHandlers(
 
     const mainPlanPath = getPlanPath(project, task);
     persistPlanLastEventSync(mainPlanPath, event);
+    if (event.type === "QA_PASSED") {
+      recoverApprovedQASignoffForSpec(project, task.specId, "qa-passed-event");
+      agentManager.scheduleHumanReviewMerge?.("QA_PASSED", 1500);
+    }
 
     const worktreePath = findTaskWorktree(project.path, task.specId);
     if (worktreePath) {
@@ -384,7 +434,7 @@ export function registerAgenteventsHandlers(
   // File Watcher Events → Renderer
   // ============================================
 
-  fileWatcher.on("progress", (taskId: string, plan: ImplementationPlan) => {
+    fileWatcher.on("progress", (taskId: string, plan: ImplementationPlan) => {
     // File watcher events don't carry projectId — fall back to lookup
     const { task, project } = findTaskAndProject(taskId);
 
@@ -408,20 +458,25 @@ export function registerAgenteventsHandlers(
       }
     }
 
-    safeSendToRenderer(getMainWindow, IPC_CHANNELS.TASK_PROGRESS, taskId, plan, project?.id);
-
     // Re-stamp XState status fields if the backend overwrote the plan file without them.
     // The planner agent writes implementation_plan.json via the Write tool, which replaces
     // the entire file and strips the frontend's status/xstateState/executionPhase fields.
     // This causes tasks to snap back to backlog on refresh.
     const planWithStatus = plan as { xstateState?: string; executionPhase?: string; status?: string };
     const currentXState = taskStateManager.getCurrentState(taskId);
-    if (currentXState && !planWithStatus.xstateState && task && project) {
+    if (currentXState && task && project) {
       console.debug(`[agent-events-handlers] Re-stamping XState status on plan file for ${taskId} (state: ${currentXState})`);
       const mainPlanPath = getPlanPath(project, task);
       const { status, reviewReason } = mapStateToLegacy(currentXState);
       const phase = XSTATE_TO_PHASE[currentXState] || 'idle';
+      const currentMainPlanContent = existsSync(mainPlanPath) ? readFileSync(mainPlanPath, 'utf-8') : null;
+      const currentMainPlan = currentMainPlanContent ? safeParseJson<Record<string, unknown>>(currentMainPlanContent) : null;
+      if (currentMainPlan) {
+        preserveCompletedSubtasks(plan as unknown as Record<string, unknown>, currentMainPlan);
+      }
+      restampPlanFromXState(plan as unknown as Record<string, unknown>, currentXState);
       persistPlanStatusAndReasonSync(mainPlanPath, status, reviewReason, project.id, currentXState, phase);
+      syncPlanPhasesToMainSync(mainPlanPath, plan as unknown as Record<string, unknown>, project.id);
 
       // Also re-stamp worktree copy if it exists
       const worktreePath = findTaskWorktree(project.path, task.specId);
@@ -438,6 +493,8 @@ export function registerAgenteventsHandlers(
         }
       }
     }
+
+    safeSendToRenderer(getMainWindow, IPC_CHANNELS.TASK_PROGRESS, taskId, plan, project?.id);
   });
 
   fileWatcher.on("error", (taskId: string, error: string) => {

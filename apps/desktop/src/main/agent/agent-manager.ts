@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import path from 'path';
-import { existsSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { AgentState } from './agent-state';
 import { AgentEvents } from './agent-events';
 import { AgentProcessManager } from './agent-process';
@@ -13,8 +14,8 @@ import {
   TaskExecutionOptions,
   RoadmapConfig
 } from './types';
-import type { IdeationConfig } from '../../shared/types';
-import { resetStuckSubtasks } from '../ipc-handlers/task/plan-file-utils';
+import type { IdeationConfig, Project, Task } from '../../shared/types';
+import { resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
 import { AUTO_BUILD_PATHS, getSpecsDir } from '../../shared/constants';
 import { projectStore } from '../project-store';
 import { resolveAuth, resolveAuthFromQueue } from '../ai/auth/resolver';
@@ -29,6 +30,119 @@ import { findTaskWorktree } from '../worktree-paths';
 import { readSettingsFile } from '../settings-utils';
 import type { ProviderAccount } from '../../shared/types/provider-account';
 import { tryLoadPrompt } from '../ai/prompts/prompt-loader';
+import { parseEnvFile } from '../ipc-handlers/utils';
+import type { McpServerConfig } from '../ai/mcp/types';
+import { MergeOrchestrator } from '../ai/merge/orchestrator';
+import { MergeDecision } from '../ai/merge/types';
+import { createMergeResolverFn } from '../ai/runners/merge-resolver';
+import { getToolPath } from '../cli-tool-manager';
+import { getIsolatedGitEnv } from '../utils/git-isolation';
+import { cleanupWorktree } from '../utils/worktree-cleanup';
+
+const APERANT_WORKFLOW_GUARD = `
+
+Aperant workflow guard:
+- Do not run legacy local fleet/orchestrator commands such as "node scripts/orchestrate.mjs", "preflight", or "status" unless the active spec explicitly asks for that verification.
+- Use the current Aperant spec, implementation_plan.json, and subtask status as the source of truth.
+- Implement pending subtasks, run focused verification for the changed subtask, update the plan, and keep working until the plan is complete.
+`;
+
+function loadProjectMcpEnv(projectPath: string, project?: { autoBuildPath?: string }): Record<string, string> {
+  if (!project?.autoBuildPath) return {};
+  try {
+    const envPath = path.join(projectPath, project.autoBuildPath, '.env');
+    if (!existsSync(envPath)) return {};
+    return parseEnvFile(readFileSync(envPath, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+function parseCustomMcpServers(value?: string): McpServerConfig[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed as McpServerConfig[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseAgentMcpOverrides(vars: Record<string, string>): Record<string, { add?: string[]; remove?: string[] }> {
+  const overrides: Record<string, { add?: string[]; remove?: string[] }> = {};
+  for (const [key, value] of Object.entries(vars)) {
+    if (key.startsWith('AGENT_MCP_') && key.endsWith('_ADD')) {
+      const agentId = key.replace('AGENT_MCP_', '').replace('_ADD', '');
+      overrides[agentId] ??= {};
+      overrides[agentId].add = value.split(',').map((server) => server.trim()).filter(Boolean);
+    } else if (key.startsWith('AGENT_MCP_') && key.endsWith('_REMOVE')) {
+      const agentId = key.replace('AGENT_MCP_', '').replace('_REMOVE', '');
+      overrides[agentId] ??= {};
+      overrides[agentId].remove = value.split(',').map((server) => server.trim()).filter(Boolean);
+    }
+  }
+  return overrides;
+}
+
+function readPackageDependencies(packageJsonPath: string): Record<string, unknown> {
+  try {
+    if (!existsSync(packageJsonPath)) return {};
+    const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as {
+      dependencies?: Record<string, unknown>;
+      devDependencies?: Record<string, unknown>;
+      peerDependencies?: Record<string, unknown>;
+    };
+    return { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies };
+  } catch {
+    return {};
+  }
+}
+
+function detectMcpProjectCapabilities(projectPath: string): { is_electron: boolean; is_web_frontend: boolean } {
+  const dependencyMaps = [readPackageDependencies(path.join(projectPath, 'package.json'))];
+  for (const workspaceDir of ['apps', 'packages']) {
+    const dir = path.join(projectPath, workspaceDir);
+    try {
+      if (!existsSync(dir) || !statSync(dir).isDirectory()) continue;
+      for (const entry of readdirSync(dir)) {
+        dependencyMaps.push(readPackageDependencies(path.join(dir, entry, 'package.json')));
+      }
+    } catch {
+      // Optional workspace scan.
+    }
+  }
+  const hasAnyDependency = (names: string[]) => dependencyMaps.some((deps) => names.some((name) => deps[name]));
+  return {
+    is_electron: hasAnyDependency(['electron', 'electron-builder', 'electron-vite']),
+    is_web_frontend: hasAnyDependency(['next', 'react', 'vite', 'vue', 'svelte', '@sveltejs/kit', '@vitejs/plugin-react'])
+      || existsSync(path.join(projectPath, 'app'))
+      || existsSync(path.join(projectPath, 'pages')),
+  };
+}
+
+function buildSessionMcpOptions(projectPath: string, project: { autoBuildPath?: string } | undefined, agentType: string) {
+  const vars = loadProjectMcpEnv(projectPath, project);
+  const customMcpServers = parseCustomMcpServers(vars.CUSTOM_MCP_SERVERS);
+  const overrides = parseAgentMcpOverrides(vars);
+  const agentOverride = overrides[agentType] ?? {};
+  const memoryMcpUrl = vars.GRAPHITI_MCP_URL;
+  const hasCustomMemoryServer = customMcpServers.some((server) => server.id === 'memory');
+  const linearApiKey = vars.LINEAR_API_KEY;
+  return {
+    context7Enabled: vars.CONTEXT7_ENABLED?.toLowerCase() !== 'false',
+    memoryEnabled: vars.GRAPHITI_ENABLED?.toLowerCase() === 'true' && (!!memoryMcpUrl || hasCustomMemoryServer),
+    memoryMcpUrl,
+    linearEnabled: vars.LINEAR_MCP_ENABLED?.toLowerCase() !== 'false',
+    linearApiKey,
+    electronMcpEnabled: vars.ELECTRON_MCP_ENABLED?.toLowerCase() === 'true',
+    puppeteerMcpEnabled: vars.PUPPETEER_MCP_ENABLED?.toLowerCase() === 'true',
+    projectCapabilities: detectMcpProjectCapabilities(projectPath),
+    customMcpServers,
+    customServerIds: customMcpServers.map((server) => String(server.id)).filter(Boolean),
+    agentMcpAdd: agentOverride.add?.join(','),
+    agentMcpRemove: agentOverride.remove?.join(','),
+  };
+}
 
 /**
  * Main AgentManager - orchestrates agent process lifecycle
@@ -53,6 +167,8 @@ export class AgentManager extends EventEmitter {
     /** Generation counter to prevent stale cleanup after restart */
     generation: number;
   }> = new Map();
+  private humanReviewMergeTimer: NodeJS.Timeout | null = null;
+  private humanReviewMergeInProgress = false;
 
   constructor() {
     super();
@@ -262,6 +378,7 @@ export class AgentManager extends EventEmitter {
       } else {
         console.log(`[AgentManager] Startup recovery complete: No stuck subtasks found (scanned ${totalScanned} task(s))`);
       }
+      this.scheduleHumanReviewMerge('startup-recovery', 1000);
     } catch (err) {
       console.error('[AgentManager] Startup recovery scan failed:', err);
     }
@@ -334,6 +451,8 @@ export class AgentManager extends EventEmitter {
       return;
     }
 
+    const project = projectStore.getProjects().find((p) => p.id === projectId || p.path === projectPath);
+
     // Reset stuck subtasks if restarting an existing spec creation task
     if (specDir) {
       const planPath = path.join(specDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
@@ -386,7 +505,7 @@ export class AgentManager extends EventEmitter {
           content: `Task: ${taskDescription}\n\nProject directory: ${projectPath}${specDir ? `\nSpec directory: ${specDir}` : ''}${baseBranch ? `\nBase branch: ${baseBranch}` : ''}${metadata?.requireReviewBeforeCoding ? '\nRequire review before coding: true' : '\nAuto-approve: true'}`,
         },
       ],
-      maxSteps: 1000,
+      maxSteps: 250,
       specDir: resolvedSpecDir,
       projectDir: projectPath,
       provider: resolved.provider,
@@ -395,11 +514,7 @@ export class AgentManager extends EventEmitter {
       baseURL: resolved.auth?.baseURL,
       configDir: resolved.configDir,
       oauthTokenFilePath: resolved.auth?.oauthTokenFilePath,
-      mcpOptions: {
-        context7Enabled: true,
-        memoryEnabled: !!process.env.GRAPHITI_MCP_URL,
-        linearEnabled: !!process.env.LINEAR_API_KEY,
-      },
+      mcpOptions: buildSessionMcpOptions(projectPath, project, 'spec_orchestrator'),
       toolContext: {
         cwd: projectPath,
         projectDir: projectPath,
@@ -507,7 +622,7 @@ export class AgentManager extends EventEmitter {
       agentType: 'build_orchestrator' as const,
       systemPrompt,
       initialMessages,
-      maxSteps: 1000,
+      maxSteps: 250,
       specDir: worktreeSpecDir,
       projectDir: effectiveProjectDir,
       // When running in a worktree, sourceSpecDir points to the main project spec dir
@@ -519,11 +634,7 @@ export class AgentManager extends EventEmitter {
       baseURL: resolved.auth?.baseURL,
       configDir: resolved.configDir,
       oauthTokenFilePath: resolved.auth?.oauthTokenFilePath,
-      mcpOptions: {
-        context7Enabled: true,
-        memoryEnabled: !!process.env.GRAPHITI_MCP_URL,
-        linearEnabled: !!process.env.LINEAR_API_KEY,
-      },
+      mcpOptions: buildSessionMcpOptions(projectPath, project, 'build_orchestrator'),
       toolContext: {
         cwd: effectiveCwd,
         projectDir: effectiveProjectDir,
@@ -613,7 +724,7 @@ export class AgentManager extends EventEmitter {
       agentType: 'qa_reviewer',
       systemPrompt,
       initialMessages: qaInitialMessages,
-      maxSteps: 1000,
+      maxSteps: 200,
       specDir: effectiveSpecDir,
       projectDir: effectiveProjectDir,
       provider: resolved.provider,
@@ -622,11 +733,7 @@ export class AgentManager extends EventEmitter {
       baseURL: resolved.auth?.baseURL,
       configDir: resolved.configDir,
       oauthTokenFilePath: resolved.auth?.oauthTokenFilePath,
-      mcpOptions: {
-        context7Enabled: true,
-        memoryEnabled: !!process.env.GRAPHITI_MCP_URL,
-        linearEnabled: !!process.env.LINEAR_API_KEY,
-      },
+      mcpOptions: buildSessionMcpOptions(projectPath, project, 'qa_reviewer'),
       toolContext: {
         cwd: effectiveCwd,
         projectDir: effectiveProjectDir,
@@ -674,6 +781,134 @@ export class AgentManager extends EventEmitter {
     refresh: boolean = false
   ): void {
     this.queueManager.startIdeationGeneration(projectId, projectPath, config, refresh);
+  }
+
+  scheduleHumanReviewMerge(reason = 'scheduled', delayMs = 2500): void {
+    if (process.env.APERANT_AUTO_MERGE_HUMAN_REVIEW === 'false') return;
+    if (this.humanReviewMergeTimer) clearTimeout(this.humanReviewMergeTimer);
+    this.humanReviewMergeTimer = setTimeout(() => {
+      this.humanReviewMergeTimer = null;
+      this.mergeCompletedHumanReviewTasks(reason).catch((error) => {
+        console.error('[AgentManager] Human-review merge scan failed:', error);
+      });
+    }, delayMs);
+  }
+
+  private async mergeCompletedHumanReviewTasks(reason: string): Promise<void> {
+    if (this.humanReviewMergeInProgress) return;
+    this.humanReviewMergeInProgress = true;
+    try {
+      const projects = projectStore.getProjects();
+      for (const project of projects) {
+        const tasks = projectStore.getTasks(project.id);
+        for (const task of tasks) {
+          if (!this.shouldAutoMergeHumanReviewTask(task)) continue;
+          try {
+            const result = await this.mergeHumanReviewTask(project, task);
+            if (result.success) {
+              console.warn(`[AgentManager] Auto-merged human-review task ${task.specId} (${reason})${result.commitSha ? ` at ${result.commitSha}` : ''}`);
+            } else {
+              console.warn(`[AgentManager] Auto-merge skipped for ${task.specId}: ${result.message}`);
+            }
+          } catch (error) {
+            console.warn(`[AgentManager] Auto-merge failed for ${task.specId}:`, error);
+          }
+        }
+      }
+    } finally {
+      this.humanReviewMergeInProgress = false;
+    }
+  }
+
+  private shouldAutoMergeHumanReviewTask(task: Task): boolean {
+    if (task.status !== 'human_review' || task.reviewReason !== 'completed') return false;
+    if (this.isRunning(task.id)) return false;
+    if (!task.subtasks.length || task.subtasks.some((subtask) => subtask.status !== 'completed')) return false;
+    return true;
+  }
+
+  private async mergeHumanReviewTask(project: Project, task: Task): Promise<{ success: boolean; message: string; commitSha?: string }> {
+    const worktreePath = findTaskWorktree(project.path, task.specId);
+    if (!worktreePath || !existsSync(worktreePath)) {
+      return { success: false, message: 'No task worktree found' };
+    }
+
+    const baseBranch = task.metadata?.baseBranch || project.settings?.mainBranch || 'main';
+    const storageDir = path.join(project.path, project.autoBuildPath || '.auto-claude');
+    const orchestrator = new MergeOrchestrator({
+      projectDir: project.path,
+      storageDir,
+      enableAi: true,
+      aiResolver: createMergeResolverFn('haiku', 'low'),
+      dryRun: false,
+    });
+
+    const report = await orchestrator.mergeTask(task.specId, worktreePath, baseBranch);
+    if (!report.success) {
+      return { success: false, message: report.error ?? 'Merge failed' };
+    }
+
+    const mergedFilePaths = [...report.fileResults.entries()]
+      .filter(([, result]) => result.mergedContent !== undefined && result.decision !== MergeDecision.FAILED)
+      .map(([filePath]) => filePath);
+    if (mergedFilePaths.length === 0) {
+      return { success: false, message: 'Merge produced no files to apply' };
+    }
+
+    if (!orchestrator.applyToProject(report)) {
+      return { success: false, message: 'Failed to apply merged files to project directory' };
+    }
+
+    execFileSync(getToolPath('git'), ['add', '--', ...mergedFilePaths], {
+      cwd: project.path,
+      encoding: 'utf-8',
+      env: getIsolatedGitEnv(),
+    });
+
+    const stagedNames = execFileSync(getToolPath('git'), ['diff', '--cached', '--name-only', '--', ...mergedFilePaths], {
+      cwd: project.path,
+      encoding: 'utf-8',
+      env: getIsolatedGitEnv(),
+    }).trim();
+    if (!stagedNames) {
+      return { success: false, message: 'Merge applied but produced no staged changes' };
+    }
+
+    const commitTitle = String(task.title || task.specId).replace(/\s+/g, ' ').trim();
+    execFileSync(getToolPath('git'), ['commit', '-m', `Auto-merge ${task.specId}: ${commitTitle}`, '--', ...mergedFilePaths], {
+      cwd: project.path,
+      encoding: 'utf-8',
+      env: getIsolatedGitEnv(),
+    });
+
+    const commitSha = execFileSync(getToolPath('git'), ['rev-parse', '--short', 'HEAD'], {
+      cwd: project.path,
+      encoding: 'utf-8',
+      env: getIsolatedGitEnv(),
+    }).trim();
+
+    const specDir = path.join(project.path, getSpecsDir(project.autoBuildPath), task.specId);
+    const planPaths = [
+      path.join(specDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN),
+      path.join(worktreePath, getSpecsDir(project.autoBuildPath), task.specId, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN),
+    ];
+    for (const planPath of planPaths) {
+      if (existsSync(planPath)) updatePlanAfterAppMerge(planPath, 'done', 'completed', commitSha);
+    }
+
+    const cleanupResult = await cleanupWorktree({
+      worktreePath,
+      projectPath: project.path,
+      specId: task.specId,
+      logPrefix: '[AgentManager:auto-merge]',
+      deleteBranch: true,
+    });
+    if (!cleanupResult.success) {
+      console.warn(`[AgentManager] Auto-merge committed ${task.specId}, but worktree cleanup reported warnings:`, cleanupResult.warnings);
+    }
+
+    projectStore.invalidateTasksCache(project.id);
+    return { success: true, message: 'Merged successfully', commitSha };
   }
 
   /**
@@ -1045,7 +1280,7 @@ export class AgentManager extends EventEmitter {
    * when the prompt file is not found.
    */
   private buildDefaultSpecPrompt(taskDescription: string, specDir?: string): string {
-    return `You are a spec creation agent. Your job is to create a detailed specification and implementation plan for the following task:\n\n${taskDescription}${specDir ? `\n\nSpec directory: ${specDir}` : ''}\n\nCreate a spec.md with requirements and an implementation_plan.json with phases and subtasks.`;
+    return `You are a spec creation agent. Your job is to create a detailed specification and implementation plan for the following task:\n\n${taskDescription}${specDir ? `\n\nSpec directory: ${specDir}` : ''}\n\nCreate a spec.md with requirements and an implementation_plan.json with phases and subtasks.${APERANT_WORKFLOW_GUARD}`;
   }
 
   /**
@@ -1053,7 +1288,7 @@ export class AgentManager extends EventEmitter {
    * when the prompt file is not found.
    */
   private buildDefaultPlannerPrompt(specId: string, projectPath: string): string {
-    return `You are a planning agent. Your job is to review the spec and create an implementation plan for spec ${specId} in project ${projectPath}. Read the spec.md and create implementation_plan.json with phases and subtasks.`;
+    return `You are a planning agent. Your job is to review the spec and create an implementation plan for spec ${specId} in project ${projectPath}. Read the spec.md and create implementation_plan.json with phases and subtasks.${APERANT_WORKFLOW_GUARD}`;
   }
 
   /**
@@ -1061,7 +1296,7 @@ export class AgentManager extends EventEmitter {
    * when the prompt file is not found.
    */
   private buildDefaultQAPrompt(specId: string, projectPath: string): string {
-    return `You are a QA reviewer agent. Your job is to review the implementation of spec ${specId} in project ${projectPath}. Check that all requirements in spec.md are implemented correctly and write a qa_report.md with Status: PASSED or Status: FAILED.`;
+    return `You are a QA reviewer agent. Your job is to review the implementation of spec ${specId} in project ${projectPath}. Check that all requirements in spec.md are implemented correctly and write a qa_report.md with Status: PASSED or Status: FAILED.${APERANT_WORKFLOW_GUARD}`;
   }
 
   /**
@@ -1103,11 +1338,13 @@ export class AgentManager extends EventEmitter {
         parts.push('```json');
         parts.push(planContent);
         parts.push('```');
-        parts.push('');
-        parts.push('Resume implementing the pending/in-progress subtasks. Do NOT redo completed subtasks. Update each subtask status to "completed" in implementation_plan.json after finishing it.');
-      } else {
-        parts.push('No implementation plan exists yet. Start by creating implementation_plan.json with phases and subtasks, then implement each subtask.');
-      }
+	        parts.push('');
+	        parts.push('Resume implementing the pending/in-progress subtasks. Do NOT redo completed subtasks. Update each subtask status to "completed" in implementation_plan.json after finishing it.');
+	        parts.push(APERANT_WORKFLOW_GUARD);
+	      } else {
+	        parts.push('No implementation plan exists yet. Start by creating implementation_plan.json with phases and subtasks, then implement each subtask.');
+	        parts.push(APERANT_WORKFLOW_GUARD);
+	      }
     } catch {
       // Fall through
     }
@@ -1161,6 +1398,7 @@ export class AgentManager extends EventEmitter {
     }
 
     parts.push('Review the implementation against the specification. Check that all requirements are met, the code is correct, and tests pass. Write your findings to qa_report.md with "Status: PASSED" or "Status: FAILED" and a list of any issues found.');
+    parts.push(APERANT_WORKFLOW_GUARD);
 
     return [{ role: 'user', content: parts.join('\n') }];
   }

@@ -18,13 +18,28 @@
  */
 
 import path from 'path';
-import { readFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { AUTO_BUILD_PATHS, getSpecsDir } from '../../../shared/constants';
 import type { TaskStatus, Project, Task } from '../../../shared/types';
 import { projectStore } from '../../project-store';
 import type { TaskEventPayload } from '../../agent/task-event-schema';
 import { writeFileAtomicSync } from '../../utils/atomic-file';
 import { safeParseJson } from '../../utils/json-repair';
+import { getToolPath } from '../../cli-tool-manager';
+import { getIsolatedGitEnv } from '../../utils/git-isolation';
+import { findTaskWorktree } from '../../worktree-paths';
+import {
+  applyRuntimePhaseState,
+  applyTaskEventRuntimeState,
+  checkSubtasksCompletion,
+  copyRuntimeStateFromSourcePlan,
+  createApprovedQASignoffFromReport,
+  doneStatusHasIncompleteSubtasks,
+  isQASignoffApproved,
+  preserveCompletedSubtasks,
+  statusRequiresCompletedSubtasks,
+} from '../../task-plan-guards';
 
 // In-memory locks for plan file operations
 // Key: plan file path, Value: Promise chain for serializing operations
@@ -65,6 +80,14 @@ function isFileNotFoundError(err: unknown): boolean {
   return (err as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
+export function safeReadFileSync(filePath: string): string | null {
+  try {
+    return readFileSync(filePath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Get the plan file path for a task
  */
@@ -88,6 +111,8 @@ export function mapStatusToPlanStatus(status: TaskStatus): string {
       return 'review';
     case 'done':
       return 'completed';
+    case 'error':
+      return 'error';
     default:
       return 'pending';
   }
@@ -114,8 +139,22 @@ export async function persistPlanStatus(planPath: string, status: TaskStatus, pr
         return false;
       }
 
-      plan.status = status;
-      plan.planStatus = mapStatusToPlanStatus(status);
+      const doneGuard = status === 'done' || status === 'pr_created'
+        ? doneStatusHasIncompleteSubtasks(plan)
+        : { incomplete: false, completedCount: 0, totalCount: 0 };
+      const finalStatus = doneGuard.incomplete ? 'in_progress' : status;
+      plan.status = finalStatus;
+      plan.planStatus = mapStatusToPlanStatus(finalStatus);
+      if (finalStatus === 'in_progress') {
+        plan.xstateState = 'coding';
+        plan.executionPhase = 'coding';
+        plan.recoveryNote = `Blocked terminal status ${status}: ${doneGuard.completedCount}/${doneGuard.totalCount} subtasks complete.`;
+        delete plan.reviewReason;
+        delete plan.qa_signoff;
+        delete plan.final_acceptance;
+        delete plan.mergeCommit;
+        delete plan.mergedAt;
+      }
       plan.updated_at = new Date().toISOString();
 
       writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
@@ -174,8 +213,22 @@ export function persistPlanStatusSync(planPath: string, status: TaskStatus, proj
       return false;
     }
 
-    plan.status = status;
-    plan.planStatus = mapStatusToPlanStatus(status);
+    const doneGuard = status === 'done' || status === 'pr_created'
+      ? doneStatusHasIncompleteSubtasks(plan)
+      : { incomplete: false, completedCount: 0, totalCount: 0 };
+    const finalStatus = doneGuard.incomplete ? 'in_progress' : status;
+    plan.status = finalStatus;
+    plan.planStatus = mapStatusToPlanStatus(finalStatus);
+    if (finalStatus === 'in_progress') {
+      plan.xstateState = 'coding';
+      plan.executionPhase = 'coding';
+      plan.recoveryNote = `Blocked terminal status ${status}: ${doneGuard.completedCount}/${doneGuard.totalCount} subtasks complete.`;
+      delete plan.reviewReason;
+      delete plan.qa_signoff;
+      delete plan.final_acceptance;
+      delete plan.mergeCommit;
+      delete plan.mergedAt;
+    }
     plan.updated_at = new Date().toISOString();
 
     writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
@@ -217,6 +270,7 @@ export function persistPlanLastEventSync(planPath: string, event: TaskEventPaylo
       type: event.type,
       timestamp: event.timestamp
     };
+    applyTaskEventRuntimeState(plan, event.type);
     plan.updated_at = new Date().toISOString();
 
     writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
@@ -272,9 +326,24 @@ export function persistPlanStatusAndReasonSync(
       console.log(`[plan-file-utils] Creating minimal plan for XState persistence: ${planPath}`);
     }
 
-    plan.status = status;
-    plan.planStatus = mapStatusToPlanStatus(status);
-    plan.reviewReason = reviewReason;
+    const activeGuard = statusRequiresCompletedSubtasks(status, reviewReason)
+      ? doneStatusHasIncompleteSubtasks(plan)
+      : { incomplete: false, completedCount: 0, totalCount: 0 };
+    const finalStatus = activeGuard.incomplete ? 'in_progress' : status;
+    plan.status = finalStatus;
+    plan.planStatus = mapStatusToPlanStatus(finalStatus);
+    if (finalStatus === 'in_progress') {
+      delete plan.reviewReason;
+      delete plan.qa_signoff;
+      delete plan.final_acceptance;
+      delete plan.mergeCommit;
+      delete plan.mergedAt;
+      plan.recoveryNote = `Blocked terminal status ${status}: ${activeGuard.completedCount}/${activeGuard.totalCount} subtasks complete.`;
+    } else if (reviewReason !== undefined) {
+      plan.reviewReason = reviewReason;
+    } else {
+      delete plan.reviewReason;
+    }
     if (xstateState) {
       plan.xstateState = xstateState;
     }
@@ -347,6 +416,13 @@ export function persistPlanPhaseSync(
     if (mappedStatus) {
       plan.status = mappedStatus;
       plan.planStatus = mapStatusToPlanStatus(mappedStatus);
+      if (mappedStatus === 'in_progress') {
+        delete plan.reviewReason;
+        delete plan.qa_signoff;
+        delete plan.final_acceptance;
+        delete plan.mergeCommit;
+        delete plan.mergedAt;
+      }
     }
 
     plan.updated_at = new Date().toISOString();
@@ -580,7 +656,7 @@ export function updateTaskMetadataPrUrl(metadataPath: string, prUrl: string): bo
  */
 export function syncPlanPhasesToMainSync(
   mainPlanPath: string,
-  phases: unknown[],
+  sourcePlanOrPhases: unknown[] | Record<string, unknown>,
   projectId?: string
 ): boolean {
   try {
@@ -591,7 +667,16 @@ export function syncPlanPhasesToMainSync(
       return false;
     }
 
-    plan.phases = phases;
+    const sourcePlan = Array.isArray(sourcePlanOrPhases)
+      ? { phases: sourcePlanOrPhases }
+      : sourcePlanOrPhases;
+
+    preserveCompletedSubtasks(sourcePlan, plan);
+    plan.phases = sourcePlan.phases;
+    copyRuntimeStateFromSourcePlan(plan, sourcePlan);
+    if (typeof sourcePlan.executionPhase === 'string') {
+      applyRuntimePhaseState(plan, sourcePlan.executionPhase);
+    }
     plan.updated_at = new Date().toISOString();
 
     writeFileAtomicSync(mainPlanPath, JSON.stringify(plan, null, 2));
@@ -607,6 +692,263 @@ export function syncPlanPhasesToMainSync(
     }
     console.warn(`[plan-file-utils] Could not sync phases to ${mainPlanPath}:`, err);
     return false;
+  }
+}
+
+export function readApprovedQASignoffFromReportSync(specDir: string): Record<string, unknown> | null {
+  try {
+    const reportPath = path.join(specDir, AUTO_BUILD_PATHS.QA_REPORT);
+    const content = readFileSync(reportPath, 'utf-8');
+    const match = content.match(/(?:^|\n)\s*(?:\*\*)?\s*Status\s*:\s*(PASSED|PASS|APPROVED)\s*(?:\*\*)?/i);
+    return match ? createApprovedQASignoffFromReport('qa_report') : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getPlanPathsForSpec(project: Project, specId: string): string[] {
+  const specsBaseDir = getSpecsDir(project.autoBuildPath);
+  const paths = [
+    path.join(project.path, specsBaseDir, specId, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN)
+  ];
+  const worktreePath = findTaskWorktree(project.path, specId);
+  if (worktreePath) {
+    const worktreePlanPath = path.join(worktreePath, specsBaseDir, specId, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
+    if (!paths.includes(worktreePlanPath)) paths.push(worktreePlanPath);
+  }
+  return paths;
+}
+
+export function getApprovedQASignoffEvidence(
+  project: Project,
+  specId: string,
+  planPaths = getPlanPathsForSpec(project, specId)
+): { signoff: Record<string, unknown>; source: string } | null {
+  let hasCompletedPlan = false;
+  for (const planPath of planPaths) {
+    try {
+      const content = safeReadFileSync(planPath);
+      if (!content) continue;
+      const plan = safeParseJson<Record<string, unknown>>(content);
+      if (!plan) continue;
+      const { totalCount, completedCount } = checkSubtasksCompletion(plan);
+      if (totalCount > 0 && completedCount >= totalCount) hasCompletedPlan = true;
+      if (isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined)) {
+        return { signoff: plan.qa_signoff as Record<string, unknown>, source: planPath };
+      }
+    } catch {
+      // Keep searching other paths.
+    }
+  }
+  if (!hasCompletedPlan) return null;
+  for (const planPath of planPaths) {
+    const signoff = readApprovedQASignoffFromReportSync(path.dirname(planPath));
+    if (signoff) {
+      return { signoff, source: path.join(path.dirname(planPath), AUTO_BUILD_PATHS.QA_REPORT) };
+    }
+  }
+  return null;
+}
+
+export function persistApprovedQASignoffToPlansSync(
+  planPaths: string[],
+  signoff: Record<string, unknown>,
+  projectId?: string,
+  source = 'qa-report-recovery'
+): boolean {
+  let persisted = false;
+  const now = new Date().toISOString();
+  const normalizedSignoff = {
+    ...signoff,
+    status: 'approved',
+    issues_found: Array.isArray(signoff.issues_found) ? signoff.issues_found : [],
+    timestamp: signoff.timestamp || now,
+    source: signoff.source || source,
+  };
+
+  for (const planPath of planPaths) {
+    try {
+      const content = safeReadFileSync(planPath);
+      if (!content) continue;
+      const plan = safeParseJson<Record<string, unknown>>(content);
+      if (!plan) continue;
+      const { totalCount, completedCount } = checkSubtasksCompletion(plan);
+      if (totalCount === 0 || completedCount < totalCount) continue;
+
+      plan.qa_signoff = normalizedSignoff;
+      plan.status = 'human_review';
+      plan.planStatus = 'review';
+      plan.reviewReason = 'completed';
+      plan.xstateState = 'human_review';
+      plan.executionPhase = 'complete';
+      plan.lastEvent = { type: 'QA_PASSED', timestamp: now, source };
+      plan.updated_at = now;
+      writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+      persisted = true;
+    } catch (error) {
+      console.warn(`[plan-file-utils] Could not persist QA approval recovery to ${planPath}:`, error);
+    }
+  }
+
+  if (persisted && projectId) projectStore.invalidateTasksCache(projectId);
+  return persisted;
+}
+
+export function recoverApprovedQASignoffForSpec(project: Project, specId: string, source = 'qa-report-recovery'): boolean {
+  const planPaths = getPlanPathsForSpec(project, specId).filter((planPath) => existsSync(planPath));
+  if (planPaths.length === 0) return false;
+  const evidence = getApprovedQASignoffEvidence(project, specId, planPaths);
+  if (!evidence || !isQASignoffApproved(evidence.signoff)) return false;
+  const persisted = persistApprovedQASignoffToPlansSync(planPaths, evidence.signoff, project.id, source);
+  if (persisted) {
+    console.warn(`[plan-file-utils] Recovered QA approval for ${specId} from ${evidence.source}`);
+  }
+  return persisted;
+}
+
+function getNonAutoClaudeRepoState(projectDir: string): string {
+  try {
+    return execFileSync(getToolPath('git'), ['status', '--porcelain', '--untracked-files=all', '--', '.', ':(exclude).auto-claude'], {
+      cwd: projectDir,
+      encoding: 'utf-8',
+      env: getIsolatedGitEnv(),
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
+export async function repairFalseCompletedSubtasks(
+  planPath: string,
+  projectPath: string,
+  specId: string,
+  projectId?: string
+): Promise<{ success: boolean; resetCount: number }> {
+  return withPlanLock(planPath, async () => {
+    try {
+      const content = readFileSync(planPath, 'utf-8');
+      const plan = safeParseJson<Record<string, unknown>>(content);
+      if (!plan) return { success: false, resetCount: 0 };
+
+      const { allSubtasks, completedCount, totalCount } = checkSubtasksCompletion(plan);
+      if (totalCount === 0 || completedCount === 0) return { success: true, resetCount: 0 };
+      if (isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined) || plan.status === 'done' || plan.status === 'pr_created') {
+        return { success: true, resetCount: 0 };
+      }
+
+      const worktreePath = findTaskWorktree(projectPath, specId);
+      const executionPath = worktreePath || projectPath;
+      const repoState = getNonAutoClaudeRepoState(executionPath);
+      const failedOrReviewError = plan.status === 'error'
+        || plan.reviewReason === 'errors'
+        || plan.executionPhase === 'failed'
+        || /^QA_/.test((plan.lastEvent as { type?: string } | undefined)?.type || '');
+      if (repoState.length > 0 || !failedOrReviewError && plan.status !== 'in_progress') {
+        return { success: true, resetCount: 0 };
+      }
+
+      let resetCount = 0;
+      for (const subtask of allSubtasks) {
+        if (subtask.status === 'completed') {
+          subtask.status = 'pending';
+          subtask.started_at = null;
+          subtask.completed_at = null;
+          subtask.last_error = 'Recovered: prior completion had no non-.auto-claude repository changes.';
+          resetCount++;
+        }
+      }
+      if (resetCount === 0) return { success: true, resetCount: 0 };
+
+      plan.status = 'in_progress';
+      plan.planStatus = 'in_progress';
+      plan.xstateState = 'coding';
+      plan.executionPhase = 'coding';
+      delete plan.reviewReason;
+      plan.recoveryNote = `Reset ${resetCount} completed subtask(s) with no repository evidence at ${new Date().toISOString()}`;
+      plan.updated_at = new Date().toISOString();
+      writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+      if (projectId) projectStore.invalidateTasksCache(projectId);
+      console.warn(`[plan-file-utils] Repaired ${resetCount} false completed subtask(s) in ${planPath}`);
+      return { success: true, resetCount };
+    } catch (err) {
+      if (!isFileNotFoundError(err)) {
+        console.warn(`[plan-file-utils] Could not repair false completed subtasks at ${planPath}:`, err);
+      }
+      return { success: false, resetCount: 0 };
+    }
+  });
+}
+
+export async function repairFalseCompletedSubtasksForSpec(project: Project, specId: string): Promise<number> {
+  let totalReset = 0;
+  for (const planPath of getPlanPathsForSpec(project, specId)) {
+    if (!existsSync(planPath)) continue;
+    const result = await repairFalseCompletedSubtasks(planPath, project.path, specId, project.id);
+    if (result.success) totalReset += result.resetCount;
+  }
+  return totalReset;
+}
+
+export function taskNeedsQaResume(project: Project, specId: string): boolean {
+  try {
+    const planPath = path.join(project.path, getSpecsDir(project.autoBuildPath), specId, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
+    const content = safeReadFileSync(planPath);
+    if (!content) return false;
+    const plan = safeParseJson<Record<string, unknown>>(content);
+    if (!plan) return false;
+    const { allCompleted, totalCount } = checkSubtasksCompletion(plan);
+    const qaApproved = isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined);
+    return totalCount > 0 && allCompleted && !qaApproved && plan.status !== 'done' && plan.status !== 'pr_created';
+  } catch {
+    return false;
+  }
+}
+
+export function persistSpecQaReviewStateSync(project: Project, specId: string): boolean {
+  let persisted = false;
+  for (const planPath of getPlanPathsForSpec(project, specId)) {
+    if (!existsSync(planPath)) continue;
+    persisted = persistPlanStatusAndReasonSync(planPath, 'ai_review', undefined, project.id, 'qa_review', 'qa_review') || persisted;
+  }
+  return persisted;
+}
+
+export function updatePlanAfterAppMerge(planPath: string, status: TaskStatus, planStatus: string, commitSha?: string): void {
+  try {
+    const content = safeReadFileSync(planPath);
+    if (!content) return;
+    const plan = safeParseJson<Record<string, unknown>>(content);
+    if (!plan) return;
+    const doneGuard = status === 'done' || status === 'pr_created'
+      ? doneStatusHasIncompleteSubtasks(plan)
+      : { incomplete: false, completedCount: 0, totalCount: 0 };
+    if (doneGuard.incomplete) {
+      plan.status = 'in_progress';
+      plan.planStatus = 'in_progress';
+      plan.xstateState = 'coding';
+      plan.executionPhase = 'coding';
+      delete plan.reviewReason;
+      plan.recoveryNote = `App merge attempted ${status}, but only ${doneGuard.completedCount}/${doneGuard.totalCount} subtasks were completed; continuing implementation.`;
+    } else {
+      plan.status = status;
+      plan.planStatus = planStatus;
+      plan.xstateState = status;
+      plan.executionPhase = 'complete';
+      delete plan.reviewReason;
+      if (status === 'done' && Array.isArray(plan.phases)) {
+        for (const phase of plan.phases as Array<{ status?: string; subtasks?: Array<{ status?: string }> }>) {
+          if (Array.isArray(phase.subtasks) && phase.subtasks.length > 0 && phase.subtasks.every((subtask) => subtask.status === 'completed')) {
+            phase.status = 'completed';
+          }
+        }
+      }
+    }
+    plan.mergedAt = new Date().toISOString();
+    if (commitSha) plan.mergeCommit = commitSha;
+    plan.updated_at = new Date().toISOString();
+    writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+  } catch (err) {
+    console.warn(`[plan-file-utils] Could not update plan after app merge at ${planPath}:`, err);
   }
 }
 

@@ -195,6 +195,48 @@ app.on('child-process-gone', (_event, details) => {
 // Fixes: pty.node SIGABRT crash caused by environment teardown before PTY cleanup (GitHub #1469)
 let isQuitting = false;
 
+function getRendererIndexPath(): string {
+  return join(__dirname, '../renderer/index.html');
+}
+
+function isRendererAssetUrl(targetUrl: string): boolean {
+  try {
+    const parsed = new URL(targetUrl);
+    return parsed.protocol === 'file:' && /\/assets\/[^/]+\.(?:js|css|map)$/i.test(decodeURIComponent(parsed.pathname));
+  } catch {
+    return false;
+  }
+}
+
+function ensureRendererIndexNavigation(browserWindow: BrowserWindow): void {
+  const indexPath = getRendererIndexPath();
+  const loadIndex = (): void => {
+    browserWindow.loadFile(indexPath).catch((error) => {
+      console.warn('[main] Failed to load renderer index.html:', error);
+    });
+  };
+
+  browserWindow.webContents.on('will-navigate', (event, targetUrl) => {
+    if (!isRendererAssetUrl(targetUrl)) return;
+    console.warn('[main] Blocked renderer asset navigation:', targetUrl);
+    event.preventDefault();
+    loadIndex();
+  });
+
+  browserWindow.webContents.on('did-navigate', (_event, targetUrl) => {
+    if (!isRendererAssetUrl(targetUrl)) return;
+    console.warn('[main] Renderer landed on asset URL; restoring index.html:', targetUrl);
+    loadIndex();
+  });
+
+  browserWindow.webContents.on('did-finish-load', () => {
+    const currentUrl = browserWindow.webContents.getURL();
+    if (!isRendererAssetUrl(currentUrl)) return;
+    console.warn('[main] Renderer finished loading raw asset; restoring index.html:', currentUrl);
+    loadIndex();
+  });
+}
+
 function createWindow(): void {
   // Get the primary display's work area (accounts for taskbar, dock, etc.)
   // Wrapped in try/catch to handle potential failures with fallback to safe defaults
@@ -253,7 +295,9 @@ function createWindow(): void {
       backgroundThrottling: false, // Prevent terminal lag when window loses focus
       spellcheck: true // Enable spell check for text inputs
     }
-  });
+	  });
+
+	  ensureRendererIndexNavigation(mainWindow);
 
   // Show window when ready to avoid visual flash
   mainWindow.on('ready-to-show', () => {
@@ -367,12 +411,12 @@ function createWindow(): void {
     return { action: 'deny' };
   });
 
-  // Load the renderer
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL']);
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
-  }
+	  // Load the renderer
+	  if (is.dev && process.env['ELECTRON_RENDERER_URL'] && /^https?:\/\//i.test(process.env['ELECTRON_RENDERER_URL'])) {
+	    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL']);
+	  } else {
+	    mainWindow.loadFile(getRendererIndexPath());
+	  }
 
   // Open DevTools in development
   if (is.dev) {
@@ -537,8 +581,13 @@ app.whenReady().then(() => {
   // Setup IPC handlers
   setupIpcHandlers(agentManager, terminalManager, () => mainWindow);
 
-  // Create window
-  createWindow();
+	  // Create window
+	  createWindow();
+
+	  setTimeout(() => {
+	    agentManager?.runStartupRecoveryScan?.()
+	      .catch((error) => console.warn('[main] Startup recovery scan failed:', error));
+	  }, 2500);
 
   // Pre-warm CLI tool cache in background (non-blocking)
   // This ensures CLI detection is done before user needs it

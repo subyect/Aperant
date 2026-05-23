@@ -44,7 +44,6 @@ export const ALL_AVAILABLE_MODELS: ModelOption[] = [
   { value: 'opus-4.5', label: 'Claude Opus 4.5', provider: 'anthropic', description: 'Legacy', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 200000 } },
   { value: 'haiku', label: 'Claude Haiku 4.5', provider: 'anthropic', description: 'Fast', capabilities: { thinking: false, tools: true, vision: true, contextWindow: 200000 } },
   // OpenAI
-  { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', provider: 'openai', description: 'Agentic coding', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 1047576 } },
   { value: 'gpt-5.2', label: 'GPT-5.2', provider: 'openai', description: 'Flagship', apiKeyOnly: true, capabilities: { thinking: true, tools: true, vision: true, contextWindow: 400000 } },
   { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex', provider: 'openai', description: 'Coding', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 1047576 } },
   { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini', provider: 'openai', description: 'Fast coding', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 400000 } },
@@ -284,8 +283,8 @@ export const PROVIDER_PRESET_DEFINITIONS: Partial<Record<BuiltinProvider, Record
     quick:    { primaryModel: 'haiku',  primaryThinking: 'low',    phaseModels: { spec: 'haiku', planning: 'haiku', coding: 'haiku', qa: 'haiku' },     phaseThinking: { spec: 'low', planning: 'low', coding: 'low', qa: 'low' } },
   },
   openai: {
-    auto:     { primaryModel: 'gpt-5.3-codex', primaryThinking: 'high',   phaseModels: { spec: 'gpt-5.3-codex', planning: 'gpt-5.3-codex', coding: 'gpt-5.3-codex', qa: 'gpt-5.3-codex' }, phaseThinking: { spec: 'high', planning: 'high', coding: 'low', qa: 'low' } },
-    complex:  { primaryModel: 'gpt-5.3-codex', primaryThinking: 'xhigh',  phaseModels: { spec: 'gpt-5.3-codex', planning: 'gpt-5.3-codex', coding: 'gpt-5.3-codex', qa: 'gpt-5.3-codex' }, phaseThinking: { spec: 'xhigh', planning: 'xhigh', coding: 'xhigh', qa: 'xhigh' } },
+    auto:     { primaryModel: 'gpt-5.2-codex', primaryThinking: 'high',   phaseModels: { spec: 'gpt-5.2-codex', planning: 'gpt-5.2-codex', coding: 'gpt-5.2-codex', qa: 'gpt-5.2-codex' }, phaseThinking: { spec: 'high', planning: 'high', coding: 'low', qa: 'low' } },
+    complex:  { primaryModel: 'gpt-5.2-codex', primaryThinking: 'xhigh',  phaseModels: { spec: 'gpt-5.2-codex', planning: 'gpt-5.2-codex', coding: 'gpt-5.2-codex', qa: 'gpt-5.2-codex' }, phaseThinking: { spec: 'xhigh', planning: 'xhigh', coding: 'xhigh', qa: 'xhigh' } },
     balanced: { primaryModel: 'gpt-5.2-codex',  primaryThinking: 'medium', phaseModels: { spec: 'gpt-5.2-codex', planning: 'gpt-5.2-codex', coding: 'gpt-5.2-codex', qa: 'gpt-5.2-codex' }, phaseThinking: { spec: 'medium', planning: 'medium', coding: 'medium', qa: 'medium' } },
     quick:    { primaryModel: 'gpt-5.1-codex-mini', primaryThinking: 'low', phaseModels: { spec: 'gpt-5.1-codex-mini', planning: 'gpt-5.1-codex-mini', coding: 'gpt-5.1-codex-mini', qa: 'gpt-5.1-codex-mini' }, phaseThinking: { spec: 'low', planning: 'low', coding: 'low', qa: 'low' } },
   },
@@ -408,7 +407,7 @@ export const DEFAULT_MODEL_EQUIVALENCES: Record<string, Partial<Record<BuiltinPr
   // ── Anthropic shorthands ──────────────────────────────────────────────────
   'opus': {
     anthropic: { modelId: 'claude-opus-4-6', reasoning: { type: 'adaptive_effort', level: 'high' } },
-    openai: { modelId: 'gpt-5.3-codex', reasoning: { type: 'reasoning_effort', level: 'high' } },
+    openai: { modelId: 'gpt-5.2-codex', reasoning: { type: 'reasoning_effort', level: 'high' } },
     google: { modelId: 'gemini-2.5-pro', reasoning: { type: 'thinking_toggle', level: 'high' } },
     xai: { modelId: 'grok-4-0709', reasoning: { type: 'reasoning_effort', level: 'high' } },
     mistral: { modelId: 'mistral-large-latest', reasoning: { type: 'none' } },
@@ -418,7 +417,7 @@ export const DEFAULT_MODEL_EQUIVALENCES: Record<string, Partial<Record<BuiltinPr
   'glm-5': {
     zai: { modelId: 'glm-5', reasoning: { type: 'none' } },
     anthropic: { modelId: 'claude-opus-4-6', reasoning: { type: 'adaptive_effort', level: 'high' } },
-    openai: { modelId: 'gpt-5.3-codex', reasoning: { type: 'reasoning_effort', level: 'high' } },
+    openai: { modelId: 'gpt-5.2-codex', reasoning: { type: 'reasoning_effort', level: 'high' } },
   },
   'glm-4.7': {
     zai: { modelId: 'glm-4.7', reasoning: { type: 'none' } },
@@ -432,7 +431,7 @@ export const DEFAULT_MODEL_EQUIVALENCES: Record<string, Partial<Record<BuiltinPr
   },
   'opus-4.5': {
     anthropic: { modelId: 'claude-opus-4-5-20251101', reasoning: { type: 'thinking_tokens', level: 'high' } },
-    openai: { modelId: 'gpt-5.3-codex', reasoning: { type: 'reasoning_effort', level: 'high' } },
+    openai: { modelId: 'gpt-5.2-codex', reasoning: { type: 'reasoning_effort', level: 'high' } },
     google: { modelId: 'gemini-2.5-pro', reasoning: { type: 'thinking_toggle', level: 'high' } },
   },
   'sonnet': {
@@ -453,11 +452,6 @@ export const DEFAULT_MODEL_EQUIVALENCES: Record<string, Partial<Record<BuiltinPr
     zai: { modelId: 'glm-4.5-flash', reasoning: { type: 'none' } },
   },
   // ── OpenAI models ─────────────────────────────────────────────────────────
-  'gpt-5.3-codex': {
-    openai: { modelId: 'gpt-5.3-codex', reasoning: { type: 'reasoning_effort', level: 'high' } },
-    anthropic: { modelId: 'claude-opus-4-6', reasoning: { type: 'adaptive_effort', level: 'high' } },
-    google: { modelId: 'gemini-2.5-pro', reasoning: { type: 'thinking_toggle', level: 'high' } },
-  },
   'gpt-5.2': {
     openai: { modelId: 'gpt-5.2', reasoning: { type: 'reasoning_effort', level: 'high' } },
     anthropic: { modelId: 'claude-sonnet-4-6', reasoning: { type: 'thinking_tokens', level: 'high' } },
@@ -492,7 +486,7 @@ export const DEFAULT_MODEL_EQUIVALENCES: Record<string, Partial<Record<BuiltinPr
   'gemini-2.5-pro': {
     google: { modelId: 'gemini-2.5-pro', reasoning: { type: 'thinking_toggle', level: 'high' } },
     anthropic: { modelId: 'claude-opus-4-6', reasoning: { type: 'adaptive_effort', level: 'high' } },
-    openai: { modelId: 'gpt-5.3-codex', reasoning: { type: 'reasoning_effort', level: 'high' } },
+    openai: { modelId: 'gpt-5.2-codex', reasoning: { type: 'reasoning_effort', level: 'high' } },
   },
   'gemini-2.5-flash': {
     google: { modelId: 'gemini-2.5-flash', reasoning: { type: 'thinking_toggle', level: 'medium' } },
@@ -503,7 +497,7 @@ export const DEFAULT_MODEL_EQUIVALENCES: Record<string, Partial<Record<BuiltinPr
   'grok-4-0709': {
     xai: { modelId: 'grok-4-0709', reasoning: { type: 'reasoning_effort', level: 'high' } },
     anthropic: { modelId: 'claude-opus-4-6', reasoning: { type: 'adaptive_effort', level: 'high' } },
-    openai: { modelId: 'gpt-5.3-codex', reasoning: { type: 'reasoning_effort', level: 'high' } },
+    openai: { modelId: 'gpt-5.2-codex', reasoning: { type: 'reasoning_effort', level: 'high' } },
   },
   'grok-3-mini': {
     xai: { modelId: 'grok-3-mini', reasoning: { type: 'reasoning_effort', level: 'medium' } },

@@ -24,7 +24,7 @@ export interface DenseResult {
  * @param query - Query text to embed and search with
  * @param embeddingService - Service for computing query embedding
  * @param projectId - Scope search to this project
- * @param dims - Embedding dimension: 256 for fast candidate gen, 1024 for precision
+ * @param dims - Embedding dimension: 1024 for memory retrieval precision
  * @param limit - Maximum number of results to return
  */
 export async function searchDense(
@@ -32,7 +32,7 @@ export async function searchDense(
   query: string,
   embeddingService: EmbeddingService,
   projectId: string,
-  dims: 256 | 1024 = 256,
+  dims: 256 | 1024 = 1024,
   limit: number = 30,
 ): Promise<DenseResult[]> {
   const queryEmbedding = await embeddingService.embed(query, dims);

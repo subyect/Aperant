@@ -31,7 +31,7 @@ export const UI_SCALE_STEP = 5;
 export const DEFAULT_APP_SETTINGS = {
   theme: 'dark' as const,
   colorTheme: 'default' as const,
-  defaultModel: 'opus',
+  defaultModel: 'gpt-5.2-codex',
   agentFramework: 'auto-claude',
   pythonPath: undefined as string | undefined,
   gitPath: undefined as string | undefined,
@@ -78,7 +78,7 @@ export const DEFAULT_APP_SETTINGS = {
 // ============================================
 
 export const DEFAULT_PROJECT_SETTINGS = {
-  model: 'opus',
+  model: 'gpt-5.2-codex',
   memoryBackend: 'file' as const,
   linearSync: false,
   notifications: {

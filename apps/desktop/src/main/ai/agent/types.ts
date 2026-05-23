@@ -68,13 +68,17 @@ export interface SerializableSessionConfig {
     linearEnabled?: boolean;
     electronMcpEnabled?: boolean;
     puppeteerMcpEnabled?: boolean;
-    projectCapabilities?: {
-      is_electron?: boolean;
-      is_web_frontend?: boolean;
-    };
-    agentMcpAdd?: string;
-    agentMcpRemove?: string;
-  };
+	    projectCapabilities?: {
+	      is_electron?: boolean;
+	      is_web_frontend?: boolean;
+	    };
+	    memoryMcpUrl?: string;
+	    linearApiKey?: string;
+	    customMcpServers?: unknown[];
+	    customServerIds?: string[];
+	    agentMcpAdd?: string;
+	    agentMcpRemove?: string;
+	  };
   /** Enable agentic orchestration mode where the AI drives the pipeline via SpawnSubagent tool */
   useAgenticOrchestration?: boolean;
   /** Tool context serialized fields */

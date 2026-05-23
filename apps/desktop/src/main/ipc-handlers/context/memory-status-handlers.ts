@@ -1,5 +1,6 @@
-import { ipcMain } from 'electron';
+import { app, ipcMain } from 'electron';
 import type { BrowserWindow } from 'electron';
+import path from 'path';
 import { IPC_CHANNELS } from '../../../shared/constants';
 import type { IPCResult, MemorySystemStatus } from '../../../shared/types';
 import { projectStore } from '../../project-store';
@@ -9,16 +10,25 @@ import { getMemoryService, getEmbeddingProvider } from './memory-service-factory
  * Build memory system status by probing the libSQL database and embedding service.
  * Gracefully returns unavailable status if initialization fails.
  */
-export async function buildMemoryStatus(): Promise<MemorySystemStatus> {
+export async function buildMemoryStatus(projectId?: string): Promise<MemorySystemStatus> {
   try {
-    await getMemoryService();
+    const service = await getMemoryService();
     // If we got a service instance the DB and embedding layer are up
     const embeddingProvider = getEmbeddingProvider() ?? 'unknown';
+    const memories = await service.search({
+      ...(projectId ? { projectId } : {}),
+      limit: 100000,
+      excludeDeprecated: true,
+      sort: 'recency',
+    });
 
     return {
       enabled: true,
       available: true,
+      database: 'memory.db',
+      dbPath: path.join(app.getPath('userData'), 'memory.db'),
       embeddingProvider,
+      totalMemories: memories.length,
       ...(embeddingProvider === 'none' && {
         reason:
           'No embedding provider found. Install Ollama with an embedding model or set OPENAI_API_KEY.',
@@ -48,7 +58,7 @@ export function registerMemoryStatusHandlers(
       }
 
       try {
-        const memoryStatus = await buildMemoryStatus();
+        const memoryStatus = await buildMemoryStatus(_projectId);
         return { success: true, data: memoryStatus };
       } catch (error) {
         return {

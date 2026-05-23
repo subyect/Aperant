@@ -11,6 +11,13 @@ import { ensureAbsolutePath } from './utils/path-helpers';
 import { writeFileAtomicSync } from './utils/atomic-file';
 import { updateRoadmapFeatureOutcome, revertRoadmapFeatureOutcome } from './utils/roadmap-utils';
 import { safeParseJson } from './utils/json-repair';
+import {
+  applyRuntimePhaseState,
+  checkSubtasksCompletion,
+  doneStatusHasIncompleteSubtasks,
+  isQASignoffApproved,
+  statusRequiresCompletedSubtasks,
+} from './task-plan-guards';
 
 
 
@@ -522,11 +529,26 @@ export class ProjectStore {
           });
         }) || [];
 
+        const doneGuardResult = this.correctDoneTaskWithIncompleteSubtasks(
+          hasJsonError,
+          finalStatus,
+          finalReviewReason,
+          plan,
+          planPath,
+          dir.name
+        );
+
         // Auto-correct status to human_review if all subtasks are completed
         // This handles cases where task completed but app restarted before XState persisted the status
         // (e.g., QA_PASSED event emitted but not processed before shutdown)
         const { status: correctedStatus, reviewReason: correctedReviewReason } = this.correctStaleTaskStatus(
-          subtasks, hasJsonError, finalStatus, finalReviewReason, plan, planPath, dir.name
+          subtasks,
+          hasJsonError,
+          doneGuardResult.status,
+          doneGuardResult.reviewReason,
+          plan,
+          planPath,
+          dir.name
         );
 
         // Extract staged status from plan (set when changes are merged with --no-commit)
@@ -554,15 +576,7 @@ export class ProjectStore {
           }
         }
 
-        // Use persisted executionPhase (from text parser) or xstateState for exact restoration
-        // Priority: executionPhase > xstateState > inferred from status
-        const persistedPhase = (plan as { executionPhase?: string } | null)?.executionPhase as ExecutionPhase | undefined;
-        const xstateState = (plan as { xstateState?: string } | null)?.xstateState;
-        const executionProgress = persistedPhase
-          ? { phase: persistedPhase, phaseProgress: 50, overallProgress: 50 }
-          : xstateState
-            ? this.inferExecutionProgressFromXState(xstateState)
-            : this.inferExecutionProgress(plan?.status);
+        const executionProgress = this.resolveExecutionProgressFromPlan(plan, planPath, dir.name);
 
         tasks.push({
           id: dir.name, // Use spec directory name as ID
@@ -616,9 +630,9 @@ export class ProjectStore {
     const completedCount = subtasks.filter(s => s.status === 'completed').length;
     const allCompleted = completedCount === subtasks.length;
 
-    // Only auto-correct if all subtasks are done and status is in an incomplete coding state.
+    // Only auto-correct if all subtasks are done, QA already approved, and status is in an incomplete coding state.
     // Preserve ai_review (QA in progress), error (needs investigation), human_review, done, pr_created.
-    if (!allCompleted || finalStatus === 'human_review' || finalStatus === 'done' || finalStatus === 'pr_created' || finalStatus === 'ai_review' || finalStatus === 'error') {
+    if (!allCompleted || !isQASignoffApproved((plan as unknown as { qa_signoff?: Record<string, unknown> } | null)?.qa_signoff) || finalStatus === 'human_review' || finalStatus === 'done' || finalStatus === 'pr_created' || finalStatus === 'ai_review' || finalStatus === 'error') {
       return { status: finalStatus, reviewReason: finalReviewReason };
     }
 
@@ -660,6 +674,56 @@ export class ProjectStore {
     }
 
     return { status: 'human_review', reviewReason: 'completed' };
+  }
+
+  private correctDoneTaskWithIncompleteSubtasks(
+    hasJsonError: boolean,
+    finalStatus: TaskStatus,
+    finalReviewReason: ReviewReason | undefined,
+    plan: ImplementationPlan | null,
+    planPath: string,
+    taskName: string
+  ): { status: TaskStatus; reviewReason: ReviewReason | undefined } {
+    if (hasJsonError || !plan || !statusRequiresCompletedSubtasks(finalStatus, finalReviewReason)) {
+      return { status: finalStatus, reviewReason: finalReviewReason };
+    }
+
+    const doneGuard = doneStatusHasIncompleteSubtasks(plan as unknown as Record<string, unknown>);
+    if (!doneGuard.incomplete) {
+      return { status: finalStatus, reviewReason: finalReviewReason };
+    }
+
+    const { allCompleted } = checkSubtasksCompletion(plan as unknown as Record<string, unknown>);
+    const correctedPlan = plan as unknown as Record<string, unknown>;
+    if (allCompleted && Array.isArray(correctedPlan.phases)) {
+      for (const phase of correctedPlan.phases as Array<{ status?: string; subtasks?: Array<{ status?: string }> }>) {
+        if (Array.isArray(phase.subtasks) && phase.subtasks.length > 0 && phase.subtasks.every((subtask) => subtask.status === 'completed')) {
+          phase.status = 'completed';
+        }
+      }
+      console.warn(`[ProjectStore] Preserving completed task ${taskName}: all subtasks are complete but QA signoff has not been recovered yet.`);
+      return { status: finalStatus, reviewReason: finalReviewReason };
+    }
+
+    correctedPlan.status = 'in_progress';
+    correctedPlan.planStatus = 'in_progress';
+    correctedPlan.xstateState = 'coding';
+    correctedPlan.executionPhase = 'coding';
+    correctedPlan.recoveryNote = `Recovered from stale done status with ${doneGuard.completedCount}/${doneGuard.totalCount} completed subtasks at ${new Date().toISOString()}`;
+    delete correctedPlan.reviewReason;
+    delete correctedPlan.qa_signoff;
+    delete correctedPlan.final_acceptance;
+    correctedPlan.updated_at = new Date().toISOString();
+
+    try {
+      writeFileAtomicSync(planPath, JSON.stringify(correctedPlan, null, 2));
+      Object.assign(plan, correctedPlan);
+      console.warn(`[ProjectStore] Corrected stale terminal status for ${taskName}; continuing implementation.`);
+      return { status: 'in_progress', reviewReason: undefined };
+    } catch (writeError) {
+      console.error(`[ProjectStore] Failed to persist incomplete terminal correction for ${taskName}:`, writeError);
+      return { status: finalStatus, reviewReason: finalReviewReason };
+    }
   }
 
   /**
@@ -764,6 +828,50 @@ export class ProjectStore {
       phaseProgress: phase === 'complete' ? 100 : 50,
       overallProgress: phase === 'complete' ? 100 : 50
     };
+  }
+
+  private resolveExecutionProgressFromPlan(
+    plan: ImplementationPlan | null,
+    planPath: string,
+    taskName: string
+  ): { phase: ExecutionPhase; phaseProgress: number; overallProgress: number } | undefined {
+    if (!plan) return undefined;
+
+    const mutablePlan = plan as unknown as Record<string, unknown>;
+    let persistedPhase = mutablePlan.executionPhase as ExecutionPhase | undefined;
+    const lastEvent = mutablePlan.lastEvent as { type?: string } | undefined;
+    if (!persistedPhase && typeof lastEvent?.type === 'string') {
+      const eventToPhase: Record<string, ExecutionPhase> = {
+        PLANNING_STARTED: 'planning',
+        CODING_STARTED: 'coding',
+        ALL_SUBTASKS_DONE: 'qa_review',
+        QA_STARTED: 'qa_review',
+        QA_FAILED: 'qa_fixing',
+        QA_FIXING_STARTED: 'qa_fixing',
+        QA_FIXING_COMPLETE: 'coding',
+        QA_PASSED: 'complete',
+        PLANNING_FAILED: 'failed',
+        CODING_FAILED: 'failed',
+        QA_MAX_ITERATIONS: 'failed',
+        QA_AGENT_ERROR: 'failed',
+      };
+      persistedPhase = eventToPhase[lastEvent.type];
+      if (persistedPhase && applyRuntimePhaseState(mutablePlan, persistedPhase)) {
+        mutablePlan.updated_at = new Date().toISOString();
+        try {
+          writeFileAtomicSync(planPath, JSON.stringify(mutablePlan, null, 2));
+        } catch (error) {
+          console.warn(`[ProjectStore] Failed to persist phase repair for ${taskName}:`, error);
+        }
+      }
+    }
+
+    const xstateState = mutablePlan.xstateState as string | undefined;
+    return persistedPhase
+      ? { phase: persistedPhase, phaseProgress: persistedPhase === 'complete' ? 100 : 50, overallProgress: persistedPhase === 'complete' ? 100 : 50 }
+      : xstateState
+        ? this.inferExecutionProgressFromXState(xstateState)
+        : this.inferExecutionProgress(plan.status);
   }
 
   /**

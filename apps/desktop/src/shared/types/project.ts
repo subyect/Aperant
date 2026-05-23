@@ -147,6 +147,7 @@ export interface MemorySystemStatus {
   database?: string;
   dbPath?: string;
   embeddingProvider?: string;
+  totalMemories?: number;
   reason?: string;
 }
 

@@ -16,6 +16,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createSimpleClient } from '../client/factory';
+import { shouldUseOpenAIInstructions } from '../providers/openai-instructions';
 import { buildToolRegistry } from '../tools/build-registry';
 import type { ToolContext } from '../tools/types';
 import type { ModelShorthand, ThinkingLevel } from '../config/types';
@@ -268,8 +269,7 @@ export async function runInsightsQuery(
   let responseText = '';
 
   // Detect Codex models — they require instructions via providerOptions, not system
-  const insightsModelId = typeof client.model === 'string' ? client.model : client.model.modelId;
-  const isCodexInsights = insightsModelId?.includes('codex') ?? false;
+  const isCodexInsights = shouldUseOpenAIInstructions(client);
 
   try {
     const result = streamText({

@@ -62,7 +62,7 @@ export class RetrievalPipeline {
     // Stage 1: Parallel candidate generation from all three paths
     const [bm25Results, denseResults, graphResults] = await Promise.all([
       searchBM25(this.db, query, config.projectId, 20),
-      searchDense(this.db, query, this.embeddingService, config.projectId, 256, 30),
+      searchDense(this.db, query, this.embeddingService, config.projectId, 1024, 30),
       searchGraph(this.db, config.recentFiles ?? [], config.projectId, 15),
     ]);
 

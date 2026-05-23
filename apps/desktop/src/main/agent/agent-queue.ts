@@ -20,6 +20,13 @@ import { runRoadmapGeneration } from '../ai/runners/roadmap';
 import type { RoadmapStreamEvent } from '../ai/runners/roadmap';
 import type { ModelShorthand, ThinkingLevel } from '../ai/config/types';
 import { resolvePromptsDir } from '../ai/prompts/prompt-loader';
+import {
+  ensureIdeationSessionFile,
+  filterIdeationTypeFileAgainstExistingTasks,
+  getIdeationTypeOutputFileName,
+  synthesizeIdeationFromTypeFiles,
+  writeIdeationFile,
+} from '../ipc-handlers/ideation/file-utils';
 
 /**
  * Queue management for ideation and roadmap generation
@@ -214,8 +221,9 @@ export class AgentQueueManager {
       queueProcessType: 'ideation'
     });
 
-    // Track progress
-    const completedTypes = new Set<string>();
+	    // Track progress
+	    const completedTypes = new Set<string>();
+	    const failedTypes = new Set<string>();
     const enabledTypes = config.enabledTypes.length > 0
       ? config.enabledTypes
       : [...IDEATION_TYPES];
@@ -275,9 +283,10 @@ export class AgentQueueManager {
           debugLog('[Agent Queue] Ideation type completed:', { projectId, ideationType });
 
           // Load and emit type-specific ideas
-          const typeFilePath = path.join(outputDir, `${ideationType}_ideas.json`);
-          try {
-            const content = await fsPromises.readFile(typeFilePath, 'utf-8');
+	          const typeFilePath = path.join(outputDir, getIdeationTypeOutputFileName(ideationType));
+	          try {
+	            filterIdeationTypeFileAgainstExistingTasks(projectPath, typeFilePath, ideationType);
+	            const content = await fsPromises.readFile(typeFilePath, 'utf-8');
             const data: Record<string, RawIdea[]> = JSON.parse(content);
             const rawIdeas: RawIdea[] = data[ideationType] || [];
             const ideas: Idea[] = rawIdeas.map(transformIdeaFromSnakeCase);
@@ -286,9 +295,10 @@ export class AgentQueueManager {
             debugError('[Agent Queue] Failed to load ideas for type:', ideationType, err);
             this.emitter.emit('ideation-type-complete', projectId, ideationType, []);
           }
-        } else {
-          debugError('[Agent Queue] Ideation type failed:', { projectId, ideationType, error: result.error });
-          this.emitter.emit('ideation-type-failed', projectId, ideationType);
+	        } else {
+	          debugError('[Agent Queue] Ideation type failed:', { projectId, ideationType, error: result.error });
+	          failedTypes.add(ideationType);
+	          this.emitter.emit('ideation-type-failed', projectId, ideationType);
 
           // Check for rate limit
           if (result.error) {
@@ -304,10 +314,11 @@ export class AgentQueueManager {
           debugLog('[Agent Queue] Ideation type aborted:', ideationType);
           break;
         }
-        debugError('[Agent Queue] Ideation type error:', { ideationType, err });
-        this.emitter.emit('ideation-type-failed', projectId, ideationType);
-      }
-    }
+	        debugError('[Agent Queue] Ideation type error:', { ideationType, err });
+	        failedTypes.add(ideationType);
+	        this.emitter.emit('ideation-type-failed', projectId, ideationType);
+	      }
+	    }
 
     // Clean up
     this.abortControllers.delete(`ideation:${projectId}`);
@@ -323,13 +334,18 @@ export class AgentQueueManager {
       phase: 'complete',
       progress: 100,
       message: 'Ideation generation complete',
-      completedTypes: Array.from(completedTypes)
-    });
+	      completedTypes: Array.from(completedTypes),
+	      failedTypes: Array.from(failedTypes)
+	    });
 
-    // Load and emit the complete ideation session
-    try {
-      const ideationFilePath = path.join(outputDir, 'ideation.json');
-      if (existsSync(ideationFilePath)) {
+	    // Load and emit the complete ideation session
+	    try {
+	      const ideationFilePath = path.join(outputDir, 'ideation.json');
+	      const synthesized = synthesizeIdeationFromTypeFiles(projectPath) || ensureIdeationSessionFile(projectPath);
+	      if (synthesized) {
+	        writeIdeationFile(ideationFilePath, synthesized);
+	      }
+	      if (existsSync(ideationFilePath)) {
         const content = await fsPromises.readFile(ideationFilePath, 'utf-8');
         const rawSession = JSON.parse(content);
         const session = transformSessionFromSnakeCase(rawSession, projectId);

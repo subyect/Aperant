@@ -15,10 +15,12 @@ export interface AgentProcess {
   startedAt: Date;
   projectPath?: string; // For ideation processes to load session on completion
   spawnId: number; // Unique ID to identify this specific spawn
-  queueProcessType?: QueueProcessType; // Type of queue process (ideation or roadmap)
-  /** Worker thread instance for TypeScript AI SDK agent execution */
-  worker?: Worker | null;
-}
+	  queueProcessType?: QueueProcessType; // Type of queue process (ideation or roadmap)
+	  projectId?: string;
+	  processType?: ProcessType;
+	  /** Worker thread instance for TypeScript AI SDK agent execution */
+	  worker?: Worker | null;
+	}
 
 export interface ExecutionProgressData {
   phase: ExecutionPhase;
@@ -87,9 +89,10 @@ export interface SpecCreationMetadata {
 export interface IdeationProgressData {
   phase: string;
   progress: number;
-  message: string;
-  completedTypes?: string[];
-}
+	  message: string;
+	  completedTypes?: string[];
+	  failedTypes?: string[];
+	}
 
 export interface RoadmapProgressData {
   phase: string;

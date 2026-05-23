@@ -6,11 +6,13 @@ import type { Project, Task, TaskStatus, ReviewReason, ExecutionPhase } from '..
 import { taskMachine, XSTATE_TO_PHASE, mapStateToLegacy, type TaskEvent } from '../shared/state-machines';
 import { IPC_CHANNELS } from '../shared/constants';
 import { safeSendToRenderer } from './ipc-handlers/utils';
-import { getPlanPath, persistPlanStatusAndReasonSync } from './ipc-handlers/task/plan-file-utils';
+import { getPlanPath, persistPlanStatusAndReasonSync, safeReadFileSync } from './ipc-handlers/task/plan-file-utils';
 import { findTaskWorktree } from './worktree-paths';
 import { getSpecsDir, AUTO_BUILD_PATHS } from '../shared/constants';
 import { existsSync } from 'fs';
 import path from 'path';
+import { doneStatusHasIncompleteSubtasks, statusRequiresCompletedSubtasks } from './task-plan-guards';
+import { safeParseJson } from './utils/json-repair';
 
 type TaskActor = ActorRefFrom<typeof taskMachine>;
 
@@ -179,6 +181,13 @@ export class TaskStateManager {
   prepareForRestart(taskId: string): void {
     this.terminalEventSeen.delete(taskId);
     this.lastSequenceByTask.delete(taskId);
+    this.lastStateByTask.delete(taskId);
+    this.taskContextById.delete(taskId);
+    const actor = this.actors.get(taskId);
+    if (actor) {
+      actor.stop();
+      this.actors.delete(taskId);
+    }
   }
 
   clearTask(taskId: string): void {
@@ -255,6 +264,11 @@ export class TaskStateManager {
         contextReviewReason: snapshot.context.reviewReason
       });
 
+      if (lastState === undefined) {
+        this.lastStateByTask.set(taskId, stateValue);
+        return;
+      }
+
       if (lastState === stateValue) {
         return;
       }
@@ -266,10 +280,12 @@ export class TaskStateManager {
         return;
       }
       const { task, project } = contextEntry;
-      const { status, reviewReason } = mapStateToLegacy(
+      const legacy = mapStateToLegacy(
         stateValue,
         snapshot.context.reviewReason
       );
+      const coerced = this.coerceDoneStatus(task, project, legacy.status, legacy.reviewReason);
+      const { status, reviewReason } = coerced;
 
       // Map XState state to execution phase for persistence
       const executionPhase = this.mapStateToExecutionPhase(stateValue);
@@ -315,6 +331,28 @@ export class TaskStateManager {
     if (existsSync(worktreePlanPath)) {
       persistPlanStatusAndReasonSync(worktreePlanPath, status, reviewReason, project.id, xstateState, executionPhase);
     }
+  }
+
+  private coerceDoneStatus(
+    task: Task,
+    project: Project,
+    status: TaskStatus,
+    reviewReason?: ReviewReason
+  ): { status: TaskStatus; reviewReason?: ReviewReason } {
+    if (!statusRequiresCompletedSubtasks(status, reviewReason)) {
+      return { status, reviewReason };
+    }
+
+    const planPath = getPlanPath(project, task);
+    const content = safeReadFileSync(planPath);
+    if (!content) return { status, reviewReason };
+    const plan = safeParseJson<Record<string, unknown>>(content);
+    if (!plan) return { status, reviewReason };
+
+    const doneGuard = doneStatusHasIncompleteSubtasks(plan);
+    if (!doneGuard.incomplete) return { status, reviewReason };
+
+    return { status: 'in_progress', reviewReason: undefined };
   }
 
   /**

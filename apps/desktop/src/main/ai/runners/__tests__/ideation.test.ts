@@ -20,10 +20,12 @@ vi.mock('../../client/factory', () => ({
 // Mock filesystem: prompt files exist by default
 const mockExistsSync = vi.fn();
 const mockReadFileSync = vi.fn();
+const mockStatSync = vi.fn();
 
 vi.mock('node:fs', () => ({
   existsSync: (...args: unknown[]) => mockExistsSync(...args),
   readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
+  statSync: (...args: unknown[]) => mockStatSync(...args),
 }));
 
 // Mock the tool registry so we don't need real tool initialization
@@ -88,7 +90,14 @@ describe('runIdeation', () => {
     mockCreateSimpleClient.mockResolvedValue(makeMockClient());
     // Prompt file exists and has content by default
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue('Analyze the codebase for improvements.');
+    mockReadFileSync.mockImplementation((filePath: unknown) => {
+      const path = String(filePath);
+      if (path.endsWith('_ideas.json')) {
+        return JSON.stringify({ code_improvements: [{ title: 'Idea', description: 'Generated idea' }] });
+      }
+      return 'Analyze the codebase for improvements.';
+    });
+    mockStatSync.mockReturnValue({ mtimeMs: Date.now() });
   });
 
   // ---------------------------------------------------------------------------

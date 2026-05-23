@@ -8,7 +8,7 @@ import { AUTO_BUILD_PATHS } from '../../../shared/constants';
 import type { IPCResult, IdeationSession } from '../../../shared/types';
 import { projectStore } from '../../project-store';
 import { transformIdeaFromSnakeCase } from './transformers';
-import { readIdeationFile } from './file-utils';
+import { ensureIdeationSessionFile, filterIdeationSessionAgainstExistingTasks, readIdeationFile, writeIdeationFile } from './file-utils';
 
 /**
  * Get ideation session for a project
@@ -28,12 +28,17 @@ export async function getIdeationSession(
     AUTO_BUILD_PATHS.IDEATION_FILE
   );
 
-  const rawIdeation = readIdeationFile(ideationPath);
+  let rawIdeation = readIdeationFile(ideationPath) || ensureIdeationSessionFile(project.path);
   if (!rawIdeation) {
     return { success: true, data: null };
   }
 
   try {
+    const filtered = filterIdeationSessionAgainstExistingTasks(project.path, rawIdeation);
+    rawIdeation = filtered.session;
+    if (filtered.removed.length > 0) {
+      writeIdeationFile(ideationPath, rawIdeation);
+    }
     // Transform snake_case to camelCase for frontend
     const enabledTypes = (rawIdeation.config?.enabled_types || rawIdeation.config?.enabledTypes || []) as unknown[];
 

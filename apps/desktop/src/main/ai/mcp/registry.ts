@@ -132,6 +132,8 @@ export interface McpRegistryOptions {
   linearApiKey?: string;
   /** Environment variables for server processes */
   env?: Record<string, string>;
+  /** Custom MCP server definitions from project settings */
+  customMcpServers?: McpServerConfig[];
 }
 
 /**
@@ -175,15 +177,15 @@ export function getMcpServerConfig(
     case 'puppeteer':
       return PUPPETEER_SERVER;
 
-    case 'auto-claude': {
-      const specDir = options.specDir ?? '';
-      return createAutoClaudeServer(specDir);
-    }
+	    case 'auto-claude': {
+	      const specDir = options.specDir ?? '';
+	      return createAutoClaudeServer(specDir);
+	    }
 
-    default:
-      return null;
-  }
-}
+	    default:
+	      return options.customMcpServers?.find((server) => server.id === serverId) ?? null;
+	  }
+	}
 
 /**
  * Resolve MCP server configurations for a list of server IDs.

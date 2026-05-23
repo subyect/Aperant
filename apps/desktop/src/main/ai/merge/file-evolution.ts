@@ -154,6 +154,54 @@ function tryRunGit(args: string[], cwd: string): string | null {
   }
 }
 
+function tryRunGitRaw(args: string[], cwd: string): string {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  return result.status === 0 ? result.stdout : '';
+}
+
+function splitGitNulOutput(output: string): string[] {
+  if (!output) return [];
+  return output.split('\0').map((entry) => entry.trim()).filter(Boolean);
+}
+
+function isMergeCandidatePath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!normalized) return false;
+  const parts = normalized.split('/');
+  const excludedParts = new Set([
+    '.git',
+    '.auto-claude',
+    'node_modules',
+    '.next',
+    'dist',
+    'coverage',
+    '.turbo',
+    '.pytest_cache',
+    '__pycache__',
+  ]);
+  if (parts.some((part) => excludedParts.has(part))) return false;
+  const basename = path.basename(normalized);
+  if (basename === '.gitignore' || basename === '.dockerignore' || basename === 'Dockerfile' || basename === 'Makefile') {
+    return true;
+  }
+  return DEFAULT_EXTENSIONS.has(path.extname(normalized).toLowerCase());
+}
+
+function listUntrackedMergeCandidateFiles(worktreePath: string): string[] {
+  const output = tryRunGitRaw([
+    'ls-files',
+    '--others',
+    '--exclude-standard',
+    '-z',
+    '--',
+    '.',
+    ':(exclude).auto-claude',
+  ], worktreePath);
+  return splitGitNulOutput(output)
+    .map((entry) => entry.replace(/\\/g, '/'))
+    .filter(isMergeCandidatePath);
+}
+
 function getCurrentCommit(cwd: string): string {
   return tryRunGit(['rev-parse', 'HEAD'], cwd) ?? 'unknown';
 }
@@ -353,7 +401,12 @@ export class FileEvolutionTracker {
       for (const f of staged.split('\n')) { if (f) changedFileSet.add(f); }
     }
 
-    const changedFiles = [...changedFileSet];
+    // 4. Untracked source files created by the task.
+    for (const f of listUntrackedMergeCandidateFiles(worktreePath)) {
+      changedFileSet.add(f);
+    }
+
+    const changedFiles = [...changedFileSet].filter(isMergeCandidatePath);
 
     for (const filePath of changedFiles) {
       try {

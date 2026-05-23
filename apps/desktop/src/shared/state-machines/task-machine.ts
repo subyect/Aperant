@@ -71,6 +71,7 @@ export const taskMachine = createMachine(
           ALL_SUBTASKS_DONE: 'qa_review',
           // Fallback: if QA_STARTED arrives while in planning, go to qa_review
           QA_STARTED: 'qa_review',
+          QA_FIXING_STARTED: 'qa_fixing',
           // Fallback: if QA_PASSED arrives while in planning (entire build completed), go to human_review
           QA_PASSED: { target: 'human_review', actions: 'setReviewReasonCompleted' },
           PLANNING_FAILED: { target: 'error', actions: ['setReviewReasonErrors', 'setError'] },
@@ -91,6 +92,7 @@ export const taskMachine = createMachine(
       coding: {
         on: {
           QA_STARTED: 'qa_review',
+          QA_FIXING_STARTED: 'qa_fixing',
           // ALL_SUBTASKS_DONE means coder finished but QA hasn't started yet
           // Transition to qa_review - QA will emit QA_PASSED or QA_FAILED
           ALL_SUBTASKS_DONE: 'qa_review',
@@ -107,6 +109,7 @@ export const taskMachine = createMachine(
       qa_review: {
         on: {
           QA_FAILED: 'qa_fixing',
+          QA_FIXING_STARTED: 'qa_fixing',
           QA_PASSED: { target: 'human_review', actions: 'setReviewReasonCompleted' },
           QA_MAX_ITERATIONS: { target: 'error', actions: 'setReviewReasonErrors' },
           QA_AGENT_ERROR: { target: 'error', actions: 'setReviewReasonErrors' },
@@ -117,6 +120,8 @@ export const taskMachine = createMachine(
       qa_fixing: {
         on: {
           QA_FIXING_COMPLETE: 'qa_review',
+          QA_STARTED: 'qa_review',
+          QA_FIXING_STARTED: 'qa_fixing',
           QA_FAILED: { target: 'human_review', actions: 'setReviewReasonQaRejected' },
           QA_PASSED: { target: 'human_review', actions: 'setReviewReasonCompleted' },
           QA_MAX_ITERATIONS: { target: 'error', actions: 'setReviewReasonErrors' },

@@ -546,7 +546,9 @@ export class AgentProcessManager {
       taskId,
       process: null, // Will be set after spawn() call completes below
       startedAt: new Date(),
-      spawnId
+      spawnId,
+      projectId,
+      processType,
     });
 
     const env = this.setupProcessEnvironment(extraEnv);
@@ -850,6 +852,8 @@ export class AgentProcessManager {
       process: null, // No ChildProcess for worker threads
       startedAt: new Date(),
       spawnId,
+      projectId,
+      processType,
       worker: null, // Will be set after bridge.spawn()
     });
 
@@ -931,7 +935,7 @@ export class AgentProcessManager {
 
     // Emit initial progress
     this.emitter.emit('execution-progress', taskId, {
-      phase: processType === 'spec-creation' ? 'planning' : 'planning',
+      phase: processType === 'spec-creation' ? 'planning' : processType === 'qa-process' ? 'qa_review' : 'coding',
       phaseProgress: 0,
       overallProgress: 0,
       message: 'Starting AI agent session...',

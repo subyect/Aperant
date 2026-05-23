@@ -24,6 +24,7 @@ import { StepMemoryState } from '../memory/injection/step-memory-state';
 import { buildMemoryAwareStopCondition } from '../memory/injection/memory-stop-condition';
 
 import { buildThinkingProviderOptions } from '../config/types';
+import { shouldUseOpenAIInstructions } from '../providers/openai-instructions';
 import { createStreamHandler } from './stream-handler';
 import type { FullStreamPart } from './stream-handler';
 import { classifyError, isAuthenticationError, isRateLimitError } from './error-classifier';
@@ -338,7 +339,7 @@ async function executeStream(
   // `instructions` in the request body instead of system messages in `input`.
   // Pass system prompt via providerOptions and enable store for proper Codex API behavior.
   const modelId = typeof config.model === 'string' ? config.model : config.model.modelId;
-  const isCodex = modelId?.includes('codex') ?? false;
+  const isCodex = shouldUseOpenAIInstructions({ model: config.model });
   const isAnthropicModel = modelId?.startsWith('claude-') ?? false;
 
   // Compute thinking/reasoning provider options from session config

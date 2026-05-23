@@ -678,7 +678,7 @@ export class MergeOrchestrator {
 
     let success = true;
     for (const [filePath, result] of report.fileResults) {
-      if (result.mergedContent && result.decision !== MergeDecision.FAILED) {
+      if (result.mergedContent !== undefined && result.decision !== MergeDecision.FAILED) {
         const targetPath = path.join(this.projectDir, filePath);
         fs.mkdirSync(path.dirname(targetPath), { recursive: true });
         try {

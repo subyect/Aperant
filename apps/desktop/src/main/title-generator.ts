@@ -3,6 +3,7 @@ import { streamText } from 'ai';
 import { createSimpleClient } from './ai/client/factory';
 import { getActiveProviderFeatureSettings } from './ipc-handlers/feature-settings-helper';
 import { safeBreadcrumb, safeCaptureException } from './sentry';
+import { shouldUseOpenAIInstructions } from './ai/providers/openai-instructions';
 
 /**
  * Debug logging - only logs when DEBUG=true or in development mode
@@ -71,7 +72,7 @@ export class TitleGenerator extends EventEmitter {
 
       // Handle Codex models the same way as runner.ts:
       // Codex requires instructions field (not system messages in input) and store=false
-      const isCodex = client.resolvedModelId?.includes('codex') ?? false;
+      const isCodex = shouldUseOpenAIInstructions(client);
 
       const result = streamText({
         model: client.model,

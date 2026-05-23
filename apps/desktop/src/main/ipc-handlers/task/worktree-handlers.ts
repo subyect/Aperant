@@ -1,6 +1,6 @@
 import { ipcMain, BrowserWindow, shell, app } from 'electron';
 import { IPC_CHANNELS, AUTO_BUILD_PATHS, DEFAULT_APP_SETTINGS, DEFAULT_FEATURE_MODELS, DEFAULT_FEATURE_THINKING, MODEL_ID_MAP, THINKING_BUDGET_MAP, getSpecsDir } from '../../../shared/constants';
-import type { IPCResult, WorktreeStatus, WorktreeDiff, WorktreeDiffFile, WorktreeMergeResult, WorktreeDiscardResult, WorktreeListResult, WorktreeListItem, WorktreeCreatePROptions, WorktreeCreatePRResult, SupportedIDE, SupportedTerminal, SupportedCLI, AppSettings } from '../../../shared/types';
+import type { IPCResult, WorktreeStatus, WorktreeDiff, WorktreeDiffFile, WorktreeMergeResult, WorktreeDiscardResult, WorktreeListResult, WorktreeListItem, WorktreeCreatePROptions, WorktreeCreatePRResult, SupportedIDE, SupportedTerminal, SupportedCLI, AppSettings, TaskStatus } from '../../../shared/types';
 import path from 'path';
 import { minimatch } from 'minimatch';
 import { existsSync, readdirSync, statSync, readFileSync, promises as fsPromises } from 'fs';
@@ -9,6 +9,7 @@ import { homedir } from 'os';
 import { projectStore } from '../../project-store';
 
 import { MergeOrchestrator } from '../../ai/merge/orchestrator';
+import { MergeDecision } from '../../ai/merge/types';
 import { createMergeResolverFn } from '../../ai/runners/merge-resolver';
 import { createPR } from '../../ai/runners/github/pr-creator';
 import type { ModelShorthand } from '../../ai/config/types';
@@ -20,7 +21,7 @@ import {
   getTaskWorktreeDir,
   findTaskWorktree,
 } from '../../worktree-paths';
-import { persistPlanStatus, updateTaskMetadataPrUrl } from './plan-file-utils';
+import { persistPlanStatus, updatePlanAfterAppMerge, updateTaskMetadataPrUrl } from './plan-file-utils';
 import { getIsolatedGitEnv, refreshGitIndex } from '../../utils/git-isolation';
 import { cleanupWorktree } from '../../utils/worktree-cleanup';
 import { killProcessGracefully } from '../../platform';
@@ -1619,9 +1620,9 @@ async function updateTaskStatusAfterPRCreation(
 
   // Await status persistence to ensure completion before resolving
   try {
-    const persisted = await persistPlanStatus(planPath, 'done');
-    result.mainProjectStatus = persisted;
-    debug('Main project status persisted to done:', persisted);
+	    const persisted = await persistPlanStatus(planPath, 'pr_created');
+	    result.mainProjectStatus = persisted;
+	    debug('Main project status persisted to pr_created:', persisted);
   } catch (err) {
     debug('Failed to persist main project status:', err);
   }
@@ -1638,9 +1639,9 @@ async function updateTaskStatusAfterPRCreation(
     const worktreeMetadataPath = path.join(worktreePath, specsBaseDir, specId, 'task_metadata.json');
 
     try {
-      const persisted = await persistPlanStatus(worktreePlanPath, 'done');
-      result.worktreeStatus = persisted;
-      debug('Worktree status persisted to done:', persisted);
+	      const persisted = await persistPlanStatus(worktreePlanPath, 'pr_created');
+	      result.worktreeStatus = persisted;
+	      debug('Worktree status persisted to pr_created:', persisted);
     } catch (err) {
       debug('Failed to persist worktree status:', err);
     }
@@ -2040,9 +2041,10 @@ export function registerWorktreeHandlers(
           dryRun: false,
         });
 
-        // Run the merge with progress callbacks
-        let mergeSucceeded = false;
-        let mergeError: string | undefined;
+	        // Run the merge with progress callbacks
+	        let mergeSucceeded = false;
+	        let mergeError: string | undefined;
+	        let fullMergeCommitSha: string | undefined;
 
         try {
           const report = await orchestrator.mergeTask(
@@ -2061,28 +2063,59 @@ export function registerWorktreeHandlers(
             fileResults: report.fileResults.size
           });
 
-          if (report.success) {
-            // Apply merged content to the project directory
-            const applied = orchestrator.applyToProject(report);
-            debug('Applied merge to project:', applied);
+	          if (report.success) {
+	            const mergedFilePaths = [...report.fileResults.entries()]
+	              .filter(([, result]) => result.mergedContent !== undefined && result.decision !== MergeDecision.FAILED)
+	              .map(([filePath]) => filePath);
+	            if (mergedFilePaths.length === 0) {
+	              mergeError = 'Merge produced no files to apply';
+	            }
+	            // Apply merged content to the project directory
+	            const applied = mergedFilePaths.length > 0 && orchestrator.applyToProject(report);
+	            debug('Applied merge to project:', applied);
 
-            if (applied) {
-              // Stage all changed files
-              try {
-                execFileSync(getToolPath('git'), ['add', '-A'], {
-                  cwd: project.path,
-                  encoding: 'utf-8',
-                  env: getIsolatedGitEnv()
-                });
-                debug('Staged merged files');
+	            if (applied) {
+	              // Stage only files produced by the merge.
+	              try {
+	                execFileSync(getToolPath('git'), ['add', '--', ...mergedFilePaths], {
+	                  cwd: project.path,
+	                  encoding: 'utf-8',
+	                  env: getIsolatedGitEnv()
+	                });
+	                debug('Staged merged files');
               } catch (gitErr) {
                 debug('Failed to stage merged files:', gitErr);
               }
 
-              mergeSucceeded = true;
-            } else {
-              mergeError = 'Failed to apply merged files to project directory';
-            }
+	              if (options?.noCommit !== true) {
+	                const stagedNames = execFileSync(getToolPath('git'), ['diff', '--cached', '--name-only', '--', ...mergedFilePaths], {
+	                  cwd: project.path,
+	                  encoding: 'utf-8',
+	                  env: getIsolatedGitEnv()
+	                }).trim();
+	                if (!stagedNames) {
+	                  mergeError = 'Merge applied but produced no staged changes; refusing to mark task done.';
+	                  mergeSucceeded = false;
+	                } else {
+	                  const commitTitle = String(task.title || task.specId).replace(/\s+/g, ' ').trim();
+	                  execFileSync(getToolPath('git'), ['commit', '-m', `Auto-merge ${task.specId}: ${commitTitle}`, '--', ...mergedFilePaths], {
+	                    cwd: project.path,
+	                    encoding: 'utf-8',
+	                    env: getIsolatedGitEnv()
+	                  });
+	                  fullMergeCommitSha = execFileSync(getToolPath('git'), ['rev-parse', '--short', 'HEAD'], {
+	                    cwd: project.path,
+	                    encoding: 'utf-8',
+	                    env: getIsolatedGitEnv()
+	                  }).trim();
+	                  mergeSucceeded = true;
+	                }
+	              } else {
+	                mergeSucceeded = true;
+	              }
+	            } else {
+	              mergeError = mergeError || 'Failed to apply merged files to project directory';
+	            }
           } else {
             mergeError = report.error ?? 'Merge failed';
           }
@@ -2282,10 +2315,14 @@ export function registerWorktreeHandlers(
                 const isFileNotFound = (err: unknown): boolean =>
                   !!(err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT');
 
-                try {
-                  await withRetry(
-                    async () => {
-                      const planContent = await fsPromises.readFile(planPath, 'utf-8');
+	                try {
+	                  await withRetry(
+	                    async () => {
+	                      if (newStatus === 'done' || newStatus === 'pr_created') {
+	                        updatePlanAfterAppMerge(planPath, newStatus as TaskStatus, planStatus, fullMergeCommitSha);
+	                        return;
+	                      }
+	                      const planContent = await fsPromises.readFile(planPath, 'utf-8');
                       const plan = JSON.parse(planContent);
                       plan.status = newStatus;
                       plan.planStatus = planStatus;

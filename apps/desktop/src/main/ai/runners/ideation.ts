@@ -11,14 +11,22 @@
  */
 
 import { streamText, stepCountIs } from 'ai';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createSimpleClient } from '../client/factory';
+import { shouldUseOpenAIInstructions } from '../providers/openai-instructions';
 import { buildToolRegistry } from '../tools/build-registry';
 import type { ToolContext } from '../tools/types';
 import type { ModelShorthand, ThinkingLevel } from '../config/types';
 import type { SecurityProfile } from '../security/bash-validator';
+import {
+  filterIdeationTypeFileAgainstExistingTasks,
+  getIdeationIdeasFromTypeData,
+  getIdeationTypeOutputFileName,
+  writeIdeationContextFile,
+} from '../../ipc-handlers/ideation/file-utils';
+import { safeParseJson } from '../../utils/json-repair';
 
 // =============================================================================
 // Constants
@@ -88,6 +96,8 @@ export interface IdeationResult {
   text: string;
   /** Error message if failed */
   error?: string;
+  /** Output file containing generated ideas */
+  outputFile?: string;
 }
 
 /** Callback for streaming events from the ideation runner */
@@ -151,10 +161,16 @@ export async function runIdeation(
     };
   }
 
-  // Add context to prompt (matches Python format)
-  prompt += `\n\n---\n\n**Output Directory**: ${outputDir}\n`;
-  prompt += `**Project Directory**: ${projectDir}\n`;
-  prompt += `**Max Ideas**: ${maxIdeasPerType}\n`;
+	  // Add context to prompt (matches Python format)
+	  prompt += `\n\n---\n\n**Output Directory**: ${outputDir}\n`;
+	  prompt += `**Project Directory**: ${projectDir}\n`;
+	  prompt += `**Max Ideas**: ${maxIdeasPerType}\n`;
+	  const outputFile = join(outputDir, getIdeationTypeOutputFileName(ideationType));
+	  const ideationContextFile = writeIdeationContextFile(projectDir, outputDir);
+	  const startedAtMs = Date.now();
+	  prompt += `**Ideation Context File**: ${ideationContextFile || 'not available'}\n`;
+	  prompt += `**Required Output File**: ${outputFile}\n`;
+	  prompt += `\nDo not suggest ideas that already exist in the ideation context or current task/spec backlog. Write valid JSON to the required output file with a top-level "${ideationType}" array.\n`;
 
   // Create tool context for read-only tools
   const toolContext: ToolContext = {
@@ -182,7 +198,7 @@ export async function runIdeation(
 
   // Detect Codex models — they require instructions via providerOptions, not system
   const modelId = typeof client.model === 'string' ? client.model : client.model.modelId;
-  const isCodex = modelId?.includes('codex') ?? false;
+  const isCodex = shouldUseOpenAIInstructions(client);
   const userPrompt = `Analyze the project at ${projectDir} and generate up to ${maxIdeasPerType} ${ideationType.replace(/_/g, ' ')} ideas. Use the available tools to explore the codebase, then write your findings as a JSON file to the output directory.`;
 
   try {
@@ -223,10 +239,21 @@ export async function runIdeation(
       }
     }
 
-    return {
-      success: true,
-      text: responseText,
-    };
+	    const validation = validateIdeationTypeOutput(outputFile, ideationType, startedAtMs);
+	    if (!validation.valid) {
+	      return {
+	        success: false,
+	        text: responseText,
+	        error: validation.error,
+	        outputFile,
+	      };
+	    }
+	    filterIdeationTypeFileAgainstExistingTasks(projectDir, outputFile, ideationType);
+	    return {
+	      success: true,
+	      text: responseText,
+	      outputFile,
+	    };
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     onStream?.({ type: 'error', error: errorMsg });
@@ -235,5 +262,28 @@ export async function runIdeation(
       text: responseText,
       error: errorMsg,
     };
+  }
+}
+
+function validateIdeationTypeOutput(outputFile: string, ideationType: IdeationType, minMtimeMs: number): { valid: true } | { valid: false; error: string } {
+  if (!existsSync(outputFile)) {
+    return { valid: false, error: `Missing ideas output file: ${outputFile}` };
+  }
+  try {
+    const stat = statSync(outputFile);
+    if (stat.mtimeMs + 2000 < minMtimeMs) {
+      return { valid: false, error: `Ideas output was not refreshed: ${outputFile}` };
+    }
+    const data = safeParseJson<Record<string, unknown>>(readFileSync(outputFile, 'utf-8'));
+    if (!data) {
+      return { valid: false, error: `Invalid JSON in ideas output file: ${outputFile}` };
+    }
+    const ideas = getIdeationIdeasFromTypeData(data, ideationType);
+    if (ideas.length === 0) {
+      return { valid: false, error: `No ideas generated for ${ideationType} in ${outputFile}` };
+    }
+    return { valid: true };
+  } catch (error) {
+    return { valid: false, error: `Failed to validate ideas output file ${outputFile}: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
