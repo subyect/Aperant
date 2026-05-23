@@ -484,7 +484,12 @@ export class AgentManager extends EventEmitter {
 
   private shouldRetryTerminalAgentError(project: Project, task: Task): boolean {
     if (task.status !== 'human_review' && task.status !== 'error') return false;
-    if (task.reviewReason && task.reviewReason !== 'errors' && task.reviewReason !== 'qa_rejected') return false;
+    if (
+      task.reviewReason
+      && task.reviewReason !== 'errors'
+      && task.reviewReason !== 'qa_rejected'
+      && task.reviewReason !== 'stopped'
+    ) return false;
     if (!task.subtasks.length || task.subtasks.some((subtask) => subtask.status !== 'completed')) return false;
 
     for (const planPath of getPlanPathsForSpec(project, task.specId)) {
@@ -509,7 +514,12 @@ export class AgentManager extends EventEmitter {
 
   private shouldResumeIncompleteTerminalTask(project: Project, task: Task): boolean {
     if (task.status !== 'human_review' && task.status !== 'error') return false;
-    if (task.reviewReason && task.reviewReason !== 'errors' && task.reviewReason !== 'qa_rejected') return false;
+    if (
+      task.reviewReason
+      && task.reviewReason !== 'errors'
+      && task.reviewReason !== 'qa_rejected'
+      && task.reviewReason !== 'stopped'
+    ) return false;
     if (!task.subtasks.length || task.subtasks.every((subtask) => subtask.status === 'completed')) return false;
 
     for (const planPath of getPlanPathsForSpec(project, task.specId)) {
