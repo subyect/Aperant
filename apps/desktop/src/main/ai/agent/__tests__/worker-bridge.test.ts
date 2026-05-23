@@ -126,8 +126,8 @@ describe('WorkerBridge', () => {
 
       expect(getWorker().options).toMatchObject({
         resourceLimits: {
-          maxOldGenerationSizeMb: 768,
-          maxYoungGenerationSizeMb: 128,
+          maxOldGenerationSizeMb: 384,
+          maxYoungGenerationSizeMb: 64,
         },
       });
     });
@@ -304,7 +304,7 @@ describe('WorkerBridge', () => {
 
       expect(errorHandler).toHaveBeenCalledWith(
         'task-123',
-        expect.stringContaining('Worker exceeded memory limit (768MB old generation)'),
+        expect.stringContaining('Worker exceeded memory limit (384MB old generation)'),
         'proj-456',
       );
       expect(exitHandler).toHaveBeenCalledWith('task-123', 1, 'task-execution', 'proj-456');

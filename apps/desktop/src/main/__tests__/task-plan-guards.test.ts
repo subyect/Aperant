@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyTaskEventRuntimeState,
   doneStatusHasIncompleteSubtasks,
+  planNeedsContinuationAfterExit,
   isIncompleteSettledPlan,
   statusRequiresCompletedSubtasks,
 } from '../task-plan-guards';
@@ -91,5 +92,23 @@ describe('runtime completion guards', () => {
       reviewReason: 'stopped',
       executionPhase: 'complete',
     }))).toBe(true);
+  });
+
+  it('continues zero-subtask planning failures in planning mode', () => {
+    expect(planNeedsContinuationAfterExit({
+      status: 'error',
+      executionPhase: 'failed',
+      phases: [],
+      lastEvent: { type: 'CODING_FAILED' },
+    }, 1)).toBe('planning');
+  });
+
+  it('continues active zero-subtask planning exits instead of settling idle', () => {
+    expect(planNeedsContinuationAfterExit({
+      status: 'in_progress',
+      xstateState: 'planning',
+      executionPhase: 'planning',
+      phases: [],
+    }, 0)).toBe('planning');
   });
 });

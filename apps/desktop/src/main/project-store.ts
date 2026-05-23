@@ -26,6 +26,7 @@ import {
   isQASignoffApproved,
   statusRequiresCompletedSubtasks,
 } from './task-plan-guards';
+import { XSTATE_ACTIVE_STATES, XSTATE_TO_PHASE } from '../shared/state-machines';
 
 
 
@@ -960,6 +961,24 @@ export class ProjectStore {
     }
 
     const xstateState = mutablePlan.xstateState as string | undefined;
+    const xstatePhase = xstateState ? XSTATE_TO_PHASE[xstateState] : undefined;
+    if (
+      xstateState
+      && xstatePhase
+      && XSTATE_ACTIVE_STATES.has(xstateState)
+      && persistedPhase !== xstatePhase
+    ) {
+      persistedPhase = xstatePhase;
+      if (applyRuntimePhaseState(mutablePlan, xstatePhase)) {
+        mutablePlan.updated_at = new Date().toISOString();
+        try {
+          writeFileAtomicSync(planPath, JSON.stringify(mutablePlan, null, 2));
+        } catch (error) {
+          console.warn(`[ProjectStore] Failed to persist active phase repair for ${taskName}:`, error);
+        }
+      }
+    }
+
     return persistedPhase
       ? { phase: persistedPhase, phaseProgress: persistedPhase === 'complete' ? 100 : 50, overallProgress: persistedPhase === 'complete' ? 100 : 50 }
       : xstateState

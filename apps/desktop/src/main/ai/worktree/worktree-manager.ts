@@ -16,9 +16,9 @@
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { cp, rm } from 'fs/promises';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import { promisify } from 'util';
 
 import { getSpecsDir } from '../../../shared/constants';
@@ -108,6 +108,7 @@ export async function createOrGetWorktree(
       console.warn(
         `[WorktreeManager] Using existing worktree: ${specId} on branch ${branchName}`,
       );
+      await syncSpecDirectoryIntoWorktree(projectPath, worktreePath, specId, autoBuildPath);
       return { worktreePath: resolve(worktreePath), branch: branchName };
     }
 
@@ -236,39 +237,78 @@ export async function createOrGetWorktree(
     );
   }
 
-  // ------------------------------------------------------------------
-  // Step 7: Copy spec directory into the worktree
-  //
-  // .auto-claude/specs/ is gitignored, so it is NOT present in the
-  // newly-created worktree checkout. Copy it from the main project so
-  // that agents can read spec.md, implementation_plan.json, etc.
-  // ------------------------------------------------------------------
-  const specsRelDir = getSpecsDir(autoBuildPath); // e.g. ".auto-claude/specs"
+  await syncSpecDirectoryIntoWorktree(projectPath, worktreePath, specId, autoBuildPath);
+
+  return { worktreePath: resolve(worktreePath), branch: branchName };
+}
+
+async function syncSpecDirectoryIntoWorktree(
+  projectPath: string,
+  worktreePath: string,
+  specId: string,
+  autoBuildPath?: string,
+): Promise<void> {
+  // .auto-claude/specs/ is gitignored, so worktrees need a private copy.
+  // Existing worktrees also need repair: a prior failed run may contain an
+  // empty implementation_plan.json while the main spec has since been replanned.
+  const specsRelDir = getSpecsDir(autoBuildPath);
   const sourceSpecDir = join(projectPath, specsRelDir, specId);
   const destSpecDir = join(worktreePath, specsRelDir, specId);
 
-  if (existsSync(sourceSpecDir) && !existsSync(destSpecDir)) {
+  if (!existsSync(sourceSpecDir)) return;
+
+  if (!existsSync(destSpecDir)) {
     console.warn(
       `[WorktreeManager] Copying spec directory into worktree: ${specsRelDir}/${specId}`,
     );
 
-    // Ensure parent dirs exist inside the worktree
-    const destParent = join(worktreePath, specsRelDir);
-    mkdirSync(destParent, { recursive: true });
-
+    mkdirSync(dirname(destSpecDir), { recursive: true });
     try {
       await cp(sourceSpecDir, destSpecDir, { recursive: true });
     } catch (err: unknown) {
-      // Non-fatal: log and continue. The spec may already be present via
-      // a symlink or the agent can regenerate it.
       const message = err instanceof Error ? err.message : String(err);
       console.warn(
         `[WorktreeManager] Warning: Could not copy spec directory to worktree: ${message}`,
       );
     }
+    return;
   }
 
-  return { worktreePath: resolve(worktreePath), branch: branchName };
+  const sourcePlanPath = join(sourceSpecDir, 'implementation_plan.json');
+  const destPlanPath = join(destSpecDir, 'implementation_plan.json');
+  const sourceCount = countPlanSubtasks(sourcePlanPath);
+  const destCount = countPlanSubtasks(destPlanPath);
+  if (sourceCount > 0 && destCount === 0) {
+    try {
+      await cp(sourcePlanPath, destPlanPath, { force: true });
+      console.warn(
+        `[WorktreeManager] Repaired stale worktree plan for ${specId}: copied ${sourceCount} subtask(s) from main spec`,
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[WorktreeManager] Warning: Could not repair worktree plan for ${specId}: ${message}`,
+      );
+    }
+  }
+}
+
+function countPlanSubtasks(planPath: string): number {
+  try {
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as { phases?: Array<{ subtasks?: unknown[]; chunks?: unknown[] }> };
+    return Array.isArray(plan.phases)
+      ? plan.phases.reduce((count, phase) => {
+          const items = Array.isArray(phase.subtasks)
+            ? phase.subtasks
+            : Array.isArray(phase.chunks)
+              ? phase.chunks
+              : [];
+          return count + items.length;
+        }, 0)
+      : 0;
+  } catch {
+    return 0;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -40,6 +40,7 @@ import {
   preserveCompletedSubtasks,
   statusRequiresCompletedSubtasks,
 } from '../../task-plan-guards';
+import { XSTATE_ACTIVE_STATES, XSTATE_TO_PHASE } from '../../../shared/state-machines';
 
 // In-memory locks for plan file operations
 // Key: plan file path, Value: Promise chain for serializing operations
@@ -402,6 +403,7 @@ export function persistPlanPhaseSync(
     }
 
     const currentXState = typeof plan.xstateState === 'string' ? plan.xstateState : '';
+    const currentXStatePhase = currentXState ? XSTATE_TO_PHASE[currentXState] : undefined;
     const isActiveRuntimeState = plan.status === 'in_progress'
       || plan.status === 'ai_review'
       || currentXState === 'planning'
@@ -412,12 +414,33 @@ export function persistPlanPhaseSync(
     // ProgressTracker can briefly emit "idle" while a worker is starting or
     // resetting. Do not let that overwrite active planning/coding state in the
     // plan file; the task detail view restores from executionPhase.
-    if (phase === 'idle' && isActiveRuntimeState) {
+    let phaseToPersist = phase;
+    if (phase === 'idle' && isActiveRuntimeState && currentXStatePhase) {
+      phaseToPersist = currentXStatePhase;
+    }
+
+    // Build orchestration may briefly report its internal planning pass before
+    // coding. Once XState has a coding actor and the plan already contains
+    // subtasks, keep the durable phase at coding so in-progress task details
+    // restore to the worker overview instead of an empty planning view.
+    if (
+      phase === 'planning'
+      && currentXState === 'coding'
+      && checkSubtasksCompletion(plan).totalCount > 0
+    ) {
+      phaseToPersist = 'coding';
+    }
+
+    if (
+      phase === 'idle'
+      && XSTATE_ACTIVE_STATES.has(currentXState)
+      && plan.executionPhase === phaseToPersist
+    ) {
       return false;
     }
 
     // Store the execution phase for restoration
-    plan.executionPhase = phase;
+    plan.executionPhase = phaseToPersist;
 
     // Also update status to match the phase so the card stays in the correct column on refresh
     // Map execution phase to TaskStatus for column placement
@@ -429,9 +452,9 @@ export function persistPlanPhaseSync(
       'complete': 'human_review',
       'failed': 'error'
     };
-    const mappedStatus = phaseToStatus[phase];
+    const mappedStatus = phaseToStatus[phaseToPersist];
     if (mappedStatus) {
-      const reviewReason = phase === 'complete' ? 'completed' : undefined;
+      const reviewReason = phaseToPersist === 'complete' ? 'completed' : undefined;
       const activeGuard = statusRequiresCompletedSubtasks(mappedStatus, reviewReason)
         ? doneStatusHasIncompleteSubtasks(plan)
         : { incomplete: false, completedCount: 0, totalCount: 0 };

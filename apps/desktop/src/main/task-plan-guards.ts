@@ -232,20 +232,35 @@ export function isIncompleteSettledPlan(plan: MutablePlan | null | undefined): b
     || plan?.lastEvent?.type === 'CODING_FAILED';
 }
 
-export function getPlanContinuationMode(plan: MutablePlan | null | undefined): 'coding' | 'qa' | null {
+export type PlanContinuationMode = 'planning' | 'coding' | 'qa';
+
+export function getPlanContinuationMode(plan: MutablePlan | null | undefined): PlanContinuationMode | null {
   const { totalCount, completedCount } = getPlanCompletionCounts(plan);
-  if (totalCount === 0) return null;
+  if (totalCount === 0) {
+    const lastEventType = plan?.lastEvent?.type || '';
+    const shouldRetryPlanning = plan?.status === 'in_progress'
+      || plan?.status === 'error'
+      || plan?.status === 'human_review'
+      || plan?.xstateState === 'planning'
+      || plan?.xstateState === 'coding'
+      || plan?.executionPhase === 'planning'
+      || plan?.executionPhase === 'failed'
+      || lastEventType === 'PLANNING_FAILED'
+      || lastEventType === 'CODING_FAILED';
+    return shouldRetryPlanning ? 'planning' : null;
+  }
   if (completedCount < totalCount) return 'coding';
   return isQASignoffApproved(plan?.qa_signoff) ? null : 'qa';
 }
 
-export function planNeedsContinuationAfterExit(plan: MutablePlan | null | undefined, exitCode: number | null): 'coding' | 'qa' | null {
+export function planNeedsContinuationAfterExit(plan: MutablePlan | null | undefined, exitCode: number | null): PlanContinuationMode | null {
   const mode = getPlanContinuationMode(plan);
   if (!mode && exitCode !== 0 && planHasFailedValidation(plan)) {
     const { totalCount, completedCount } = getPlanCompletionCounts(plan);
     if (totalCount > 0 && completedCount >= totalCount) return 'qa';
   }
   if (!mode) return null;
+  if (mode === 'planning') return mode;
   if (exitCode === 0) return mode;
   return isIncompleteSettledPlan(plan) || mode === 'qa' || planHasFailedValidation(plan) ? mode : null;
 }

@@ -26,8 +26,8 @@ import type {
 import type { SessionResult } from '../session/types';
 import { ProgressTracker } from '../session/progress-tracker';
 
-const WORKER_OLD_GENERATION_LIMIT_MB = 768;
-const WORKER_YOUNG_GENERATION_LIMIT_MB = 128;
+const WORKER_OLD_GENERATION_LIMIT_MB = 384;
+const WORKER_YOUNG_GENERATION_LIMIT_MB = 64;
 
 // ESM-compatible __dirname
 const __filename = fileURLToPath(import.meta.url);

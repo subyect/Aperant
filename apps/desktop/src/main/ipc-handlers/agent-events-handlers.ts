@@ -7,6 +7,8 @@ import type {
   SDKRateLimitInfo,
   AuthFailureInfo,
   ImplementationPlan,
+  Project,
+  Task,
 } from "../../shared/types";
 import { XSTATE_SETTLED_STATES, XSTATE_ACTIVE_STATES, XSTATE_TO_PHASE, mapStateToLegacy } from "../../shared/state-machines";
 import { AgentManager } from "../agent";
@@ -33,6 +35,7 @@ import {
   preserveCompletedSubtasks,
   restampPlanFromXState,
   planNeedsContinuationAfterExit,
+  type PlanContinuationMode,
 } from "../task-plan-guards";
 
 // Timeout for fallback safety net to check if task is still stuck after process exit
@@ -40,6 +43,58 @@ const STUCK_TASK_FALLBACK_TIMEOUT_MS = 500;
 
 // Map to store active fallback timers so they can be cancelled on task restart
 const fallbackTimers = new Map<string, NodeJS.Timeout>();
+
+function restartContinuation(
+  agentManager: AgentManager,
+  task: Task,
+  project: Project,
+  mode: PlanContinuationMode,
+): void {
+  const baseBranch = task.metadata?.baseBranch || project.settings?.mainBranch;
+  const specDir = path.join(project.path, getSpecsDir(project.autoBuildPath), task.specId);
+
+  cancelFallbackTimer(task.id);
+  taskStateManager.prepareForRestart(task.id);
+
+  if (mode === 'planning') {
+    persistPlanStatusAndReasonSync(getPlanPath(project, task), 'in_progress', undefined, project.id, 'planning', 'planning');
+    taskStateManager.handleUiEvent(task.id, { type: 'PLANNING_STARTED' }, task, project);
+    void agentManager.startSpecCreation(
+      task.id,
+      project.path,
+      task.description || task.title,
+      specDir,
+      task.metadata,
+      baseBranch,
+      project.id,
+    );
+    return;
+  }
+
+  if (mode === "qa") {
+    persistSpecQaReviewStateSync(project, task.specId);
+    taskStateManager.handleUiEvent(task.id, { type: 'QA_STARTED', iteration: 0, maxIterations: 3 }, task, project);
+    void agentManager.startQAProcess(task.id, project.path, task.specId, project.id);
+    return;
+  }
+
+  persistPlanStatusAndReasonSync(getPlanPath(project, task), 'in_progress', undefined, project.id, 'coding', 'coding');
+  taskStateManager.handleUiEvent(task.id, { type: 'USER_RESUMED' }, task, project);
+  void agentManager.startTaskExecution(
+    task.id,
+    project.path,
+    task.specId,
+    {
+      parallel: false,
+      workers: 1,
+      baseBranch,
+      useWorktree: task.metadata?.useWorktree,
+      useLocalBranch: task.metadata?.useLocalBranch,
+      pushNewBranches: task.metadata?.pushNewBranches,
+    },
+    project.id
+  );
+}
 
 /**
  * Register all agent-events-related IPC handlers
@@ -147,7 +202,7 @@ export function registerAgenteventsHandlers(
         const { task: checkTask, project: checkProject } = findTaskAndProject(taskId, projectId);
         if (checkTask && checkProject) {
           if (code === 0) {
-            let continuationMode: 'coding' | 'qa' | null = null;
+            let continuationMode: PlanContinuationMode | null = null;
             try {
               const plan = safeParseJson<Record<string, unknown>>(readFileSync(getPlanPath(checkProject, checkTask), 'utf-8'));
               continuationMode = planNeedsContinuationAfterExit(plan, code);
@@ -156,34 +211,11 @@ export function registerAgenteventsHandlers(
             }
 
             if (continuationMode) {
-              const baseBranch = checkTask.metadata?.baseBranch || checkProject.settings?.mainBranch;
               console.warn(
                 `[agent-events-handlers] Task ${taskId} still has incomplete continuation work ` +
                 `${STUCK_TASK_FALLBACK_TIMEOUT_MS}ms after clean exit; restarting in ${continuationMode} mode`
               );
-              taskStateManager.prepareForRestart(taskId);
-              if (continuationMode === "qa") {
-                persistSpecQaReviewStateSync(checkProject, checkTask.specId);
-                taskStateManager.handleUiEvent(taskId, { type: 'QA_STARTED', iteration: 0, maxIterations: 3 }, checkTask, checkProject);
-                void agentManager.startQAProcess(taskId, checkProject.path, checkTask.specId, checkProject.id);
-              } else {
-                persistPlanStatusAndReasonSync(getPlanPath(checkProject, checkTask), 'in_progress', undefined, checkProject.id, 'coding', 'coding');
-                taskStateManager.handleUiEvent(taskId, { type: 'USER_RESUMED' }, checkTask, checkProject);
-                void agentManager.startTaskExecution(
-                  taskId,
-                  checkProject.path,
-                  checkTask.specId,
-                  {
-                    parallel: false,
-                    workers: 1,
-                    baseBranch,
-                    useWorktree: checkTask.metadata?.useWorktree,
-                    useLocalBranch: checkTask.metadata?.useLocalBranch,
-                    pushNewBranches: checkTask.metadata?.pushNewBranches,
-                  },
-                  checkProject.id
-                );
-              }
+              restartContinuation(agentManager, checkTask, checkProject, continuationMode);
               return;
             }
 
@@ -258,32 +290,8 @@ export function registerAgenteventsHandlers(
     if (finalPlan && exitTask && exitProject && processType !== "spec-creation") {
       const continuationMode = planNeedsContinuationAfterExit(finalPlan as unknown as Record<string, unknown>, code);
       if (continuationMode) {
-        const baseBranch = exitTask.metadata?.baseBranch || exitProject.settings?.mainBranch;
         console.warn(`[agent-events-handlers] Continuing ${taskId} after worker exit in ${continuationMode} mode`);
-        cancelFallbackTimer(taskId);
-        taskStateManager.prepareForRestart(taskId);
-        if (continuationMode === "qa") {
-          persistSpecQaReviewStateSync(exitProject, exitTask.specId);
-          taskStateManager.handleUiEvent(taskId, { type: 'QA_STARTED', iteration: 0, maxIterations: 3 }, exitTask, exitProject);
-          agentManager.startQAProcess(taskId, exitProject.path, exitTask.specId, exitProject.id);
-        } else {
-          persistPlanStatusAndReasonSync(getPlanPath(exitProject, exitTask), 'in_progress', undefined, exitProject.id, 'coding', 'coding');
-          taskStateManager.handleUiEvent(taskId, { type: 'USER_RESUMED' }, exitTask, exitProject);
-          agentManager.startTaskExecution(
-            taskId,
-            exitProject.path,
-            exitTask.specId,
-            {
-              parallel: false,
-              workers: 1,
-              baseBranch,
-              useWorktree: exitTask.metadata?.useWorktree,
-              useLocalBranch: exitTask.metadata?.useLocalBranch,
-              pushNewBranches: exitTask.metadata?.pushNewBranches,
-            },
-            exitProject.id
-          );
-        }
+        restartContinuation(agentManager, exitTask, exitProject, continuationMode);
         return;
       }
     }
@@ -294,14 +302,25 @@ export function registerAgenteventsHandlers(
 
     if (processType === "spec-creation") {
       console.warn(`[Task ${taskId}] Spec creation completed with code ${code}`);
-      // When spec creation succeeds, automatically transition to task execution (build phase)
-      if (code === 0) {
-        const { task: specTask, project: specProject } = findTaskAndProject(taskId, projectId);
-        if (specTask && specProject) {
+      const { task: specTask, project: specProject } = findTaskAndProject(taskId, projectId);
+      if (specTask && specProject) {
+        if (code !== 0 && !hasPlanWithSubtasks(specProject, specTask)) {
+          console.warn(`[Task ${taskId}] Spec creation failed before producing subtasks — retrying planning`);
+          restartContinuation(agentManager, specTask, specProject, 'planning');
+          return;
+        }
+
+        // When spec creation succeeds, automatically transition to task execution (build phase)
+        if (code === 0) {
           const specsBaseDir = getSpecsDir(specProject.autoBuildPath);
           const specDir = path.join(specProject.path, specsBaseDir, specTask.specId);
           const specFilePath = path.join(specDir, AUTO_BUILD_PATHS.SPEC_FILE);
           if (existsSync(specFilePath)) {
+            if (!hasPlanWithSubtasks(specProject, specTask)) {
+              console.warn(`[Task ${taskId}] Spec creation exited cleanly but implementation_plan.json has no subtasks — retrying planning`);
+              restartContinuation(agentManager, specTask, specProject, 'planning');
+              return;
+            }
             console.warn(`[Task ${taskId}] Spec created successfully — starting task execution`);
             // Re-watch the spec directory for the build phase
             fileWatcher.watch(taskId, specDir).catch((err) => {

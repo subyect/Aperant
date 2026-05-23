@@ -530,11 +530,11 @@ export class SpecOrchestrator extends EventEmitter {
           this.emitTyped('log', `Phase ${phase} schema validation failed (attempt ${attempt + 1}): ${schemaValidation.errors.join(', ')}`);
           if (attempt < MAX_PHASE_RETRIES) {
             // Build LLM-friendly error feedback so the agent knows what to fix
-            const schemaHint = (phase === 'planning' || phase === 'quick_spec')
+            const schemaHint = (phase === 'planning' || phase === 'quick_spec' || phase === 'validation')
               ? IMPLEMENTATION_PLAN_SCHEMA_HINT
               : undefined;
             schemaRetryContext = buildValidationRetryPrompt(
-              phase === 'quick_spec' ? 'implementation_plan.json' : PHASE_OUTPUTS[phase]?.[0] ?? 'output file',
+              (phase === 'quick_spec' || phase === 'validation') ? 'implementation_plan.json' : PHASE_OUTPUTS[phase]?.[0] ?? 'output file',
               schemaValidation.errors,
               schemaHint,
             );
@@ -677,7 +677,7 @@ export class SpecOrchestrator extends EventEmitter {
   private async validatePhaseSchema(
     phase: SpecPhase,
   ): Promise<{ valid: boolean; errors: string[] } | null> {
-    if (phase === 'planning' || phase === 'quick_spec') {
+    if (phase === 'planning' || phase === 'quick_spec' || phase === 'validation') {
       const planPath = join(this.config.specDir, 'implementation_plan.json');
       try {
         const result = await validateAndNormalizeJsonFile(planPath, ImplementationPlanSchema);

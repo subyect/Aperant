@@ -107,4 +107,30 @@ describe('plan-file runtime guards', () => {
     expect(plan.xstateState).toBe('coding');
     expect(plan.executionPhase).toBe('coding');
   });
+
+  it('repairs active planning plans whose durable phase was overwritten with idle', () => {
+    writeFileSync(planPath, JSON.stringify({
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'planning',
+      executionPhase: 'idle',
+      phases: [],
+    }, null, 2));
+
+    expect(persistPlanPhaseSync(planPath, 'idle', 'project-1')).toBe(true);
+
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+    expect(plan.status).toBe('in_progress');
+    expect(plan.xstateState).toBe('planning');
+    expect(plan.executionPhase).toBe('planning');
+  });
+
+  it('does not regress coding tasks with subtasks back to planning progress', () => {
+    expect(persistPlanPhaseSync(planPath, 'planning', 'project-1')).toBe(true);
+
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+    expect(plan.status).toBe('in_progress');
+    expect(plan.xstateState).toBe('coding');
+    expect(plan.executionPhase).toBe('coding');
+  });
 });
