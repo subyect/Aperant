@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import path from 'path';
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { AgentState } from './agent-state';
 import { AgentEvents } from './agent-events';
@@ -16,7 +16,7 @@ import {
   ProcessType
 } from './types';
 import type { IdeationConfig, Project, Task } from '../../shared/types';
-import { getPlanPathsForSpec, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
+import { getPlanPathsForSpec, readQaReportVerdictSync, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
 import { AUTO_BUILD_PATHS, getSpecsDir } from '../../shared/constants';
 import { projectStore } from '../project-store';
 import { resolveAuth, resolveAuthFromQueue } from '../ai/auth/resolver';
@@ -42,6 +42,7 @@ import { cleanupWorktree } from '../utils/worktree-cleanup';
 import { writeFileAtomicSync } from '../utils/atomic-file';
 import { safeParseJson } from '../utils/json-repair';
 import { checkSubtasksCompletion } from '../task-plan-guards';
+import { taskStateManager } from '../task-state-manager';
 
 const DEFAULT_MAX_PARALLEL_TASKS = 3;
 const MAX_CONCURRENT_PLANNING_RECOVERIES = 1;
@@ -531,6 +532,14 @@ export class AgentManager extends EventEmitter {
 
     try {
       if ((task.status === 'ai_review' || this.shouldRetryTerminalAgentError(project, task)) && allSubtasksComplete) {
+        const resumedFromFailedQaReport = await this.resumeCodingForFailedQaReport(project, task);
+        if (resumedFromFailedQaReport) {
+          console.warn(`[AgentManager] Startup recovery routed failed QA report back to coding for ${task.specId}`);
+          return true;
+        }
+      }
+
+      if ((task.status === 'ai_review' || this.shouldRetryTerminalAgentError(project, task)) && allSubtasksComplete) {
         this.persistRuntimeState(project, task, 'ai_review', 'review', 'qa_review', 'qa_review');
         console.warn(`[AgentManager] Startup recovery resuming QA for ${task.specId}`);
         await this.startQAProcess(task.id, project.path, task.specId, project.id);
@@ -782,6 +791,171 @@ export class AgentManager extends EventEmitter {
       },
       project.id,
     );
+  }
+
+  async resumeCodingForFailedQaReport(project: Project, task: Task): Promise<boolean> {
+    const failure = this.findFailedQaReport(project, task);
+    if (!failure) return false;
+
+    this.persistQaReportFailureForCoding(project, task, failure.content, failure.reportPath);
+    taskStateManager.prepareForRestart(task.id);
+
+    const baseBranch = task.metadata?.baseBranch || project.settings?.mainBranch;
+    await this.startTaskExecution(
+      task.id,
+      project.path,
+      task.specId,
+      {
+        parallel: false,
+        workers: 1,
+        baseBranch,
+        useWorktree: task.metadata?.useWorktree,
+        useLocalBranch: task.metadata?.useLocalBranch,
+        pushNewBranches: task.metadata?.pushNewBranches,
+      },
+      project.id,
+    );
+    return true;
+  }
+
+  hasFailedQaReport(project: Project, task: Task): boolean {
+    return this.findFailedQaReport(project, task) !== null;
+  }
+
+  private findFailedQaReport(project: Project, task: Task): { reportPath: string; content: string } | null {
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      const verdict = readQaReportVerdictSync(path.dirname(planPath));
+      if (verdict?.status === 'failed') {
+        return { reportPath: verdict.reportPath, content: verdict.content };
+      }
+    }
+    return null;
+  }
+
+  private persistQaReportFailureForCoding(
+    project: Project,
+    task: Task,
+    reportContent: string,
+    reportPath: string,
+  ): void {
+    const now = new Date().toISOString();
+    const recoverySubtaskId = 'aperant-qa-report-failure';
+    const reportExcerpt = reportContent.trim().slice(0, 8000);
+    const recoveryDescription = [
+      'Resolve the failed QA report and return this task to a passing review state.',
+      '',
+      `QA report source: ${reportPath}`,
+      '',
+      'Failed QA report:',
+      '```markdown',
+      reportExcerpt || '(empty qa_report.md)',
+      '```',
+      '',
+      'Do not mark this subtask complete until the reported issues are addressed, focused verification is recorded, and the next QA run can pass.',
+    ].join('\n');
+    let persisted = false;
+
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = safeParseJson<Record<string, any>>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
+
+        const phases = Array.isArray(plan.phases) ? plan.phases : [];
+        let phase = phases.find((candidate: Record<string, any>) => candidate?.id === 'aperant-qa-report-recovery' || candidate?.type === 'qa_report_recovery');
+        if (!phase) {
+          phase = {
+            id: 'aperant-qa-report-recovery',
+            phase: phases.length + 1,
+            name: 'QA report recovery',
+            type: 'qa_report_recovery',
+            status: 'in_progress',
+            subtasks: [],
+          };
+          phases.push(phase);
+        }
+
+        const subtasks = Array.isArray(phase.subtasks) ? phase.subtasks : [];
+        let recoverySubtask = subtasks.find((subtask: Record<string, any>) => subtask?.id === recoverySubtaskId);
+        if (!recoverySubtask) {
+          recoverySubtask = {
+            id: recoverySubtaskId,
+            title: 'Resolve failed QA report',
+            description: recoveryDescription,
+            status: 'pending',
+            verification: {
+              type: 'command',
+              run: 'Run the focused verification named in qa_report.md, then rerun QA.',
+            },
+          };
+          subtasks.push(recoverySubtask);
+        } else {
+          recoverySubtask.title = 'Resolve failed QA report';
+          recoverySubtask.description = recoveryDescription;
+          recoverySubtask.status = recoverySubtask.status === 'in_progress' ? 'in_progress' : 'pending';
+          recoverySubtask.verification = {
+            type: 'command',
+            run: 'Run the focused verification named in qa_report.md, then rerun QA.',
+          };
+        }
+
+        phase.subtasks = subtasks;
+        phase.status = 'in_progress';
+        plan.phases = phases;
+        plan.status = 'in_progress';
+        plan.planStatus = 'in_progress';
+        plan.xstateState = 'coding';
+        plan.executionPhase = 'coding';
+        plan.updated_at = now;
+        plan.recoveryNote = 'QA report failed; continuing coding with QA findings as mandatory recovery work.';
+        plan.human_feedback_pending = {
+          requested_at: now,
+          preview: reportExcerpt.slice(0, 500),
+          source: 'qa_report',
+        };
+        plan.lastEvent = {
+          eventId: `qa-report-failed-${Date.now()}`,
+          sequence: 0,
+          type: 'QA_REPORT_FAILED',
+          timestamp: now,
+        };
+        delete plan.reviewReason;
+        delete plan.qa_signoff;
+        delete plan.final_acceptance;
+
+        const specDir = path.dirname(planPath);
+        writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+        writeFileAtomicSync(
+          path.join(specDir, 'QA_FIX_REQUEST.md'),
+          [
+            '# QA Fix Request',
+            '',
+            'Status: REJECTED',
+            '',
+            '## Feedback',
+            '',
+            'Aperant QA failed this task. Fix the reported issues and keep working until QA passes.',
+            '',
+            '## Failed QA Report',
+            '',
+            '```markdown',
+            reportExcerpt || '(empty qa_report.md)',
+            '```',
+            '',
+            `Created at: ${now}`,
+            '',
+          ].join('\n'),
+        );
+        persisted = true;
+      } catch (error) {
+        console.warn(`[AgentManager] Failed to persist QA report recovery for ${task.specId}:`, error);
+      }
+    }
+
+    if (persisted) {
+      projectStore.invalidateTasksCache(project.id);
+    }
   }
 
   private persistBaseSyncConflictForCoding(
@@ -1308,6 +1482,12 @@ export class AgentManager extends EventEmitter {
       console.warn(`[AgentManager] QA for ${taskId} will run in worktree: ${worktreePath}`);
     } else {
       console.warn(`[AgentManager] No worktree found for ${taskId}, QA running in project root`);
+    }
+
+    try {
+      rmSync(path.join(effectiveSpecDir, AUTO_BUILD_PATHS.QA_REPORT), { force: true });
+    } catch {
+      // Stale QA reports are best-effort cleanup; the reviewer can still overwrite.
     }
 
     // Load initial context from spec directory
@@ -1909,7 +2089,7 @@ export class AgentManager extends EventEmitter {
    * when the prompt file is not found.
    */
   private buildDefaultQAPrompt(specId: string, projectPath: string): string {
-    return `You are a QA reviewer agent. Your job is to review the implementation of spec ${specId} in project ${projectPath}. Check that all requirements in spec.md are implemented correctly and write a qa_report.md with Status: PASSED or Status: FAILED.${APERANT_WORKFLOW_GUARD}`;
+    return `You are a QA reviewer agent. Your job is to review the implementation of spec ${specId} in project ${projectPath}. Check that all requirements in spec.md are implemented correctly, write qa_report.md with Status: PASSED or Status: FAILED, and update implementation_plan.json with qa_signoff.status set to "approved" or "rejected".${APERANT_WORKFLOW_GUARD}`;
   }
 
   /**
@@ -2023,6 +2203,7 @@ export class AgentManager extends EventEmitter {
     }
 
     parts.push('Review the implementation against the specification. Check that all requirements are met, the code is correct, and tests pass. Write your findings to qa_report.md with "Status: PASSED" or "Status: FAILED" and a list of any issues found.');
+    parts.push('Also update implementation_plan.json with a qa_signoff object: use {"status":"approved","issues_found":[]} when passing, or {"status":"rejected","issues_found":[...]} when failing. The app uses this field for workflow routing.');
     parts.push(APERANT_WORKFLOW_GUARD);
 
     return [{ role: 'user', content: parts.join('\n') }];

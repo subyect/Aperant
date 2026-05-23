@@ -53,10 +53,12 @@ describe('plan-file runtime guards', () => {
   let persistPlanPhaseSync: typeof import('../plan-file-utils').persistPlanPhaseSync;
   let persistPlanStatusAndReasonSync: typeof import('../plan-file-utils').persistPlanStatusAndReasonSync;
   let syncPlanPhasesToMainSync: typeof import('../plan-file-utils').syncPlanPhasesToMainSync;
+  let readQaReportVerdictSync: typeof import('../plan-file-utils').readQaReportVerdictSync;
+  let readApprovedQASignoffFromReportSync: typeof import('../plan-file-utils').readApprovedQASignoffFromReportSync;
 
   beforeEach(async () => {
     vi.resetModules();
-    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync } = await import('../plan-file-utils'));
+    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync, readQaReportVerdictSync, readApprovedQASignoffFromReportSync } = await import('../plan-file-utils'));
     tempDir = mkdtempSync(path.join(tmpdir(), 'aperant-plan-'));
     planPath = path.join(tempDir, 'implementation_plan.json');
     writeFileSync(planPath, JSON.stringify(planWithSubtasks(), null, 2));
@@ -147,5 +149,25 @@ describe('plan-file runtime guards', () => {
     expect(plan.phases[0].subtasks).toHaveLength(2);
     expect(plan.xstateState).toBe('coding');
     expect(plan.executionPhase).toBe('coding');
+  });
+
+  it('parses failed QA reports so the app can route them back to coding', () => {
+    writeFileSync(path.join(tempDir, 'qa_report.md'), 'Status: FAILED\n\nMissing smoke evidence.');
+
+    const verdict = readQaReportVerdictSync(tempDir);
+
+    expect(verdict?.status).toBe('failed');
+    expect(verdict?.content).toContain('Missing smoke evidence');
+    expect(readApprovedQASignoffFromReportSync(tempDir)).toBeNull();
+  });
+
+  it('still recovers approved QA signoff from passed reports', () => {
+    writeFileSync(path.join(tempDir, 'qa_report.md'), '**Status: PASSED**\n');
+
+    const verdict = readQaReportVerdictSync(tempDir);
+    const signoff = readApprovedQASignoffFromReportSync(tempDir);
+
+    expect(verdict?.status).toBe('approved');
+    expect(signoff?.status).toBe('approved');
   });
 });

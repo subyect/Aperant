@@ -763,11 +763,22 @@ export function syncPlanPhasesToMainSync(
 }
 
 export function readApprovedQASignoffFromReportSync(specDir: string): Record<string, unknown> | null {
+  const verdict = readQaReportVerdictSync(specDir);
+  return verdict?.status === 'approved' ? createApprovedQASignoffFromReport('qa_report') : null;
+}
+
+export function readQaReportVerdictSync(specDir: string): { status: 'approved' | 'failed'; reportPath: string; content: string } | null {
   try {
     const reportPath = path.join(specDir, AUTO_BUILD_PATHS.QA_REPORT);
     const content = readFileSync(reportPath, 'utf-8');
-    const match = content.match(/(?:^|\n)\s*(?:\*\*)?\s*Status\s*:\s*(PASSED|PASS|APPROVED)\s*(?:\*\*)?/i);
-    return match ? createApprovedQASignoffFromReport('qa_report') : null;
+    const match = content.match(/(?:^|\n)\s*(?:\*\*)?\s*Status\s*:\s*(PASSED|PASS|APPROVED|FAILED|FAIL|REJECTED|ISSUES)\s*(?:\*\*)?/i);
+    if (!match) return null;
+    const normalized = match[1].toLowerCase();
+    return {
+      status: normalized === 'passed' || normalized === 'pass' || normalized === 'approved' ? 'approved' : 'failed',
+      reportPath,
+      content,
+    };
   } catch {
     return null;
   }

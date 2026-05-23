@@ -287,6 +287,26 @@ export function registerAgenteventsHandlers(
       syncPlanPhasesToMainSync(getPlanPath(exitProject, exitTask), finalPlan as unknown as Record<string, unknown>, exitProjectId);
     }
 
+    if (processType === "qa-process" && exitTask && exitProject) {
+      if (recoverApprovedQASignoffForSpec(exitProject, exitTask.specId, "qa-report-exit")) {
+        taskStateManager.handleUiEvent(exitTask.id, {
+          type: 'QA_PASSED',
+          iteration: 0,
+          testsRun: {},
+        }, exitTask, exitProject);
+        agentManager.scheduleHumanReviewMerge?.("qa-report-exit", 1500);
+        return;
+      }
+
+      if (agentManager.hasFailedQaReport(exitProject, exitTask)) {
+        console.warn(`[agent-events-handlers] QA report failed for ${exitTask.specId}; routing back to coding recovery`);
+        void agentManager.resumeCodingForFailedQaReport(exitProject, exitTask).catch((error) => {
+          console.warn(`[agent-events-handlers] Failed to route QA report failure for ${exitTask.specId}:`, error);
+        });
+        return;
+      }
+    }
+
     if (finalPlan && exitTask && exitProject && processType !== "spec-creation") {
       const continuationMode = planNeedsContinuationAfterExit(finalPlan as unknown as Record<string, unknown>, code);
       if (continuationMode) {
