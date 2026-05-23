@@ -330,6 +330,8 @@ export function persistPlanStatusAndReasonSync(
       ? doneStatusHasIncompleteSubtasks(plan)
       : { incomplete: false, completedCount: 0, totalCount: 0 };
     const finalStatus = activeGuard.incomplete ? 'in_progress' : status;
+    const finalXStateState = activeGuard.incomplete ? 'coding' : xstateState;
+    const finalExecutionPhase = activeGuard.incomplete ? 'coding' : executionPhase;
     plan.status = finalStatus;
     plan.planStatus = mapStatusToPlanStatus(finalStatus);
     if (finalStatus === 'in_progress') {
@@ -344,11 +346,11 @@ export function persistPlanStatusAndReasonSync(
     } else {
       delete plan.reviewReason;
     }
-    if (xstateState) {
-      plan.xstateState = xstateState;
+    if (finalXStateState) {
+      plan.xstateState = finalXStateState;
     }
-    if (executionPhase) {
-      plan.executionPhase = executionPhase;
+    if (finalExecutionPhase) {
+      plan.executionPhase = finalExecutionPhase;
     }
     plan.updated_at = new Date().toISOString();
 
@@ -414,9 +416,26 @@ export function persistPlanPhaseSync(
     };
     const mappedStatus = phaseToStatus[phase];
     if (mappedStatus) {
-      plan.status = mappedStatus;
-      plan.planStatus = mapStatusToPlanStatus(mappedStatus);
+      const reviewReason = phase === 'complete' ? 'completed' : undefined;
+      const activeGuard = statusRequiresCompletedSubtasks(mappedStatus, reviewReason)
+        ? doneStatusHasIncompleteSubtasks(plan)
+        : { incomplete: false, completedCount: 0, totalCount: 0 };
+      const finalStatus = activeGuard.incomplete ? 'in_progress' : mappedStatus;
+      plan.status = finalStatus;
+      plan.planStatus = mapStatusToPlanStatus(finalStatus);
+      if (activeGuard.incomplete) {
+        plan.xstateState = 'coding';
+        plan.executionPhase = 'coding';
+        plan.recoveryNote = `Blocked terminal phase ${phase}: ${activeGuard.completedCount}/${activeGuard.totalCount} subtasks complete.`;
+      }
       if (mappedStatus === 'in_progress') {
+        delete plan.reviewReason;
+        delete plan.qa_signoff;
+        delete plan.final_acceptance;
+        delete plan.mergeCommit;
+        delete plan.mergedAt;
+      }
+      if (finalStatus === 'in_progress') {
         delete plan.reviewReason;
         delete plan.qa_signoff;
         delete plan.final_acceptance;

@@ -135,12 +135,58 @@ export function registerAgenteventsHandlers(
       cancelFallbackTimer(taskId);
     }
     const timer = !isSpecToBuildTransition ? setTimeout(() => {
+      if (agentManager.isRunning(taskId)) {
+        console.debug(`[agent-events-handlers] Skipping stale fallback for ${taskId}: worker is running again`);
+        fallbackTimers.delete(taskId);
+        return;
+      }
+
       const currentState = taskStateManager.getCurrentState(taskId);
 
       if (currentState && XSTATE_ACTIVE_STATES.has(currentState)) {
         const { task: checkTask, project: checkProject } = findTaskAndProject(taskId, projectId);
         if (checkTask && checkProject) {
           if (code === 0) {
+            let continuationMode: 'coding' | 'qa' | null = null;
+            try {
+              const plan = safeParseJson<Record<string, unknown>>(readFileSync(getPlanPath(checkProject, checkTask), 'utf-8'));
+              continuationMode = planNeedsContinuationAfterExit(plan, code);
+            } catch {
+              continuationMode = null;
+            }
+
+            if (continuationMode) {
+              const baseBranch = checkTask.metadata?.baseBranch || checkProject.settings?.mainBranch;
+              console.warn(
+                `[agent-events-handlers] Task ${taskId} still has incomplete continuation work ` +
+                `${STUCK_TASK_FALLBACK_TIMEOUT_MS}ms after clean exit; restarting in ${continuationMode} mode`
+              );
+              taskStateManager.prepareForRestart(taskId);
+              if (continuationMode === "qa") {
+                persistSpecQaReviewStateSync(checkProject, checkTask.specId);
+                taskStateManager.handleUiEvent(taskId, { type: 'QA_STARTED', iteration: 0, maxIterations: 3 }, checkTask, checkProject);
+                void agentManager.startQAProcess(taskId, checkProject.path, checkTask.specId, checkProject.id);
+              } else {
+                persistPlanStatusAndReasonSync(getPlanPath(checkProject, checkTask), 'in_progress', undefined, checkProject.id, 'coding', 'coding');
+                taskStateManager.handleUiEvent(taskId, { type: 'USER_RESUMED' }, checkTask, checkProject);
+                void agentManager.startTaskExecution(
+                  taskId,
+                  checkProject.path,
+                  checkTask.specId,
+                  {
+                    parallel: false,
+                    workers: 1,
+                    baseBranch,
+                    useWorktree: checkTask.metadata?.useWorktree,
+                    useLocalBranch: checkTask.metadata?.useLocalBranch,
+                    pushNewBranches: checkTask.metadata?.pushNewBranches,
+                  },
+                  checkProject.id
+                );
+              }
+              return;
+            }
+
             // Clean exit (code 0) means the task completed successfully but the terminal
             // event (e.g., QA_PASSED) was lost in transit. Treat as completed, not stopped.
             console.warn(
@@ -214,6 +260,7 @@ export function registerAgenteventsHandlers(
       if (continuationMode) {
         const baseBranch = exitTask.metadata?.baseBranch || exitProject.settings?.mainBranch;
         console.warn(`[agent-events-handlers] Continuing ${taskId} after worker exit in ${continuationMode} mode`);
+        cancelFallbackTimer(taskId);
         taskStateManager.prepareForRestart(taskId);
         if (continuationMode === "qa") {
           persistSpecQaReviewStateSync(exitProject, exitTask.specId);

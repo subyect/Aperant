@@ -582,6 +582,7 @@ export class AgentManager extends EventEmitter {
       && task.reviewReason !== 'stopped'
     ) return false;
     if (!task.subtasks.length || task.subtasks.every((subtask) => subtask.status === 'completed')) return false;
+    if (task.reviewReason === 'stopped') return true;
 
     for (const planPath of getPlanPathsForSpec(project, task.specId)) {
       if (!existsSync(planPath)) continue;

@@ -60,9 +60,9 @@ export function completedSubtasksHaveBlockingErrors(plan: MutablePlan | null | u
 }
 
 export function statusRequiresCompletedSubtasks(status: TaskStatus, reviewReason?: string): boolean {
-  return status === 'done'
-    || status === 'pr_created'
-    || status === 'human_review' && (reviewReason === 'completed' || reviewReason === undefined);
+  if (status === 'done' || status === 'pr_created') return true;
+  if (status !== 'human_review') return false;
+  return reviewReason !== 'plan_review';
 }
 
 export function doneStatusHasIncompleteSubtasks(plan: MutablePlan | null | undefined): {
@@ -137,7 +137,15 @@ export function applyTaskEventRuntimeState(plan: MutablePlan | null | undefined,
   if (eventType === 'CODING_STARTED' || eventType === 'QA_FIXING_COMPLETE') return applyRuntimePhaseState(plan, 'coding');
   if (eventType === 'ALL_SUBTASKS_DONE' || eventType === 'QA_STARTED') return applyRuntimePhaseState(plan, 'qa_review');
   if (eventType === 'QA_FAILED' || eventType === 'QA_FIXING_STARTED') return applyRuntimePhaseState(plan, 'qa_fixing');
-  if (eventType === 'QA_PASSED') return applyRuntimePhaseState(plan, 'complete');
+  if (eventType === 'QA_PASSED') {
+    const guard = doneStatusHasIncompleteSubtasks(plan);
+    if (guard.incomplete) {
+      const changed = applyRuntimePhaseState(plan, 'coding');
+      plan.recoveryNote = `Blocked terminal event QA_PASSED: ${guard.completedCount}/${guard.totalCount} subtasks complete.`;
+      return changed || true;
+    }
+    return applyRuntimePhaseState(plan, 'complete');
+  }
   if (eventType === 'PLANNING_FAILED' || eventType === 'CODING_FAILED' || eventType === 'QA_MAX_ITERATIONS' || eventType === 'QA_AGENT_ERROR') {
     return applyRuntimePhaseState(plan, 'failed');
   }
@@ -218,7 +226,7 @@ export function isIncompleteSettledPlan(plan: MutablePlan | null | undefined): b
   return plan?.status === 'done'
     || plan?.status === 'pr_created'
     || plan?.status === 'error'
-    || plan?.status === 'human_review' && (plan?.reviewReason === 'completed' || plan?.reviewReason === 'errors' || plan?.reviewReason === 'qa_rejected')
+    || plan?.status === 'human_review' && (plan?.reviewReason === 'completed' || plan?.reviewReason === 'errors' || plan?.reviewReason === 'qa_rejected' || plan?.reviewReason === 'stopped')
     || plan?.executionPhase === 'failed'
     || /^QA_/.test(plan?.lastEvent?.type || '')
     || plan?.lastEvent?.type === 'CODING_FAILED';

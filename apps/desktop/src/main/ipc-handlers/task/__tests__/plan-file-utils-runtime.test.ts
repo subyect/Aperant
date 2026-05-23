@@ -1,0 +1,100 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: vi.fn(() => tempDirFallback()),
+    getVersion: vi.fn(() => 'test'),
+  },
+  ipcMain: {
+    handle: vi.fn(),
+    on: vi.fn(),
+    removeHandler: vi.fn(),
+  },
+}));
+
+vi.mock('../../../project-store', () => ({
+  projectStore: {
+    invalidateTasksCache: vi.fn(),
+  },
+}));
+
+vi.mock('../../../cli-tool-manager', () => ({
+  getToolPath: vi.fn(() => '/usr/bin/git'),
+}));
+
+function tempDirFallback() {
+  return tmpdir();
+}
+
+function planWithSubtasks() {
+  return {
+    status: 'in_progress',
+    planStatus: 'in_progress',
+    xstateState: 'coding',
+    executionPhase: 'coding',
+    phases: [
+      {
+        name: 'Phase 1',
+        subtasks: [
+          { id: '1.1', status: 'completed' },
+          { id: '1.2', status: 'pending' },
+        ],
+      },
+    ],
+  };
+}
+
+describe('plan-file runtime guards', () => {
+  let tempDir: string;
+  let planPath: string;
+  let persistPlanPhaseSync: typeof import('../plan-file-utils').persistPlanPhaseSync;
+  let persistPlanStatusAndReasonSync: typeof import('../plan-file-utils').persistPlanStatusAndReasonSync;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync } = await import('../plan-file-utils'));
+    tempDir = mkdtempSync(path.join(tmpdir(), 'aperant-plan-'));
+    planPath = path.join(tempDir, 'implementation_plan.json');
+    writeFileSync(planPath, JSON.stringify(planWithSubtasks(), null, 2));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('coerces stopped human review with pending subtasks back to coding runtime state', () => {
+    expect(persistPlanStatusAndReasonSync(
+      planPath,
+      'human_review',
+      'stopped',
+      'project-1',
+      'human_review',
+      'complete',
+    )).toBe(true);
+
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+
+    expect(plan.status).toBe('in_progress');
+    expect(plan.planStatus).toBe('in_progress');
+    expect(plan.reviewReason).toBeUndefined();
+    expect(plan.xstateState).toBe('coding');
+    expect(plan.executionPhase).toBe('coding');
+    expect(plan.recoveryNote).toBe('Blocked terminal status human_review: 1/2 subtasks complete.');
+  });
+
+  it('coerces complete phase updates with pending subtasks back to coding runtime state', () => {
+    expect(persistPlanPhaseSync(planPath, 'complete', 'project-1')).toBe(true);
+
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+
+    expect(plan.status).toBe('in_progress');
+    expect(plan.planStatus).toBe('in_progress');
+    expect(plan.reviewReason).toBeUndefined();
+    expect(plan.xstateState).toBe('coding');
+    expect(plan.executionPhase).toBe('coding');
+    expect(plan.recoveryNote).toBe('Blocked terminal phase complete: 1/2 subtasks complete.');
+  });
+});

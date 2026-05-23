@@ -9,7 +9,8 @@ vi.mock('../ipc-handlers/utils', () => ({
 
 vi.mock('../ipc-handlers/task/plan-file-utils', () => ({
   getPlanPath: vi.fn(() => '/mock/path/implementation_plan.json'),
-  persistPlanStatusAndReasonSync: vi.fn()
+  persistPlanStatusAndReasonSync: vi.fn(),
+  safeReadFileSync: vi.fn(() => null)
 }));
 
 vi.mock('../worktree-paths', () => ({
