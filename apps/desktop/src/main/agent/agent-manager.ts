@@ -455,7 +455,16 @@ export class AgentManager extends EventEmitter {
 
     for (const project of projects) {
       const maxParallelTasks = this.getMaxParallelTasks(project);
-      const tasks = projectStore.getTasks(project.id)
+      let tasks = projectStore.getTasks(project.id)
+        .filter((task) => !task.metadata?.archivedAt);
+
+      for (const task of tasks) {
+        if (!this.isRecoverableTaskStatus(task.status)) continue;
+        const conflictFiles = this.getTaskWorktreeConflictFiles(project, task);
+        if (conflictFiles.length === 0) continue;
+        this.persistBaseSyncConflictForCoding(project, task, conflictFiles, 'worktree_has_unmerged_conflicts');
+      }
+      tasks = projectStore.getTasks(project.id)
         .filter((task) => !task.metadata?.archivedAt);
 
       const activeTasks = tasks
@@ -489,6 +498,25 @@ export class AgentManager extends EventEmitter {
 
     if (totalStarted > 0) {
       console.warn(`[AgentManager] Startup recovery resumed ${totalStarted} task worker(s)`);
+    }
+  }
+
+  private isRecoverableTaskStatus(status: Task['status']): boolean {
+    return status === 'in_progress' || status === 'ai_review' || status === 'human_review' || status === 'error';
+  }
+
+  private getTaskWorktreeConflictFiles(project: Project, task: Task): string[] {
+    const worktreePath = findTaskWorktree(project.path, task.specId);
+    if (!worktreePath || !existsSync(worktreePath)) return [];
+    try {
+      const output = execFileSync(getToolPath('git'), ['diff', '--name-only', '--diff-filter=U'], {
+        cwd: worktreePath,
+        encoding: 'utf-8',
+        env: getIsolatedGitEnv(),
+      }).trim();
+      return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    } catch {
+      return [];
     }
   }
 
@@ -812,7 +840,7 @@ export class AgentManager extends EventEmitter {
         } else {
           recoverySubtask.title = 'Resolve base branch sync conflicts';
           recoverySubtask.description = recoveryDescription;
-          recoverySubtask.status = 'pending';
+          recoverySubtask.status = recoverySubtask.status === 'in_progress' ? 'in_progress' : 'pending';
           recoverySubtask.verification = {
             type: 'command',
             run: 'git diff --name-only --diff-filter=U && git status --short',
