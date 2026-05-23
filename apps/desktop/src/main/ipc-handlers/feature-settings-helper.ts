@@ -173,3 +173,23 @@ export function getActiveProviderFeatureSettings(featureKey: FeatureKey): Featur
 
   return { model, thinkingLevel };
 }
+
+/**
+ * Resolve an explicit feature model choice against the active provider/account.
+ * Used for persisted per-session feature config so old UI selections cannot
+ * bypass provider compatibility checks.
+ */
+export function resolveActiveProviderFeatureModel(featureKey: FeatureKey, model: string): string {
+  const settings = readSettingsFile();
+  if (!settings) return model;
+
+  const activeProvider = resolveActiveProvider(settings);
+  if (!activeProvider) return model;
+
+  return resolveFeatureModelForProvider(
+    model,
+    featureKey,
+    activeProvider,
+    resolveActiveAccount(settings),
+  );
+}

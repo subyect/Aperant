@@ -5,7 +5,7 @@ vi.mock('../settings-utils', () => ({
 }));
 
 import { readSettingsFile } from '../settings-utils';
-import { getActiveProviderFeatureSettings } from './feature-settings-helper';
+import { getActiveProviderFeatureSettings, resolveActiveProviderFeatureModel } from './feature-settings-helper';
 
 const mockReadSettingsFile = vi.mocked(readSettingsFile);
 
@@ -69,5 +69,20 @@ describe('getActiveProviderFeatureSettings', () => {
     });
 
     expect(getActiveProviderFeatureSettings('utility').model).toBe('gpt-5.3-codex');
+  });
+
+  it('normalizes explicit feature model choices against the active OpenAI subscription account', () => {
+    mockReadSettingsFile.mockReturnValue({
+      globalPriorityOrder: ['openai-subscription'],
+      providerAccounts: [{
+        id: 'openai-subscription',
+        provider: 'openai',
+        authType: 'oauth',
+        billingModel: 'subscription',
+      }],
+    });
+
+    expect(resolveActiveProviderFeatureModel('insights', 'gpt-5.5')).toBe('gpt-5.3-codex');
+    expect(resolveActiveProviderFeatureModel('insights', 'opus')).toBe('gpt-5.3-codex');
   });
 });

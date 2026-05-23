@@ -19,20 +19,7 @@ import type {
 import { projectStore } from "../project-store";
 import { insightsService } from "../insights-service";
 import { safeSendToRenderer } from "./utils";
-import { getActiveProviderFeatureSettings } from "./feature-settings-helper";
-import type { ThinkingLevel } from "../../shared/types/settings";
-
-/**
- * Read insights feature settings using per-provider resolution
- */
-function getInsightsFeatureSettings(): InsightsModelConfig {
-  const { model, thinkingLevel } = getActiveProviderFeatureSettings('insights');
-  return {
-    profileId: "balanced",
-    model,
-    thinkingLevel: thinkingLevel as ThinkingLevel,
-  };
-}
+import { resolveInsightsModelConfig } from "../insights/model-config";
 
 /**
  * Register all insights-related IPC handlers
@@ -69,14 +56,7 @@ export function registerInsightsHandlers(getMainWindow: () => BrowserWindow | nu
         return;
       }
 
-      // Get feature settings from Agent Settings and merge with provided config
-      const featureSettings = getInsightsFeatureSettings();
-      const configWithSettings: InsightsModelConfig = {
-        // Start with feature settings as defaults
-        ...featureSettings,
-        // Override with any explicitly provided config
-        ...modelConfig,
-      };
+      const configWithSettings = resolveInsightsModelConfig(modelConfig);
 
       console.log("[Insights Handler] Using model config:", {
         model: configWithSettings.model,
