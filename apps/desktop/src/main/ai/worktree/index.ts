@@ -6,5 +6,5 @@
  * internal file names.
  */
 
-export { createOrGetWorktree } from './worktree-manager';
-export type { WorktreeResult } from './worktree-manager';
+export { createOrGetWorktree, syncWorktreeWithBaseBranch } from './worktree-manager';
+export type { WorktreeResult, WorktreeSyncResult } from './worktree-manager';

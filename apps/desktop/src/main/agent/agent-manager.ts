@@ -26,7 +26,7 @@ import { resolveModelEquivalent } from '../../shared/constants/models';
 import type { BuiltinProvider } from '../../shared/types/provider-account';
 import type { AgentExecutorConfig, SerializableSessionConfig, SerializedSecurityProfile } from '../ai/agent/types';
 import { getSecurityProfile } from '../ai/security/security-profile';
-import { createOrGetWorktree } from '../ai/worktree';
+import { createOrGetWorktree, syncWorktreeWithBaseBranch } from '../ai/worktree';
 import { findTaskWorktree } from '../worktree-paths';
 import { readSettingsFile } from '../settings-utils';
 import type { ProviderAccount } from '../../shared/types/provider-account';
@@ -1052,6 +1052,20 @@ export class AgentManager extends EventEmitter {
 
     // Find existing worktree for QA (created during task execution)
     const worktreePath = findTaskWorktree(projectPath, specId);
+    const task = project ? projectStore.getTasks(project.id).find((candidate) => candidate.id === taskId || candidate.specId === specId) : undefined;
+    const baseBranch = task?.metadata?.baseBranch || project?.settings?.mainBranch || 'main';
+    if (worktreePath) {
+      try {
+        const syncResult = await syncWorktreeWithBaseBranch(projectPath, worktreePath, baseBranch);
+        if (syncResult.synced) {
+          console.warn(`[AgentManager] Synced QA worktree for ${specId} with ${baseBranch}${syncResult.stashed ? ' (stashed task edits)' : ''}`);
+        }
+      } catch (error) {
+        console.warn(`[AgentManager] Could not sync QA worktree for ${specId}:`, error);
+        this.emit('error', taskId, `Could not sync task worktree with ${baseBranch}. Resolve worktree conflicts and retry QA.`);
+        return;
+      }
+    }
     const effectiveCwd = worktreePath ?? projectPath;
     const effectiveProjectDir = worktreePath ?? projectPath;
     const effectiveSpecDir = worktreePath
@@ -1182,6 +1196,14 @@ export class AgentManager extends EventEmitter {
     }
 
     const baseBranch = task.metadata?.baseBranch || project.settings?.mainBranch || 'main';
+    try {
+      const syncResult = await syncWorktreeWithBaseBranch(project.path, worktreePath, baseBranch);
+      if (syncResult.synced) {
+        console.warn(`[AgentManager] Synced merge worktree for ${task.specId} with ${baseBranch}${syncResult.stashed ? ' (stashed task edits)' : ''}`);
+      }
+    } catch (error) {
+      return { success: false, message: `Could not sync worktree with ${baseBranch}: ${error instanceof Error ? error.message : String(error)}` };
+    }
     const storageDir = path.join(project.path, project.autoBuildPath || '.auto-claude');
     const orchestrator = new MergeOrchestrator({
       projectDir: project.path,

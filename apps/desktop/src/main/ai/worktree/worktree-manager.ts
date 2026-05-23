@@ -51,6 +51,15 @@ async function git(
   }
 }
 
+async function gitSucceeds(args: string[], cwd: string): Promise<boolean> {
+  try {
+    await execFileAsync('git', args, { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -60,6 +69,12 @@ export interface WorktreeResult {
   worktreePath: string;
   /** Git branch name checked out in the worktree */
   branch: string;
+}
+
+export interface WorktreeSyncResult {
+  synced: boolean;
+  stashed: boolean;
+  skippedReason?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +123,7 @@ export async function createOrGetWorktree(
       console.warn(
         `[WorktreeManager] Using existing worktree: ${specId} on branch ${branchName}`,
       );
+      await syncWorktreeWithBaseBranch(projectPath, worktreePath, baseBranch);
       await syncSpecDirectoryIntoWorktree(projectPath, worktreePath, specId, autoBuildPath);
       return { worktreePath: resolve(worktreePath), branch: branchName };
     }
@@ -177,6 +193,17 @@ export async function createOrGetWorktree(
         `[WorktreeManager] Creating worktree from local branch: ${baseBranch}`,
       );
     } else {
+      const localExists = await git(
+        ['rev-parse', '--verify', baseBranch],
+        projectPath,
+        /* allowFailure */ true,
+      );
+      if (localExists) {
+        startPoint = baseBranch;
+        console.warn(
+          `[WorktreeManager] Creating worktree from local branch: ${baseBranch}`,
+        );
+      } else {
       const remoteRef = `origin/${baseBranch}`;
       const remoteExists = await git(
         ['rev-parse', '--verify', remoteRef],
@@ -193,6 +220,7 @@ export async function createOrGetWorktree(
         console.warn(
           `[WorktreeManager] Remote ref ${remoteRef} not found, using local branch: ${baseBranch}`,
         );
+      }
       }
     }
 
@@ -240,6 +268,78 @@ export async function createOrGetWorktree(
   await syncSpecDirectoryIntoWorktree(projectPath, worktreePath, specId, autoBuildPath);
 
   return { worktreePath: resolve(worktreePath), branch: branchName };
+}
+
+export async function syncWorktreeWithBaseBranch(
+  projectPath: string,
+  worktreePath: string,
+  baseBranch = 'main',
+): Promise<WorktreeSyncResult> {
+  const baseExists = await git(
+    ['rev-parse', '--verify', baseBranch],
+    projectPath,
+    /* allowFailure */ true,
+  );
+  if (!baseExists) {
+    return { synced: false, stashed: false, skippedReason: `Base branch ${baseBranch} not found` };
+  }
+
+  const alreadyContainsBase = await gitSucceeds(
+    ['merge-base', '--is-ancestor', baseBranch, 'HEAD'],
+    worktreePath,
+  );
+  if (alreadyContainsBase) {
+    return { synced: false, stashed: false, skippedReason: 'already_current' };
+  }
+
+  const dirty = await git(
+    ['status', '--porcelain', '--', '.', ':(exclude).auto-claude'],
+    worktreePath,
+    /* allowFailure */ true,
+  );
+  let stashed = false;
+
+  if (dirty.trim()) {
+    const stashOutput = await git(
+      [
+        'stash',
+        'push',
+        '--include-untracked',
+        '-m',
+        `aperant-base-sync-${Date.now()}`,
+        '--',
+        '.',
+        ':(exclude).auto-claude',
+      ],
+      worktreePath,
+      /* allowFailure */ true,
+    );
+    stashed = !/No local changes/i.test(stashOutput);
+  }
+
+  try {
+    const headIsAncestorOfBase = await gitSucceeds(
+      ['merge-base', '--is-ancestor', 'HEAD', baseBranch],
+      worktreePath,
+    );
+    if (headIsAncestorOfBase) {
+      await git(['merge', '--ff-only', baseBranch], worktreePath);
+    } else {
+      await git(['merge', '--no-edit', baseBranch], worktreePath);
+    }
+  } catch (error) {
+    await git(['merge', '--abort'], worktreePath, /* allowFailure */ true);
+    if (stashed) {
+      await git(['stash', 'pop'], worktreePath, /* allowFailure */ true);
+    }
+    throw error;
+  }
+
+  if (stashed) {
+    await git(['stash', 'pop'], worktreePath);
+  }
+
+  return { synced: true, stashed };
 }
 
 async function syncSpecDirectoryIntoWorktree(
