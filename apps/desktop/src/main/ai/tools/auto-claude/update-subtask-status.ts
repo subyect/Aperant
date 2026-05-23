@@ -38,6 +38,9 @@ interface PlanSubtask {
   status?: string;
   notes?: string;
   updated_at?: string;
+  last_error?: string;
+  last_attempt_outcome?: string;
+  last_attempt_at?: string;
 }
 
 interface PlanPhase {
@@ -67,6 +70,11 @@ function updateSubtaskInPlan(
       if (id === subtaskId) {
         subtask.status = status;
         if (notes) subtask.notes = notes;
+        if (status === 'completed') {
+          delete subtask.last_error;
+          delete subtask.last_attempt_outcome;
+          delete subtask.last_attempt_at;
+        }
         subtask.updated_at = new Date().toISOString();
         plan.last_updated = new Date().toISOString();
         return true;

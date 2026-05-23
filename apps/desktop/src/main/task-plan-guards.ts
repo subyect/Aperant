@@ -79,10 +79,13 @@ export function doneStatusHasIncompleteSubtasks(plan: MutablePlan | null | undef
   if (!allCompleted) {
     return { incomplete: true, completedCount, totalCount };
   }
+  if (completedSubtasksHaveBlockingErrors(plan) && !planHasMergeCompletionEvidence(plan)) {
+    return { incomplete: true, completedCount, totalCount };
+  }
   if (isQASignoffApproved(plan?.qa_signoff)) {
     return { incomplete: false, completedCount, totalCount };
   }
-  if (planHasFailedTerminalEvent(plan) || completedSubtasksHaveBlockingErrors(plan)) {
+  if (planHasFailedTerminalEvent(plan)) {
     return { incomplete: true, completedCount, totalCount };
   }
   return { incomplete: false, completedCount, totalCount };

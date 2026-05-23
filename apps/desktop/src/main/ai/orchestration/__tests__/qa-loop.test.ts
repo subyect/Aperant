@@ -421,10 +421,34 @@ describe('QALoop', () => {
       isHumanFeedback: true,
       humanFeedback: 'Fix this please',
     }));
+    const planResetWrite = mockWriteFile.mock.calls.find(([filePath, content]) =>
+      String(filePath).endsWith('implementation_plan.json')
+      && typeof content === 'string'
+      && content.includes('"human_feedback_pending"')
+      && !content.includes('"qa_signoff"')
+    );
+    expect(planResetWrite).toBeDefined();
     // Fix request file should be deleted only after approval
     expect(mockUnlink).toHaveBeenCalledWith(path.join(SPEC_DIR, 'QA_FIX_REQUEST.md'));
     // Overall outcome should still reflect the QA result
     expect(outcome.approved).toBe(true);
+  });
+
+  it('does not approve stale QA signoff when the human-feedback fixer fails', async () => {
+    mockReadFile.mockImplementation((path: string) => {
+      if (path.endsWith('QA_FIX_REQUEST.md')) return Promise.resolve('Fix this please');
+      if (path.endsWith('implementation_plan.json')) return Promise.resolve(completedPlan('approved'));
+      return Promise.reject(new Error('ENOENT'));
+    });
+
+    const runSession = vi.fn().mockResolvedValue(makeSessionResult('error'));
+    const config = makeConfig({ runSession, maxIterations: 5 });
+    const loop = new QALoop(config);
+    const outcome = await loop.run();
+
+    expect(outcome.approved).toBe(false);
+    expect(outcome.reason).toBe('error');
+    expect(mockUnlink).not.toHaveBeenCalledWith(path.join(SPEC_DIR, 'QA_FIX_REQUEST.md'));
   });
 
   it('keeps QA_FIX_REQUEST.md when feedback has not reached approval', async () => {

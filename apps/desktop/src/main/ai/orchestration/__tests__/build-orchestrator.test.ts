@@ -48,18 +48,20 @@ describe('BuildOrchestrator coding phase', () => {
   it('does not complete coding when a subtask is still pending', async () => {
     await writeFile(planPath, JSON.stringify(plan(['pending', 'pending']), null, 2));
     let callCount = 0;
+    const generatePrompt = vi.fn().mockResolvedValue('prompt');
+    const runSession = vi.fn(async (config) => {
+      callCount++;
+      if (config.subtaskId === '1.1') {
+        await writeFile(planPath, JSON.stringify(plan(['completed', 'pending']), null, 2));
+      }
+      return sessionResult('completed');
+    });
 
     const orchestrator = new BuildOrchestrator({
       specDir: tmpDir,
       projectDir: tmpDir,
-      generatePrompt: vi.fn().mockResolvedValue('prompt'),
-      runSession: vi.fn(async (config) => {
-        callCount++;
-        if (config.subtaskId === '1.1') {
-          await writeFile(planPath, JSON.stringify(plan(['completed', 'pending']), null, 2));
-        }
-        return sessionResult('completed');
-      }),
+      generatePrompt,
+      runSession,
     });
 
     const result = await (orchestrator as unknown as {
@@ -73,6 +75,13 @@ describe('BuildOrchestrator coding phase', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('Coding incomplete');
     expect(callCount).toBeGreaterThan(1);
+    expect(generatePrompt).toHaveBeenCalledWith('coder', 'coding', expect.objectContaining({
+      subtask: expect.objectContaining({ id: '1.1', description: 'Do task 1' }),
+    }));
+    expect(runSession).toHaveBeenCalledWith(expect.objectContaining({
+      subtaskId: '1.1',
+      subtask: expect.objectContaining({ id: '1.1', description: 'Do task 1' }),
+    }));
     expect(written.phases[0].subtasks).toEqual([
       expect.objectContaining({ id: '1.1', status: 'completed' }),
       expect.objectContaining({ id: '1.2', status: 'pending' }),

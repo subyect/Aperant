@@ -1113,5 +1113,60 @@ describe('ProjectStore', () => {
       const matchingTasks = tasks.filter(t => t.specId === '007-dedupe-test');
       expect(matchingTasks).toHaveLength(1);
     });
+
+    it('should not let an empty active worktree plan hide main-plan subtasks', async () => {
+      const mainSpecsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '008-empty-worktree');
+      mkdirSync(mainSpecsDir, { recursive: true });
+
+      const worktreeDir = path.join(
+        TEST_PROJECT_PATH,
+        '.auto-claude',
+        'worktrees',
+        'tasks',
+        '008-empty-worktree',
+        '.auto-claude',
+        'specs',
+        '008-empty-worktree'
+      );
+      mkdirSync(worktreeDir, { recursive: true });
+
+      const mainPlan = {
+        feature: 'Main Plan With Subtasks',
+        workflow_type: 'feature',
+        status: 'in_progress',
+        phases: [
+          {
+            phase: 1,
+            name: 'Phase 1',
+            type: 'implementation',
+            subtasks: [
+              { id: 'subtask-1', description: 'One', status: 'completed' },
+              { id: 'subtask-2', description: 'Two', status: 'pending' },
+            ],
+          },
+        ],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+      };
+      const emptyWorktreePlan = {
+        feature: 'Empty Worktree Runtime State',
+        workflow_type: 'feature',
+        status: 'in_progress',
+        phases: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-02T00:00:00Z',
+      };
+
+      writeFileSync(path.join(mainSpecsDir, 'implementation_plan.json'), JSON.stringify(mainPlan));
+      writeFileSync(path.join(worktreeDir, 'implementation_plan.json'), JSON.stringify(emptyWorktreePlan));
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const task = store.getTasks(project.id).find(t => t.specId === '008-empty-worktree');
+
+      expect(task?.location).toBe('main');
+      expect(task?.subtasks).toHaveLength(2);
+    });
   });
 });

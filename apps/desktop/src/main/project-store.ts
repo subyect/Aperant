@@ -418,6 +418,13 @@ export class ProjectStore {
       return false;
     }
 
+    // Do not let a newer but empty worktree plan hide a populated main plan.
+    // This can happen after a planning/coding crash writes runtime state in the
+    // worktree before phases are synced, leaving the detail overview at 0 tasks.
+    if (worktreeTask.subtasks.length === 0 && mainTask.subtasks.length > 0) {
+      return false;
+    }
+
     const worktreeCompleted = this.completedSubtaskCount(worktreeTask);
     const mainCompleted = this.completedSubtaskCount(mainTask);
     if (worktreeCompleted > mainCompleted) {

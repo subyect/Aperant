@@ -36,6 +36,7 @@ import type {
 import type { Tool as AITool } from 'ai';
 import type { SessionConfig, StreamEvent, SessionResult } from '../session/types';
 import { BuildOrchestrator } from '../orchestration/build-orchestrator';
+import type { SubtaskInfo } from '../orchestration/build-orchestrator';
 import { QALoop } from '../orchestration/qa-loop';
 import { SpecOrchestrator } from '../orchestration/spec-orchestrator';
 import type { SpecPhase } from '../orchestration/spec-orchestrator';
@@ -45,6 +46,7 @@ import type { ExecutionPhase } from '../../../shared/constants/phase-protocol';
 import { getPhaseThinking } from '../config/phase-config';
 import { TaskLogWriter } from '../logging/task-log-writer';
 import { loadProjectInstructions, injectContext } from '../prompts/prompt-loader';
+import { generateSubtaskPrompt } from '../prompts/subtask-prompt-generator';
 import { createMcpClientsForAgent, mergeMcpTools, closeAllMcpClients } from '../mcp/client';
 import type { McpClientResult } from '../mcp/types';
 import { runProjectIndexer } from '../project/project-indexer';
@@ -573,6 +575,22 @@ async function runBuildOrchestrator(
     abortSignal: abortController.signal,
 
     generatePrompt: async (agentType, _phase, context) => {
+      if (agentType === 'coder' && context.subtask) {
+        // Load project instructions through the shared prompt assembler cache,
+        // then hand the coder one concrete subtask instead of a generic queue.
+        if (cachedProjectInstructions === undefined) {
+          await assemblePrompt('coder', session);
+        }
+        return generateSubtaskPrompt({
+          specDir: session.specDir,
+          projectDir: session.projectDir,
+          subtask: context.subtask,
+          phase: context.subtask.phaseName ? { name: context.subtask.phaseName } : undefined,
+          attemptCount: Math.max(0, context.attemptCount - 1),
+          projectInstructions: cachedProjectInstructions,
+        });
+      }
+
       const promptName = agentType === 'coder' ? 'coder' : agentType;
       let prompt = await assemblePrompt(promptName, session);
 
@@ -587,7 +605,12 @@ async function runBuildOrchestrator(
     runSession: async (runConfig) => {
       postLog(`Running ${runConfig.agentType} session (phase=${runConfig.phase}, session=${runConfig.sessionNumber})`);
       // Build a kickoff message for the agent so it has a task to act on
-      const kickoffMessage = buildKickoffMessage(runConfig.agentType, runConfig.specDir, runConfig.projectDir);
+      const kickoffMessage = buildKickoffMessage(
+        runConfig.agentType,
+        runConfig.specDir,
+        runConfig.projectDir,
+        runConfig.subtask,
+      );
       return runSingleSession(
         runConfig.agentType,
         runConfig.phase,
@@ -1238,11 +1261,25 @@ function buildSpecKickoffMessage(
  * Build a kickoff user message for an agent session.
  * The AI SDK requires at least one user message; this provides a concrete task directive.
  */
-function buildKickoffMessage(agentType: AgentType, specDir: string, projectDir: string): string {
+function buildKickoffMessage(
+  agentType: AgentType,
+  specDir: string,
+  projectDir: string,
+  subtask?: SubtaskInfo,
+): string {
   switch (agentType) {
     case 'planner':
       return `Read the spec at ${specDir}/spec.md and create a detailed implementation plan at ${specDir}/implementation_plan.json. Project root: ${projectDir}`;
     case 'coder':
+      if (subtask) {
+        return [
+          `Implement exactly subtask ${subtask.id}: ${subtask.description}`,
+          `Project root: ${projectDir}.`,
+          `Spec directory: ${specDir}.`,
+          `Do not choose a different pending subtask.`,
+          `Only mark subtask ${subtask.id} completed in implementation_plan.json after implementation and verification evidence are complete.`,
+        ].join(' ');
+      }
       return `Read ${specDir}/implementation_plan.json and implement the next pending subtask. Project root: ${projectDir}. After completing the subtask, update its status to "completed" in implementation_plan.json.`;
     case 'qa_reviewer':
       return `Review the implementation in ${projectDir} against the specification in ${specDir}/spec.md. Write your findings to ${specDir}/qa_report.md with a clear "Status: PASSED" or "Status: FAILED" line.`;

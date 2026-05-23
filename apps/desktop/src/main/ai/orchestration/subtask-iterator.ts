@@ -103,8 +103,13 @@ interface PlanSubtask {
   title: string;
   description: string;
   status: string;
+  service?: string;
   files_to_create?: string[];
   files_to_modify?: string[];
+  patterns_from?: string[];
+  verification?: SubtaskInfo['verification'];
+  last_error?: string;
+  last_attempt_outcome?: string;
 }
 
 // =============================================================================
@@ -157,9 +162,14 @@ export async function iterateSubtasks(
       id: subtask.id,
       description: subtask.description,
       phaseName,
+      service: subtask.service,
       filesToCreate: subtask.files_to_create,
       filesToModify: subtask.files_to_modify,
+      patternsFrom: subtask.patterns_from,
+      verification: subtask.verification,
       status: subtask.status,
+      lastError: subtask.last_error,
+      lastAttemptOutcome: subtask.last_attempt_outcome,
     };
 
     // Track attempts

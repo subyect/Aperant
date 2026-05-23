@@ -177,4 +177,46 @@ describe('iterateSubtasks completion proof', () => {
     expect(written.phases[0].subtasks[0].status).toBe('pending');
     expect(written.phases[0].subtasks[0].last_error).toContain('max step limit');
   });
+
+  it('passes prior retry context into the next subtask session', async () => {
+    const plan = planWithStatus('pending') as ReturnType<typeof planWithStatus> & {
+      phases: Array<{
+        subtasks: Array<{
+          last_error?: string;
+          last_attempt_outcome?: string;
+          files_to_modify?: string[];
+        }>;
+      }>;
+    };
+    plan.phases[0].subtasks[0].last_error = 'Previous run only read files and did not implement changes.';
+    plan.phases[0].subtasks[0].last_attempt_outcome = 'completed';
+    plan.phases[0].subtasks[0].files_to_modify = ['src/example.ts'];
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const seen: Array<{
+      id: string;
+      lastError?: string;
+      lastAttemptOutcome?: string;
+      filesToModify?: string[];
+    }> = [];
+
+    await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async (subtask) => {
+        seen.push(subtask);
+        await writeFile(planPath, JSON.stringify(planWithStatus('completed'), null, 2));
+        return sessionResult('completed');
+      },
+    });
+
+    expect(seen[0]).toEqual(expect.objectContaining({
+      id: '1.1',
+      lastError: 'Previous run only read files and did not implement changes.',
+      lastAttemptOutcome: 'completed',
+      filesToModify: ['src/example.ts'],
+    }));
+  });
 });

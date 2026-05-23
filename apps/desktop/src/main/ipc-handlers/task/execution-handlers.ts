@@ -100,6 +100,63 @@ function getSpecDirForWatcher(projectPath: string, specsBaseDir: string, specId:
   return path.join(projectPath, specsBaseDir, specId);
 }
 
+const ALLOWED_FEEDBACK_IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp', 'image/svg+xml'];
+
+function writeQaFixRequestToSpecDir(
+  targetSpecDir: string,
+  feedback?: string,
+  images?: ImageAttachment[]
+): void {
+  let imageReferences = '';
+  if (images && images.length > 0) {
+    const imagesDir = path.join(targetSpecDir, 'feedback_images');
+    if (!existsSync(imagesDir)) {
+      mkdirSync(imagesDir, { recursive: true });
+    }
+
+    const savedImages: string[] = [];
+    for (const image of images) {
+      if (!image.data) {
+        console.warn('[TASK_REVIEW] Skipping image with no data:', image.filename);
+        continue;
+      }
+      if (!image.mimeType || !ALLOWED_FEEDBACK_IMAGE_MIME_TYPES.includes(image.mimeType)) {
+        console.warn('[TASK_REVIEW] Skipping image with missing or disallowed MIME type:', image.mimeType);
+        continue;
+      }
+
+      const sanitizedFilename = path.basename(image.filename);
+      if (!sanitizedFilename || sanitizedFilename === '.' || sanitizedFilename === '..') {
+        console.warn('[TASK_REVIEW] Skipping image with invalid filename:', image.filename);
+        continue;
+      }
+
+      const imagePath = path.join(imagesDir, sanitizedFilename);
+      const resolvedPath = path.resolve(imagePath);
+      const resolvedImagesDir = path.resolve(imagesDir);
+      if (!resolvedPath.startsWith(resolvedImagesDir + path.sep)) {
+        console.warn('[TASK_REVIEW] Skipping image with path outside target directory:', image.filename);
+        continue;
+      }
+
+      const base64Data = image.data.replace(/^data:image\/[^;]+;base64,/, '');
+      writeFileSync(imagePath, Buffer.from(base64Data, 'base64'));
+      savedImages.push(`feedback_images/${sanitizedFilename}`);
+    }
+
+    if (savedImages.length > 0) {
+      imageReferences = '\n\n## Reference Images\n\n' +
+        savedImages.map(imgPath => `![Feedback Image](${imgPath})`).join('\n\n');
+    }
+  }
+
+  writeFileSync(
+    path.join(targetSpecDir, 'QA_FIX_REQUEST.md'),
+    `# QA Fix Request\n\nStatus: REJECTED\n\n## Feedback\n\n${feedback || 'No feedback provided'}${imageReferences}\n\nCreated at: ${new Date().toISOString()}\n`,
+    'utf-8'
+  );
+}
+
 /**
  * Register task execution handlers (start, stop, review, status management, recovery)
  */
@@ -482,95 +539,40 @@ export function registerTaskExecutionHandlers(
           console.log('[TASK_REVIEW] Main branch restored to pre-merge state');
         }
 
-        // Write feedback for QA fixer - write to WORKTREE spec dir if it exists
-        // The QA process runs in the worktree where the build and implementation_plan.json are
-        const targetSpecDir = hasWorktree && worktreeSpecDir ? worktreeSpecDir : specDir;
-        const fixRequestPath = path.join(targetSpecDir, 'QA_FIX_REQUEST.md');
+        // Persist feedback to every spec location. The QA process usually runs
+        // in the worktree, but the main spec must retain the request across
+        // worktree cleanup, app restart, and later recovery scans.
+        const feedbackSpecDirs = [specDir];
+        if (worktreeSpecDir && worktreeSpecDir !== specDir) feedbackSpecDirs.push(worktreeSpecDir);
 
-        console.warn('[TASK_REVIEW] Writing QA fix request to:', fixRequestPath);
-        console.warn('[TASK_REVIEW] hasWorktree:', hasWorktree, 'worktreePath:', worktreePath);
-
-        // Process images if provided
-        let imageReferences = '';
-        if (images && images.length > 0) {
-          const imagesDir = path.join(targetSpecDir, 'feedback_images');
+        let wroteFixRequest = false;
+        for (const targetSpecDir of feedbackSpecDirs) {
           try {
-            if (!existsSync(imagesDir)) {
-              mkdirSync(imagesDir, { recursive: true });
-            }
-            const savedImages: string[] = [];
-            for (const image of images) {
-              try {
-                if (!image.data) {
-                  console.warn('[TASK_REVIEW] Skipping image with no data:', image.filename);
-                  continue;
-                }
-                // Server-side MIME type validation (defense in depth - frontend also validates)
-                // Reject missing mimeType to prevent bypass attacks
-                const ALLOWED_MIME_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp', 'image/svg+xml'];
-                if (!image.mimeType || !ALLOWED_MIME_TYPES.includes(image.mimeType)) {
-                  console.warn('[TASK_REVIEW] Skipping image with missing or disallowed MIME type:', image.mimeType);
-                  continue;
-                }
-                // Sanitize filename to prevent path traversal attacks
-                const sanitizedFilename = path.basename(image.filename);
-                if (!sanitizedFilename || sanitizedFilename === '.' || sanitizedFilename === '..') {
-                  console.warn('[TASK_REVIEW] Skipping image with invalid filename:', image.filename);
-                  continue;
-                }
-                // Remove data URL prefix if present (e.g., "data:image/png;base64," or "data:image/svg+xml;base64,")
-                const base64Data = image.data.replace(/^data:image\/[^;]+;base64,/, '');
-                const imageBuffer = Buffer.from(base64Data, 'base64');
-                const imagePath = path.join(imagesDir, sanitizedFilename);
-                // Verify the resolved path is within the images directory (defense in depth)
-                const resolvedPath = path.resolve(imagePath);
-                const resolvedImagesDir = path.resolve(imagesDir);
-                if (!resolvedPath.startsWith(resolvedImagesDir + path.sep)) {
-                  console.warn('[TASK_REVIEW] Skipping image with path outside target directory:', image.filename);
-                  continue;
-                }
-                writeFileSync(imagePath, imageBuffer);
-                savedImages.push(`feedback_images/${sanitizedFilename}`);
-                console.log('[TASK_REVIEW] Saved image:', sanitizedFilename);
-              } catch (imgError) {
-                console.error('[TASK_REVIEW] Failed to save image:', image.filename, imgError);
-              }
-            }
-            if (savedImages.length > 0) {
-              imageReferences = '\n\n## Reference Images\n\n' +
-                savedImages.map(imgPath => `![Feedback Image](${imgPath})`).join('\n\n');
-            }
-          } catch (dirError) {
-            console.error('[TASK_REVIEW] Failed to create images directory:', dirError);
+            writeQaFixRequestToSpecDir(targetSpecDir, feedback, images);
+            wroteFixRequest = true;
+            console.warn('[TASK_REVIEW] Wrote QA fix request to:', path.join(targetSpecDir, 'QA_FIX_REQUEST.md'));
+          } catch (error) {
+            console.error('[TASK_REVIEW] Failed to write QA fix request:', targetSpecDir, error);
           }
         }
 
-        try {
-          writeFileSync(
-            fixRequestPath,
-            `# QA Fix Request\n\nStatus: REJECTED\n\n## Feedback\n\n${feedback || 'No feedback provided'}${imageReferences}\n\nCreated at: ${new Date().toISOString()}\n`,
-            'utf-8'
-          );
-        } catch (error) {
-          console.error('[TASK_REVIEW] Failed to write QA fix request:', error);
+        if (!wroteFixRequest) {
           return { success: false, error: 'Failed to write QA fix request file' };
         }
 
         // Clear stale tracking state before starting new QA process
         taskStateManager.prepareForRestart(taskId);
 
-        // Restart QA process - use worktree path if it exists, otherwise main project
-        // The QA process needs to run where the implementation_plan.json with completed subtasks is
-        const qaProjectPath = hasWorktree ? worktreePath : project.path;
-        console.warn('[TASK_REVIEW] Starting QA process with projectPath:', qaProjectPath);
-        agentManager.startQAProcess(taskId, qaProjectPath, task.specId, project.id);
-
         taskStateManager.handleUiEvent(
           taskId,
-          { type: 'USER_RESUMED' },
+          { type: 'QA_FIXING_STARTED', iteration: 0 },
           task,
           project
         );
+
+        console.warn('[TASK_REVIEW] Starting QA process for feedback with projectPath:', project.path);
+        agentManager.startQAProcess(taskId, project.path, task.specId, project.id);
+
       }
 
       return { success: true };

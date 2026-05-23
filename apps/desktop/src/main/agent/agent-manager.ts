@@ -172,6 +172,8 @@ export class AgentManager extends EventEmitter {
   }> = new Map();
   private humanReviewMergeTimer: NodeJS.Timeout | null = null;
   private humanReviewMergeInProgress = false;
+  private workflowRecoveryTimer: NodeJS.Timeout | null = null;
+  private workflowRecoveryInProgress = false;
 
   constructor() {
     super();
@@ -327,6 +329,7 @@ export class AgentManager extends EventEmitter {
 
       if (projects.length === 0) {
         console.log('[AgentManager] No projects found - skipping startup recovery scan');
+        this.startWorkflowRecoveryWatchdog();
         return;
       }
 
@@ -384,8 +387,31 @@ export class AgentManager extends EventEmitter {
 
       await this.resumeOrphanedWorkflowTasks(projects);
       this.scheduleHumanReviewMerge('startup-recovery', 1000);
+      this.startWorkflowRecoveryWatchdog();
     } catch (err) {
       console.error('[AgentManager] Startup recovery scan failed:', err);
+    }
+  }
+
+  private startWorkflowRecoveryWatchdog(): void {
+    if (this.workflowRecoveryTimer) return;
+    this.workflowRecoveryTimer = setInterval(() => {
+      this.runWorkflowRecoveryPass('watchdog').catch((error) => {
+        console.warn('[AgentManager] Workflow recovery watchdog failed:', error);
+      });
+    }, 30_000);
+    this.workflowRecoveryTimer.unref?.();
+  }
+
+  async runWorkflowRecoveryPass(reason = 'manual'): Promise<void> {
+    if (this.workflowRecoveryInProgress) return;
+    this.workflowRecoveryInProgress = true;
+    try {
+      const projects = projectStore.getProjects();
+      await this.resumeOrphanedWorkflowTasks(projects);
+      this.scheduleHumanReviewMerge(reason, 1000);
+    } finally {
+      this.workflowRecoveryInProgress = false;
     }
   }
 
@@ -401,6 +427,7 @@ export class AgentManager extends EventEmitter {
         .filter((task) =>
           task.status === 'in_progress'
           || task.status === 'ai_review'
+          || this.shouldResumePlanningFailure(project, task)
           || this.shouldResumeIncompleteTerminalTask(project, task)
           || this.shouldRetryTerminalAgentError(project, task)
         )
@@ -502,6 +529,40 @@ export class AgentManager extends EventEmitter {
         const lastEventType = plan.lastEvent?.type;
         const recoveryNote = plan.recoveryNote ?? '';
         if (lastEventType === 'QA_AGENT_ERROR' || /terminal failure blocked/i.test(recoveryNote)) {
+          return true;
+        }
+      } catch {
+        // Ignore unreadable plans; normal task loading will surface JSON errors.
+      }
+    }
+
+    return false;
+  }
+
+  private shouldResumePlanningFailure(project: Project, task: Task): boolean {
+    if (task.status !== 'error' && task.status !== 'human_review') return false;
+    if (
+      task.reviewReason
+      && task.reviewReason !== 'errors'
+      && task.reviewReason !== 'stopped'
+    ) return false;
+    if (task.subtasks.length > 0) return false;
+
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as {
+          status?: string;
+          executionPhase?: string;
+          lastEvent?: { type?: string };
+        };
+        const lastEventType = plan.lastEvent?.type ?? '';
+        if (
+          plan.status === 'error'
+          || plan.executionPhase === 'failed'
+          || lastEventType === 'PLANNING_FAILED'
+          || lastEventType === 'CODING_FAILED'
+        ) {
           return true;
         }
       } catch {

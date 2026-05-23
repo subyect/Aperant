@@ -120,9 +120,25 @@ export interface SubtaskInfo {
   id: string;
   description: string;
   phaseName?: string;
+  service?: string;
   filesToCreate?: string[];
   filesToModify?: string[];
+  patternsFrom?: string[];
+  verification?: {
+    type?: 'command' | 'api' | 'browser' | 'e2e' | 'manual';
+    command?: string;
+    expected?: string;
+    method?: string;
+    url?: string;
+    body?: Record<string, unknown>;
+    expected_status?: number;
+    checks?: string[];
+    steps?: string[];
+    instructions?: string;
+  };
   status: string;
+  lastError?: string;
+  lastAttemptOutcome?: string;
 }
 
 /** Configuration passed to runSession callback */
@@ -133,6 +149,7 @@ export interface SessionRunConfig {
   specDir: string;
   projectDir: string;
   subtaskId?: string;
+  subtask?: SubtaskInfo;
   sessionNumber: number;
   abortSignal?: AbortSignal;
   cliModel?: string;
@@ -451,6 +468,7 @@ export class BuildOrchestrator extends EventEmitter {
           specDir: this.config.specDir,
           projectDir: this.config.projectDir,
           subtaskId: subtask.id,
+          subtask,
           sessionNumber: this.iteration,
           abortSignal: this.config.abortSignal,
           cliModel: this.config.cliModel,

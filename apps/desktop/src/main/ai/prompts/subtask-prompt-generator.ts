@@ -245,6 +245,15 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
       `This subtask has been attempted ${attemptCount} time(s) before without success.\n` +
       `You MUST use a DIFFERENT approach than previous attempts.\n`
     );
+    if (subtask.lastError) {
+      sections.push(
+        `**Last recorded issue:**\n` +
+        `${subtask.lastError}\n`
+      );
+    }
+    if (subtask.lastAttemptOutcome) {
+      sections.push(`**Last agent outcome:** ${subtask.lastAttemptOutcome}\n`);
+    }
     if (recoveryHints && recoveryHints.length > 0) {
       sections.push('**Previous attempt insights:**');
       for (const hint of recoveryHints) {
@@ -328,22 +337,20 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
     `2. **Read the files to modify** (if any) to understand current implementation\n` +
     `3. **Implement the subtask** following the patterns exactly\n` +
     `4. **Run verification** and fix any issues\n` +
-    `5. **Commit your changes:**\n` +
-    `   \`\`\`bash\n` +
-    `   git add .\n` +
-    `   git commit -m "auto-claude: ${subtask.id} - ${subtask.description.slice(0, 50)}"\n` +
-    `   \`\`\`\n` +
-    `6. **Update the plan** - set this subtask's status to "completed" in implementation_plan.json\n\n` +
+    `5. **Update the plan** - set ONLY this subtask's status to "completed" in implementation_plan.json after implementation and verification are complete\n\n` +
     `## Quality Checklist\n\n` +
     `Before marking complete, verify:\n` +
     `- [ ] Follows patterns from reference files\n` +
+    `- [ ] Project files were changed as needed, or the existing implementation was verified with concrete evidence\n` +
     `- [ ] No console.log/print debugging statements\n` +
     `- [ ] Error handling in place\n` +
     `- [ ] Verification passes\n` +
-    `- [ ] Clean commit with descriptive message\n\n` +
+    `- [ ] implementation_plan.json only marks this exact subtask complete\n\n` +
     `## Important\n\n` +
     `- Focus ONLY on this subtask - don't modify unrelated code\n` +
-    `- If verification fails, FIX IT before committing\n` +
+    `- Do not mark the subtask complete just because you read files or found a previous attempt\n` +
+    `- If the work is already implemented, run targeted verification and record the evidence in build-progress.txt before marking complete\n` +
+    `- If verification fails, FIX IT before marking complete\n` +
     `- If you encounter a blocker, document it in build-progress.txt\n`
   );
 

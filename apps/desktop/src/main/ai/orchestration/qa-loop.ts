@@ -157,6 +157,10 @@ export interface QAOutcome {
   error?: string;
 }
 
+type HumanFeedbackProcessResult =
+  | { ok: true }
+  | { ok: false; reason: 'cancelled' | 'error'; message?: string };
+
 /** QA signoff structure from implementation_plan.json */
 interface QASignoff {
   status: string;
@@ -218,7 +222,16 @@ export class QALoop extends EventEmitter {
 
       // Process human feedback first if present
       if (hasHumanFeedback) {
-        await this.processHumanFeedback();
+        const feedbackResult = await this.processHumanFeedback();
+        if (!feedbackResult.ok) {
+          return this.outcome(
+            false,
+            0,
+            Date.now() - startTime,
+            feedbackResult.reason,
+            feedbackResult.message,
+          );
+        }
       }
 
       // Main QA loop
@@ -269,6 +282,7 @@ export class QALoop extends EventEmitter {
           await this.recordIteration(iteration, 'approved', [], iterationDuration);
           await this.writeReports('approved');
           await this.clearHumanFeedback();
+          await this.clearHumanFeedbackState();
           return this.outcome(true, iteration, Date.now() - startTime);
         }
 
@@ -454,15 +468,55 @@ export class QALoop extends EventEmitter {
     }
   }
 
+  private async clearHumanFeedbackState(): Promise<void> {
+    try {
+      const planPath = join(this.config.specDir, 'implementation_plan.json');
+      const raw = await readFile(planPath, 'utf-8');
+      const plan = safeParseJson<Record<string, unknown>>(raw);
+      if (!plan || plan.human_feedback_pending === undefined) return;
+      delete plan.human_feedback_pending;
+      plan.updated_at = new Date().toISOString();
+      await writeFile(planPath, JSON.stringify(plan, null, 2), 'utf-8');
+    } catch {
+      // Non-fatal after approval.
+    }
+  }
+
+  private async resetQASignoffForHumanFeedback(humanFeedback: string | null): Promise<void> {
+    try {
+      const planPath = join(this.config.specDir, 'implementation_plan.json');
+      const raw = await readFile(planPath, 'utf-8');
+      const plan = safeParseJson<Record<string, unknown>>(raw);
+      if (!plan) return;
+
+      delete plan.qa_signoff;
+      delete plan.final_acceptance;
+      plan.status = 'ai_review';
+      plan.planStatus = 'review';
+      plan.xstateState = 'qa_fixing';
+      plan.executionPhase = 'qa_fixing';
+      plan.human_feedback_pending = {
+        requested_at: new Date().toISOString(),
+        preview: humanFeedback?.slice(0, 500) ?? null,
+      };
+      plan.updated_at = new Date().toISOString();
+
+      await writeFile(planPath, JSON.stringify(plan, null, 2), 'utf-8');
+    } catch {
+      // Non-fatal: the reviewer still must write a fresh signoff before approval.
+    }
+  }
+
   /**
    * Process human feedback by running the fixer agent first.
    */
-  private async processHumanFeedback(): Promise<void> {
+  private async processHumanFeedback(): Promise<HumanFeedbackProcessResult> {
     this.emitTyped('log', 'Human feedback detected — running QA Fixer first');
     this.emitTyped('qa-fix-start', 0);
     this.sessionNumber++;
 
     const humanFeedback = await this.readHumanFeedback();
+    await this.resetQASignoffForHumanFeedback(humanFeedback);
     const fixPrompt = await this.config.generatePrompt('qa_fixer', {
       iteration: 0,
       maxIterations: this.config.maxIterations ?? MAX_QA_ITERATIONS,
@@ -483,6 +537,17 @@ export class QALoop extends EventEmitter {
     });
 
     this.emitTyped('qa-fix-complete', 0);
+    if (result.outcome === 'cancelled') {
+      return { ok: false, reason: 'cancelled' };
+    }
+    if (result.outcome !== 'completed') {
+      return {
+        ok: false,
+        reason: 'error',
+        message: result.error?.message ?? `Human feedback fixer ended with outcome "${result.outcome}"`,
+      };
+    }
+    return { ok: true };
   }
 
   // ===========================================================================
