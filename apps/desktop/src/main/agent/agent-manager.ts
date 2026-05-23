@@ -16,7 +16,7 @@ import {
   ProcessType
 } from './types';
 import type { IdeationConfig, Project, Task } from '../../shared/types';
-import { getPlanPathsForSpec, readQaReportVerdictSync, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
+import { getPlanPathsForSpec, readQaReportVerdictSync, recoverApprovedQASignoffForSpec, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
 import { AUTO_BUILD_PATHS, getSpecsDir } from '../../shared/constants';
 import { projectStore } from '../project-store';
 import { resolveAuth, resolveAuthFromQueue } from '../ai/auth/resolver';
@@ -532,6 +532,17 @@ export class AgentManager extends EventEmitter {
 
     try {
       if ((task.status === 'ai_review' || this.shouldRetryTerminalAgentError(project, task)) && allSubtasksComplete) {
+        if (recoverApprovedQASignoffForSpec(project, task.specId, 'workflow-recovery-qa-report')) {
+          taskStateManager.handleUiEvent(task.id, {
+            type: 'QA_PASSED',
+            iteration: 0,
+            testsRun: {},
+          }, task, project);
+          this.scheduleHumanReviewMerge('workflow-recovery-qa-report', 1500);
+          console.warn(`[AgentManager] Startup recovery accepted passed QA report for ${task.specId}`);
+          return true;
+        }
+
         const resumedFromFailedQaReport = await this.resumeCodingForFailedQaReport(project, task);
         if (resumedFromFailedQaReport) {
           console.warn(`[AgentManager] Startup recovery routed failed QA report back to coding for ${task.specId}`);

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -55,10 +55,11 @@ describe('plan-file runtime guards', () => {
   let syncPlanPhasesToMainSync: typeof import('../plan-file-utils').syncPlanPhasesToMainSync;
   let readQaReportVerdictSync: typeof import('../plan-file-utils').readQaReportVerdictSync;
   let readApprovedQASignoffFromReportSync: typeof import('../plan-file-utils').readApprovedQASignoffFromReportSync;
+  let recoverApprovedQASignoffForSpec: typeof import('../plan-file-utils').recoverApprovedQASignoffForSpec;
 
   beforeEach(async () => {
     vi.resetModules();
-    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync, readQaReportVerdictSync, readApprovedQASignoffFromReportSync } = await import('../plan-file-utils'));
+    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync, readQaReportVerdictSync, readApprovedQASignoffFromReportSync, recoverApprovedQASignoffForSpec } = await import('../plan-file-utils'));
     tempDir = mkdtempSync(path.join(tmpdir(), 'aperant-plan-'));
     planPath = path.join(tempDir, 'implementation_plan.json');
     writeFileSync(planPath, JSON.stringify(planWithSubtasks(), null, 2));
@@ -169,5 +170,30 @@ describe('plan-file runtime guards', () => {
 
     expect(verdict?.status).toBe('approved');
     expect(signoff?.status).toBe('approved');
+  });
+
+  it('promotes completed QA tasks from passed report evidence', () => {
+    const projectRoot = path.join(tempDir, 'project');
+    const specId = '001-passed-report';
+    const specDir = path.join(projectRoot, '.auto-claude', 'specs', specId);
+    mkdirSync(specDir, { recursive: true });
+
+    const plan = planWithSubtasks();
+    plan.phases[0].subtasks[1].status = 'completed';
+    writeFileSync(path.join(specDir, 'implementation_plan.json'), JSON.stringify(plan, null, 2));
+    writeFileSync(path.join(specDir, 'qa_report.md'), 'Status: PASSED\n');
+
+    expect(recoverApprovedQASignoffForSpec({
+      id: 'project-1',
+      name: 'Project',
+      path: projectRoot,
+      autoBuildPath: '.auto-claude',
+      settings: {},
+    } as any, specId, 'test-recovery')).toBe(true);
+
+    const recovered = JSON.parse(readFileSync(path.join(specDir, 'implementation_plan.json'), 'utf-8'));
+    expect(recovered.status).toBe('human_review');
+    expect(recovered.qa_signoff.status).toBe('approved');
+    expect(recovered.lastEvent.type).toBe('QA_PASSED');
   });
 });

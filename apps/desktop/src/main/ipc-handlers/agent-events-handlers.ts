@@ -96,6 +96,36 @@ function restartContinuation(
   );
 }
 
+function recoverQaReportResult(
+  agentManager: AgentManager,
+  processType: ProcessType,
+  task: Task | undefined,
+  project: Project | undefined,
+  source: string,
+): boolean {
+  if (processType !== "qa-process" || !task || !project) return false;
+
+  if (recoverApprovedQASignoffForSpec(project, task.specId, source)) {
+    taskStateManager.handleUiEvent(task.id, {
+      type: 'QA_PASSED',
+      iteration: 0,
+      testsRun: {},
+    }, task, project);
+    agentManager.scheduleHumanReviewMerge?.(source, 1500);
+    return true;
+  }
+
+  if (agentManager.hasFailedQaReport(project, task)) {
+    console.warn(`[agent-events-handlers] QA report failed for ${task.specId}; routing back to coding recovery`);
+    void agentManager.resumeCodingForFailedQaReport(project, task).catch((error) => {
+      console.warn(`[agent-events-handlers] Failed to route QA report failure for ${task.specId}:`, error);
+    });
+    return true;
+  }
+
+  return false;
+}
+
 /**
  * Register all agent-events-related IPC handlers
  */
@@ -169,6 +199,10 @@ export function registerAgenteventsHandlers(
     // Use projectId from event to scope the lookup (prevents cross-project contamination)
     const { task: exitTask, project: exitProject } = findTaskAndProject(taskId, projectId);
     const exitProjectId = exitProject?.id || projectId;
+
+    if (recoverQaReportResult(agentManager, processType, exitTask, exitProject, "qa-report-exit")) {
+      return;
+    }
 
     // Skip handleProcessExited for successful spec-creation exits — the spec → build
     // transition (line 132+) will start a new agent, and calling handleProcessExited
@@ -287,25 +321,7 @@ export function registerAgenteventsHandlers(
       syncPlanPhasesToMainSync(getPlanPath(exitProject, exitTask), finalPlan as unknown as Record<string, unknown>, exitProjectId);
     }
 
-    if (processType === "qa-process" && exitTask && exitProject) {
-      if (recoverApprovedQASignoffForSpec(exitProject, exitTask.specId, "qa-report-exit")) {
-        taskStateManager.handleUiEvent(exitTask.id, {
-          type: 'QA_PASSED',
-          iteration: 0,
-          testsRun: {},
-        }, exitTask, exitProject);
-        agentManager.scheduleHumanReviewMerge?.("qa-report-exit", 1500);
-        return;
-      }
-
-      if (agentManager.hasFailedQaReport(exitProject, exitTask)) {
-        console.warn(`[agent-events-handlers] QA report failed for ${exitTask.specId}; routing back to coding recovery`);
-        void agentManager.resumeCodingForFailedQaReport(exitProject, exitTask).catch((error) => {
-          console.warn(`[agent-events-handlers] Failed to route QA report failure for ${exitTask.specId}:`, error);
-        });
-        return;
-      }
-    }
+    if (recoverQaReportResult(agentManager, processType, exitTask, exitProject, "qa-report-exit-after-sync")) return;
 
     if (finalPlan && exitTask && exitProject && processType !== "spec-creation") {
       const continuationMode = planNeedsContinuationAfterExit(finalPlan as unknown as Record<string, unknown>, code);
