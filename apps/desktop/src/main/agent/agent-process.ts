@@ -546,6 +546,7 @@ export class AgentProcessManager {
       taskId,
       process: null, // Will be set after spawn() call completes below
       startedAt: new Date(),
+      lastActivityAt: new Date(),
       spawnId,
       projectId,
       processType,
@@ -650,6 +651,7 @@ export class AgentProcessManager {
     const isDebug = ['true', '1', 'yes', 'on'].includes(process.env.DEBUG?.toLowerCase() ?? '');
 
     const processLog = (line: string) => {
+      this.state.touchProcess(taskId);
       allOutput = (allOutput + line).slice(-10000);
 
       const hasMarker = line.includes('__EXEC_PHASE__');
@@ -774,12 +776,17 @@ export class AgentProcessManager {
         processLog(stderrBuffer);
       }
 
-      this.state.deleteProcess(taskId);
+      const currentProcess = this.state.getProcess(taskId);
+      const isCurrentSpawn = currentProcess?.spawnId === spawnId;
+      if (isCurrentSpawn) {
+        this.state.deleteProcess(taskId);
+      }
 
       if (this.state.wasSpawnKilled(spawnId)) {
         this.state.clearKilledSpawn(spawnId);
         return;
       }
+      if (!isCurrentSpawn) return;
 
       if (code !== 0) {
         console.log('[AgentProcess] Process failed with code:', code, 'for task:', taskId);
@@ -809,7 +816,12 @@ export class AgentProcessManager {
     // Handle process error
     childProcess.on('error', (err: Error) => {
       console.error('[AgentProcess] Process error:', err.message);
-      this.state.deleteProcess(taskId);
+      const currentProcess = this.state.getProcess(taskId);
+      const isCurrentSpawn = currentProcess?.spawnId === spawnId;
+      if (isCurrentSpawn) {
+        this.state.deleteProcess(taskId);
+      }
+      if (!isCurrentSpawn) return;
 
       this.emitter.emit('execution-progress', taskId, {
         phase: 'failed',
@@ -851,6 +863,7 @@ export class AgentProcessManager {
       taskId,
       process: null, // No ChildProcess for worker threads
       startedAt: new Date(),
+      lastActivityAt: new Date(),
       spawnId,
       projectId,
       processType,
@@ -870,6 +883,7 @@ export class AgentProcessManager {
 
     // Forward all bridge events to the main emitter (matching existing event contract)
     bridge.on('log', (tId: string, log: string, pId?: string) => {
+      this.state.touchProcess(tId);
       this.emitter.emit('log', tId, log, pId);
       if (isDebug) {
         console.log(`[Agent:${tId}] ${log}`);
@@ -877,24 +891,32 @@ export class AgentProcessManager {
     });
 
     bridge.on('error', (tId: string, error: string, pId?: string) => {
+      this.state.touchProcess(tId);
       this.emitter.emit('error', tId, error, pId);
     });
 
     bridge.on('execution-progress', (tId: string, progress: ExecutionProgressData, pId?: string) => {
+      this.state.touchProcess(tId);
       this.emitter.emit('execution-progress', tId, progress, pId);
     });
 
     bridge.on('task-event', (tId: string, event: unknown, pId?: string) => {
+      this.state.touchProcess(tId);
       this.emitter.emit('task-event', tId, event, pId);
     });
 
     bridge.on('exit', (tId: string, code: number | null, pType: ProcessType, pId?: string) => {
-      this.state.deleteProcess(tId);
+      const currentProcess = this.state.getProcess(tId);
+      const isCurrentSpawn = currentProcess?.spawnId === spawnId;
+      if (isCurrentSpawn) {
+        this.state.deleteProcess(tId);
+      }
 
       if (this.state.wasSpawnKilled(spawnId)) {
         this.state.clearKilledSpawn(spawnId);
         return;
       }
+      if (!isCurrentSpawn) return;
 
       if (code !== 0) {
         // Collect any output for rate limit / auth failure detection
@@ -963,7 +985,20 @@ export class AgentProcessManager {
     // Handle worker thread termination
     if (agentProcess.worker) {
       try {
-        agentProcess.worker.terminate();
+        const worker = agentProcess.worker as {
+          terminate?: () => Promise<number>;
+          send?: (message: unknown) => boolean;
+          connected?: boolean;
+          kill?: (signal?: NodeJS.Signals | number) => boolean;
+        };
+        if (typeof worker.terminate === 'function') {
+          void worker.terminate();
+        } else {
+          if (worker.connected && typeof worker.send === 'function') {
+            worker.send({ type: 'abort' });
+          }
+          worker.kill?.('SIGTERM');
+        }
       } catch {
         // Worker may already be terminated
       }

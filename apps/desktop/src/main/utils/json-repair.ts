@@ -47,7 +47,12 @@ function applyRepairs(raw: string, originalError: SyntaxError): string {
   // 2. Remove trailing commas before } or ]
   text = text.replace(/,(\s*[}\]])/g, '$1');
 
-  // 3. Add missing commas between array elements / object properties
+  // 3. Escape invalid backslash sequences inside strings.
+  // LLMs commonly write regex-like text such as "window\.confirm" in JSON
+  // strings; JSON only allows \" \\ \/ \b \f \n \r \t and \uXXXX escapes.
+  text = text.replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+
+  // 4. Add missing commas between array elements / object properties
   // This is the most common LLM mistake: a closing } or ] or " followed by
   // whitespace/newline and then an opening { or [ or " where a comma is required.
   //
@@ -67,7 +72,7 @@ function applyRepairs(raw: string, originalError: SyntaxError): string {
     // Standard fixes weren't enough
   }
 
-  // 4. More aggressive: fix missing commas even without newlines
+  // 5. More aggressive: fix missing commas even without newlines
   // e.g., } { on the same line or "value" "key" patterns
   text = text.replace(
     /([}\]"])\s+([{["])/g,

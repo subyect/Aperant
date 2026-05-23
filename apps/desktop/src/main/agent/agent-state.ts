@@ -99,6 +99,13 @@ export class AgentState {
   }
 
   /**
+   * Update a process activity timestamp when it emits output or progress.
+   */
+  touchProcess(taskId: string, at = new Date()): void {
+    this.updateProcess(taskId, { lastActivityAt: at });
+  }
+
+  /**
    * Get all processes
    */
   getAllProcesses(): Map<string, AgentProcess> {

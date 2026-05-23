@@ -21,6 +21,7 @@ import {
   persistSpecQaReviewStateSync
 } from './plan-file-utils';
 import { writeFileAtomicSync } from '../../utils/atomic-file';
+import { safeParseJson } from '../../utils/json-repair';
 import { findTaskWorktree } from '../../worktree-paths';
 import { projectStore } from '../../project-store';
 import { getIsolatedGitEnv, detectWorktreeBranch } from '../../utils/git-isolation';
@@ -269,7 +270,8 @@ export function registerTaskExecutionHandlers(
       const planContent = safeReadFileSync(planFilePath);
       if (planContent) {
         try {
-          const plan = JSON.parse(planContent);
+          const plan = safeParseJson<any>(planContent);
+          if (!plan) throw new Error('Invalid implementation_plan.json');
           const completion = checkSubtasksCompletion(plan);
           planHasSubtasks = completion.totalCount > 0;
           planNeedsQaValidation = completion.totalCount > 0
@@ -697,7 +699,7 @@ export function registerTaskExecutionHandlers(
       if (status === 'done' || status === 'pr_created') {
         try {
           const planContentForDone = safeReadFileSync(planPath);
-          const planForDone = planContentForDone ? JSON.parse(planContentForDone) : null;
+          const planForDone = planContentForDone ? safeParseJson<Record<string, unknown>>(planContentForDone) : null;
           const doneGuard = doneStatusHasIncompleteSubtasks(planForDone);
           if (doneGuard.incomplete) {
             console.warn(`[TASK_UPDATE_STATUS] Blocking ${status}: ${doneGuard.completedCount}/${doneGuard.totalCount} subtasks complete`);
@@ -807,7 +809,8 @@ export function registerTaskExecutionHandlers(
 	          const updatePlanContent = safeReadFileSync(updatePlanFilePath);
 	          if (updatePlanContent) {
 	            try {
-	              const plan = JSON.parse(updatePlanContent);
+	              const plan = safeParseJson<any>(updatePlanContent);
+	              if (!plan) throw new Error('Invalid implementation_plan.json');
 	              const completion = checkSubtasksCompletion(plan);
 	              updatePlanHasSubtasks = completion.totalCount > 0;
 	              updatePlanNeedsQaValidation = completion.totalCount > 0
@@ -1026,7 +1029,8 @@ export function registerTaskExecutionHandlers(
         const planContent = safeReadFileSync(planPath);
         if (planContent) {
           try {
-            plan = JSON.parse(planContent);
+            plan = safeParseJson<Record<string, unknown>>(planContent);
+            if (!plan) throw new Error('Invalid implementation_plan.json');
           } catch (parseError) {
             console.error('[Recovery] Failed to parse plan file as JSON:', parseError);
             return {

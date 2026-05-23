@@ -55,13 +55,22 @@ import { runProjectIndexer } from '../project/project-indexer';
 // Validation
 // =============================================================================
 
-if (!parentPort) {
-  throw new Error('worker.ts must be run inside a worker_thread');
+function loadWorkerConfig(): WorkerConfig {
+  if (parentPort) {
+    return workerData as WorkerConfig;
+  }
+
+  const rawConfig = process.env.APERANT_AGENT_WORKER_CONFIG;
+  if (!rawConfig) {
+    throw new Error('worker.ts requires APERANT_AGENT_WORKER_CONFIG when run as a child process');
+  }
+
+  return JSON.parse(rawConfig) as WorkerConfig;
 }
 
-const config = workerData as WorkerConfig;
+const config = loadWorkerConfig();
 if (!config?.taskId || !config?.session) {
-  throw new Error('worker.ts requires valid WorkerConfig via workerData');
+  throw new Error('worker.ts requires valid WorkerConfig');
 }
 
 // =============================================================================
@@ -79,7 +88,12 @@ const logWriter = config.session.specDir
 // =============================================================================
 
 function postMessage(message: WorkerMessage): void {
-  parentPort!.postMessage(message);
+  if (parentPort) {
+    parentPort.postMessage(message);
+    return;
+  }
+
+  process.send?.(message);
 }
 
 function postLog(data: string): void {
@@ -91,7 +105,7 @@ function postError(data: string): void {
 }
 
 function postTaskEvent(eventType: string, extra?: Record<string, unknown>): void {
-  parentPort?.postMessage({
+  postMessage({
     type: 'task-event',
     taskId: config.taskId,
     projectId: config.projectId,
@@ -108,17 +122,40 @@ function postTaskEvent(eventType: string, extra?: Record<string, unknown>): void
   } satisfies WorkerTaskEventMessage);
 }
 
+function postFailureResult(message: string): void {
+  postMessage({
+    type: 'result',
+    taskId: config.taskId,
+    projectId: config.projectId,
+    data: {
+      outcome: 'error',
+      stepsExecuted: 0,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      messages: [],
+      toolCallCount: 0,
+      durationMs: 0,
+      error: { code: 'error', message, retryable: false },
+    },
+  });
+}
+
 // =============================================================================
 // Abort Handling
 // =============================================================================
 
 const abortController = new AbortController();
 
-parentPort.on('message', (msg: MainToWorkerMessage) => {
+function handleControlMessage(msg: MainToWorkerMessage): void {
   if (msg.type === 'abort') {
     abortController.abort();
   }
-});
+}
+
+if (parentPort) {
+  parentPort.on('message', handleControlMessage);
+} else {
+  process.on('message', handleControlMessage);
+}
 
 // =============================================================================
 // Shared Helpers
@@ -438,6 +475,7 @@ async function run(): Promise<void> {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     postError(`Agent session failed: ${message}`);
+    postFailureResult(message);
   } finally {
     // Cleanup MCP clients
     if (mcpClients.length > 0) {
@@ -1310,7 +1348,15 @@ function buildFallbackPrompt(agentType: AgentType, specDir: string, projectDir: 
 }
 
 // Start execution
-run().catch((error: unknown) => {
+run().then(() => {
+  if (!parentPort) {
+    process.exit(0);
+  }
+}).catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   postError(`Unhandled worker error: ${message}`);
+  postFailureResult(message);
+  if (!parentPort) {
+    process.exit(1);
+  }
 });

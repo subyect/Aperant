@@ -52,10 +52,11 @@ describe('plan-file runtime guards', () => {
   let planPath: string;
   let persistPlanPhaseSync: typeof import('../plan-file-utils').persistPlanPhaseSync;
   let persistPlanStatusAndReasonSync: typeof import('../plan-file-utils').persistPlanStatusAndReasonSync;
+  let syncPlanPhasesToMainSync: typeof import('../plan-file-utils').syncPlanPhasesToMainSync;
 
   beforeEach(async () => {
     vi.resetModules();
-    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync } = await import('../plan-file-utils'));
+    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync } = await import('../plan-file-utils'));
     tempDir = mkdtempSync(path.join(tmpdir(), 'aperant-plan-'));
     planPath = path.join(tempDir, 'implementation_plan.json');
     writeFileSync(planPath, JSON.stringify(planWithSubtasks(), null, 2));
@@ -130,6 +131,20 @@ describe('plan-file runtime guards', () => {
 
     const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
     expect(plan.status).toBe('in_progress');
+    expect(plan.xstateState).toBe('coding');
+    expect(plan.executionPhase).toBe('coding');
+  });
+
+  it('does not replace an existing subtask plan with an empty source plan', () => {
+    expect(syncPlanPhasesToMainSync(planPath, {
+      phases: [],
+      status: 'in_progress',
+      xstateState: 'planning',
+      executionPhase: 'planning',
+    }, 'project-1')).toBe(false);
+
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+    expect(plan.phases[0].subtasks).toHaveLength(2);
     expect(plan.xstateState).toBe('coding');
     expect(plan.executionPhase).toBe('coding');
   });

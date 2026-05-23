@@ -13,14 +13,15 @@ export interface AgentProcess {
   taskId: string;
   process: ChildProcess | null; // null during async spawn setup before ChildProcess is created
   startedAt: Date;
+  lastActivityAt?: Date;
   projectPath?: string; // For ideation processes to load session on completion
   spawnId: number; // Unique ID to identify this specific spawn
 	  queueProcessType?: QueueProcessType; // Type of queue process (ideation or roadmap)
-	  projectId?: string;
-	  processType?: ProcessType;
-	  /** Worker thread instance for TypeScript AI SDK agent execution */
-	  worker?: Worker | null;
-	}
+  projectId?: string;
+  processType?: ProcessType;
+  /** Worker handle for TypeScript AI SDK agent execution. */
+  worker?: Worker | ChildProcess | null;
+}
 
 export interface ExecutionProgressData {
   phase: ExecutionPhase;

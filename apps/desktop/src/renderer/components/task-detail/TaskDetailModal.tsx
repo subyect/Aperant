@@ -39,6 +39,7 @@ import { TaskEditDialog } from '../TaskEditDialog';
 import { useTaskDetail } from './hooks/useTaskDetail';
 import { TaskMetadata } from './TaskMetadata';
 import { TaskWarnings } from './TaskWarnings';
+import { TaskProgress } from './TaskProgress';
 import { TaskSubtasks } from './TaskSubtasks';
 import { TaskLogs } from './TaskLogs';
 import { TaskFiles } from './TaskFiles';
@@ -512,6 +513,19 @@ function TaskDetailModalContent({ open, task, onOpenChange, onSwitchToTerminals,
                     <div className="p-5 space-y-5 overflow-x-hidden max-w-full">
                       {/* Metadata */}
                       <TaskMetadata task={task} />
+
+                      {(state.isRunning || state.hasActiveExecution || totalSubtasks > 0) && (
+                        <>
+                          <Separator />
+                          <TaskProgress
+                            task={task}
+                            isRunning={state.isRunning}
+                            hasActiveExecution={!!state.hasActiveExecution}
+                            executionPhase={state.executionPhase}
+                            isStuck={state.isStuck}
+                          />
+                        </>
+                      )}
 
                       {/* Human Review Section */}
                       {state.needsReview && (

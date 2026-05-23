@@ -12,7 +12,8 @@ import { getOperationRegistry } from '../claude-profile/operation-registry';
 import {
   SpecCreationMetadata,
   TaskExecutionOptions,
-  RoadmapConfig
+  RoadmapConfig,
+  ProcessType
 } from './types';
 import type { IdeationConfig, Project, Task } from '../../shared/types';
 import { getPlanPathsForSpec, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
@@ -39,9 +40,16 @@ import { getToolPath } from '../cli-tool-manager';
 import { getIsolatedGitEnv } from '../utils/git-isolation';
 import { cleanupWorktree } from '../utils/worktree-cleanup';
 import { writeFileAtomicSync } from '../utils/atomic-file';
+import { safeParseJson } from '../utils/json-repair';
 import { checkSubtasksCompletion } from '../task-plan-guards';
 
 const DEFAULT_MAX_PARALLEL_TASKS = 3;
+const MAX_CONCURRENT_PLANNING_RECOVERIES = 1;
+const STALE_WORKER_ACTIVITY_MS: Record<ProcessType, number> = {
+  'spec-creation': 10 * 60_000,
+  'task-execution': 20 * 60_000,
+  'qa-process': 15 * 60_000,
+};
 
 const APERANT_WORKFLOW_GUARD = `
 
@@ -409,10 +417,36 @@ export class AgentManager extends EventEmitter {
     this.workflowRecoveryInProgress = true;
     try {
       const projects = projectStore.getProjects();
+      this.stopStaleRunningWorkers(projects, reason);
       await this.resumeOrphanedWorkflowTasks(projects);
       this.scheduleHumanReviewMerge(reason, 1000);
     } finally {
       this.workflowRecoveryInProgress = false;
+    }
+  }
+
+  private stopStaleRunningWorkers(projects: Project[], reason: string): void {
+    const projectsById = new Map(projects.map((project) => [project.id, project]));
+    const now = Date.now();
+
+    for (const [taskId, processInfo] of this.state.getAllProcesses()) {
+      if (processInfo.projectId && !projectsById.has(processInfo.projectId)) continue;
+
+      const processType = processInfo.processType ?? 'task-execution';
+      const thresholdMs = STALE_WORKER_ACTIVITY_MS[processType];
+      const lastActivityAt = processInfo.lastActivityAt ?? processInfo.startedAt;
+      const inactiveMs = now - lastActivityAt.getTime();
+      if (inactiveMs < thresholdMs) continue;
+
+      const project = processInfo.projectId ? projectsById.get(processInfo.projectId) : undefined;
+      const task = project ? projectStore.getTasks(project.id).find((candidate) => candidate.id === taskId) : undefined;
+      const label = task?.specId ?? taskId;
+      console.warn(
+        `[AgentManager] ${reason} recovery stopping stale ${processType} worker for ${label} ` +
+        `after ${Math.round(inactiveMs / 1000)}s without activity`
+      );
+      this.emit('error', taskId, `Worker had no activity for ${Math.round(inactiveMs / 60_000)} minutes; restarting recovery.`, processInfo.projectId);
+      this.killTask(taskId);
     }
   }
 
@@ -437,6 +471,7 @@ export class AgentManager extends EventEmitter {
       for (const task of activeTasks) {
         if (this.countRunningProjectTasks(project) >= maxParallelTasks) break;
         if (this.isRunning(task.id)) continue;
+        if (this.shouldDeferPlanningRecovery(project, task)) continue;
         if (await this.resumePersistedWorkflowTask(project, task)) totalStarted++;
       }
 
@@ -447,6 +482,7 @@ export class AgentManager extends EventEmitter {
       for (const task of queuedTasks) {
         if (this.countRunningProjectTasks(project) >= maxParallelTasks) break;
         if (this.isRunning(task.id)) continue;
+        if (this.shouldDeferPlanningRecovery(project, task)) continue;
         if (await this.resumePersistedWorkflowTask(project, task)) totalStarted++;
       }
     }
@@ -520,7 +556,8 @@ export class AgentManager extends EventEmitter {
     for (const planPath of getPlanPathsForSpec(project, task.specId)) {
       if (!existsSync(planPath)) continue;
       try {
-        const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as Record<string, unknown>;
+        const plan = safeParseJson<Record<string, unknown>>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
         if (checkSubtasksCompletion(plan).totalCount > 0) return true;
       } catch {
         // Ignore unreadable plans; startup recovery will surface the task state normally.
@@ -528,6 +565,19 @@ export class AgentManager extends EventEmitter {
     }
 
     return false;
+  }
+
+  private shouldDeferPlanningRecovery(project: Project, task: Task): boolean {
+    if (this.taskHasPlanSubtasks(project, task)) return false;
+    return this.countRunningProjectSpecCreationTasks(project) >= MAX_CONCURRENT_PLANNING_RECOVERIES;
+  }
+
+  private countRunningProjectSpecCreationTasks(project: Project): number {
+    const tasks = projectStore.getTasks(project.id);
+    return tasks.filter((task) => {
+      if (!this.isRunning(task.id)) return false;
+      return this.state.getProcess(task.id)?.processType === 'spec-creation';
+    }).length;
   }
 
   private shouldRetryTerminalAgentError(project: Project, task: Task): boolean {
@@ -543,10 +593,11 @@ export class AgentManager extends EventEmitter {
     for (const planPath of getPlanPathsForSpec(project, task.specId)) {
       if (!existsSync(planPath)) continue;
       try {
-        const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as {
+        const plan = safeParseJson<{
           lastEvent?: { type?: string };
           recoveryNote?: string;
-        };
+        }>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
         const lastEventType = plan.lastEvent?.type;
         const recoveryNote = plan.recoveryNote ?? '';
         if (lastEventType === 'QA_AGENT_ERROR' || /terminal failure blocked/i.test(recoveryNote)) {
@@ -572,11 +623,12 @@ export class AgentManager extends EventEmitter {
     for (const planPath of getPlanPathsForSpec(project, task.specId)) {
       if (!existsSync(planPath)) continue;
       try {
-        const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as {
+        const plan = safeParseJson<{
           status?: string;
           executionPhase?: string;
           lastEvent?: { type?: string };
-        };
+        }>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
         const lastEventType = plan.lastEvent?.type ?? '';
         if (
           plan.status === 'error'
@@ -608,10 +660,11 @@ export class AgentManager extends EventEmitter {
     for (const planPath of getPlanPathsForSpec(project, task.specId)) {
       if (!existsSync(planPath)) continue;
       try {
-        const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as {
+        const plan = safeParseJson<{
           lastEvent?: { type?: string };
           recoveryNote?: string;
-        };
+        }>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
         const lastEventType = plan.lastEvent?.type ?? '';
         const recoveryNote = plan.recoveryNote ?? '';
         if (
@@ -654,7 +707,8 @@ export class AgentManager extends EventEmitter {
     for (const planPath of getPlanPathsForSpec(project, task.specId)) {
       if (!existsSync(planPath)) continue;
       try {
-        const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as Record<string, unknown>;
+        const plan = safeParseJson<Record<string, unknown>>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
         plan.status = status;
         plan.planStatus = planStatus;
         plan.xstateState = xstateState;

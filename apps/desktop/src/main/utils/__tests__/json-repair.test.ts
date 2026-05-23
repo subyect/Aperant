@@ -77,6 +77,15 @@ describe('repairJson', () => {
     expect(parsed.phases[0].subtasks[0].status).toBe('completed');
   });
 
+  it('repairs regex-style invalid escapes in JSON strings', () => {
+    const broken = '{"verification":{"run":"rg \\"window\\.confirm\\" packages/obyect"}}';
+
+    const result = repairJson(broken);
+    const parsed = JSON.parse(result);
+
+    expect(parsed.verification.run).toBe('rg "window\\.confirm" packages/obyect');
+  });
+
   it('throws original error for unrepairable JSON', () => {
     const unrepairable = '{{{invalid';
     expect(() => repairJson(unrepairable)).toThrow(SyntaxError);

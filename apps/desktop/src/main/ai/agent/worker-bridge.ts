@@ -11,6 +11,7 @@
  */
 
 import { Worker } from 'worker_threads';
+import { spawn, type ChildProcess } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { EventEmitter } from 'events';
@@ -28,6 +29,7 @@ import { ProgressTracker } from '../session/progress-tracker';
 
 const WORKER_OLD_GENERATION_LIMIT_MB = 384;
 const WORKER_YOUNG_GENERATION_LIMIT_MB = 64;
+const CHILD_WORKER_SHUTDOWN_TIMEOUT_MS = 2_000;
 
 // ESM-compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -64,6 +66,18 @@ function formatWorkerError(error: Error): string {
     'The task worker was stopped so Aperant can recover instead of crashing.';
 }
 
+type AgentWorkerHandle = Worker | ChildProcess;
+
+function useThreadWorkerForCurrentProcess(): boolean {
+  if (process.env.APERANT_AGENT_WORKER_MODE === 'thread') return true;
+  if (process.env.APERANT_AGENT_WORKER_MODE === 'process') return false;
+  return process.env.NODE_ENV === 'test';
+}
+
+function isThreadWorker(worker: AgentWorkerHandle): worker is Worker {
+  return typeof (worker as Worker).terminate === 'function';
+}
+
 // =============================================================================
 // WorkerBridge
 // =============================================================================
@@ -80,7 +94,7 @@ function formatWorkerError(error: Error): string {
  * ```
  */
 export class WorkerBridge extends EventEmitter {
-  private worker: Worker | null = null;
+  private worker: AgentWorkerHandle | null = null;
   private progressTracker: ProgressTracker = new ProgressTracker();
   private taskId: string = '';
   private projectId: string | undefined;
@@ -111,7 +125,15 @@ export class WorkerBridge extends EventEmitter {
 
     const workerPath = resolveWorkerPath();
 
-    this.worker = new Worker(workerPath, {
+    if (useThreadWorkerForCurrentProcess()) {
+      this.spawnThreadWorker(workerPath, workerConfig);
+    } else {
+      this.spawnChildProcessWorker(workerPath, workerConfig);
+    }
+  }
+
+  private spawnThreadWorker(workerPath: string, workerConfig: WorkerConfig): void {
+    const worker = new Worker(workerPath, {
       workerData: workerConfig,
       resourceLimits: {
         maxOldGenerationSizeMb: WORKER_OLD_GENERATION_LIMIT_MB,
@@ -119,24 +141,71 @@ export class WorkerBridge extends EventEmitter {
       },
     });
 
-    this.worker.on('message', (message: WorkerMessage) => {
+    this.worker = worker;
+
+    worker.on('message', (message: WorkerMessage) => {
       this.handleWorkerMessage(message);
     });
 
-    this.worker.on('error', (error: Error) => {
+    worker.on('error', (error: Error) => {
       if (!this.worker) return;
       this.emitTyped('error', this.taskId, formatWorkerError(error), this.projectId);
       this.emitTyped('exit', this.taskId, 1, this.processType, this.projectId);
       this.cleanup();
     });
 
-    this.worker.on('exit', (code: number) => {
+    worker.on('exit', (code: number) => {
       // Code 0 = clean exit; non-zero = crash/error
       // Only emit exit if we haven't already emitted from a 'result' message
       if (this.worker) {
         this.emitTyped('exit', this.taskId, code === 0 ? 0 : code, this.processType, this.projectId);
         this.cleanup();
       }
+    });
+  }
+
+  private spawnChildProcessWorker(workerPath: string, workerConfig: WorkerConfig): void {
+    const child = spawn(process.execPath, [workerPath], {
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+        APERANT_AGENT_WORKER_CONFIG: JSON.stringify(workerConfig),
+      },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+
+    this.worker = child;
+
+    child.on('message', (message: WorkerMessage) => {
+      this.handleWorkerMessage(message);
+    });
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString().trim();
+      if (text) this.emitTyped('log', this.taskId, text, this.projectId);
+    });
+
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString().trim();
+      if (text) this.emitTyped('log', this.taskId, `[agent stderr] ${text}`, this.projectId);
+    });
+
+    child.on('error', (error: Error) => {
+      if (!this.worker) return;
+      this.emitTyped('error', this.taskId, error.message, this.projectId);
+      this.emitTyped('exit', this.taskId, 1, this.processType, this.projectId);
+      this.cleanup();
+    });
+
+    child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
+      // Only emit exit if we haven't already emitted from a 'result' message.
+      if (!this.worker) return;
+      const exitCode = code ?? (signal ? 1 : 0);
+      if (signal && exitCode !== 0) {
+        this.emitTyped('error', this.taskId, `Agent worker exited from signal ${signal}`, this.projectId);
+      }
+      this.emitTyped('exit', this.taskId, exitCode, this.processType, this.projectId);
+      this.cleanup();
     });
   }
 
@@ -147,22 +216,57 @@ export class WorkerBridge extends EventEmitter {
   async terminate(): Promise<void> {
     if (!this.worker) return;
 
+    const worker = this.worker;
+
     // Try graceful abort first
     try {
-      this.worker.postMessage({ type: 'abort' });
+      if (isThreadWorker(worker)) {
+        worker.postMessage({ type: 'abort' });
+      } else if (worker.connected) {
+        worker.send({ type: 'abort' });
+      }
     } catch {
       // Worker may already be dead
     }
 
-    // Force terminate after a short grace period
-    const worker = this.worker;
     this.cleanup();
 
-    try {
-      await worker.terminate();
-    } catch {
-      // Already terminated
+    if (isThreadWorker(worker)) {
+      try {
+        await worker.terminate();
+      } catch {
+        // Already terminated
+      }
+      return;
     }
+
+    await new Promise<void>((resolve) => {
+      if (worker.exitCode !== null || worker.signalCode !== null) {
+        resolve();
+        return;
+      }
+
+      const timeout = setTimeout(() => {
+        try {
+          worker.kill('SIGKILL');
+        } catch {
+          // Already terminated
+        }
+        resolve();
+      }, CHILD_WORKER_SHUTDOWN_TIMEOUT_MS);
+
+      worker.once('exit', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+
+      try {
+        worker.kill('SIGTERM');
+      } catch {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
   }
 
   /** Whether the worker is currently active */
@@ -171,7 +275,7 @@ export class WorkerBridge extends EventEmitter {
   }
 
   /** Get the underlying Worker instance (for advanced use) */
-  get workerInstance(): Worker | null {
+  get workerInstance(): Worker | ChildProcess | null {
     return this.worker;
   }
 

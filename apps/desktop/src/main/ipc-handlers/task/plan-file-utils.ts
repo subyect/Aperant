@@ -728,6 +728,16 @@ export function syncPlanPhasesToMainSync(
       ? { phases: sourcePlanOrPhases }
       : sourcePlanOrPhases;
 
+    const sourceCounts = checkSubtasksCompletion(sourcePlan);
+    const currentCounts = checkSubtasksCompletion(plan);
+    if (sourceCounts.totalCount === 0 && currentCounts.totalCount > 0) {
+      console.warn(
+        `[plan-file-utils] Refusing to replace ${currentCounts.totalCount} existing subtasks ` +
+        `with an empty source plan at ${mainPlanPath}`
+      );
+      return false;
+    }
+
     preserveCompletedSubtasks(sourcePlan, plan);
     plan.phases = sourcePlan.phases;
     copyRuntimeStateFromSourcePlan(plan, sourcePlan);

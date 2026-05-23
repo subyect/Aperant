@@ -71,6 +71,30 @@ describe('AgentState - Queue Routing', () => {
     });
   });
 
+  describe('process activity tracking', () => {
+    it('updates lastActivityAt for an existing process', () => {
+      const startedAt = new Date('2026-05-23T10:00:00.000Z');
+      const touchedAt = new Date('2026-05-23T10:05:00.000Z');
+      state.addProcess('task-1', {
+        taskId: 'task-1',
+        process: { pid: 1001 } as unknown as import('child_process').ChildProcess,
+        startedAt,
+        lastActivityAt: startedAt,
+        spawnId: 1,
+      });
+
+      state.touchProcess('task-1', touchedAt);
+
+      expect(state.getProcess('task-1')?.lastActivityAt).toEqual(touchedAt);
+    });
+
+    it('ignores activity updates for stale process ids', () => {
+      state.touchProcess('missing-task', new Date('2026-05-23T10:05:00.000Z'));
+
+      expect(state.getProcess('missing-task')).toBeUndefined();
+    });
+  });
+
   describe('assignProfileToTask', () => {
     it('should assign profile to task', () => {
       state.assignProfileToTask('task-1', 'profile-1', 'Test Profile', 'proactive');
