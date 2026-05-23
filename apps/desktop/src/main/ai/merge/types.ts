@@ -338,6 +338,7 @@ export interface MergeResult {
   decision: MergeDecision;
   filePath: string;
   mergedContent?: string;
+  deleteFile?: boolean;
   conflictsResolved: ConflictRegion[];
   conflictsRemaining: ConflictRegion[];
   aiCallsMade: number;

@@ -2073,10 +2073,10 @@ export function registerWorktreeHandlers(
             fileResults: report.fileResults.size
           });
 
-	          if (report.success) {
-	            const mergedFilePaths = [...report.fileResults.entries()]
-	              .filter(([, result]) => result.mergedContent !== undefined && result.decision !== MergeDecision.FAILED)
-	              .map(([filePath]) => filePath);
+		          if (report.success) {
+		            const mergedFilePaths = [...report.fileResults.entries()]
+		              .filter(([, result]) => (result.mergedContent !== undefined || result.deleteFile) && result.decision !== MergeDecision.FAILED)
+		              .map(([filePath]) => filePath);
 	            if (mergedFilePaths.length === 0) {
 	              mergeError = 'Merge produced no files to apply';
 	            }

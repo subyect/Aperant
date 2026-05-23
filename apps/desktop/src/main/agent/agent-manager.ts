@@ -1197,7 +1197,7 @@ export class AgentManager extends EventEmitter {
     }
 
     const mergedFilePaths = [...report.fileResults.entries()]
-      .filter(([, result]) => result.mergedContent !== undefined && result.decision !== MergeDecision.FAILED)
+      .filter(([, result]) => (result.mergedContent !== undefined || result.deleteFile) && result.decision !== MergeDecision.FAILED)
       .map(([filePath]) => filePath);
     if (mergedFilePaths.length === 0) {
       return { success: false, message: 'Merge produced no files to apply' };

@@ -225,6 +225,20 @@ function updateStats(stats: MergeStats, result: MergeResult): void {
   }
 }
 
+function snapshotDeletesFile(snapshot: TaskSnapshot): boolean {
+  if (!snapshot.rawDiff) return false;
+  return snapshot.rawDiff.includes('deleted file mode') || snapshot.rawDiff.includes('\n+++ /dev/null');
+}
+
+function markDirectCopyDeletion(result: MergeResult, snapshot: TaskSnapshot): boolean {
+  if (!snapshotDeletesFile(snapshot)) return false;
+
+  result.deleteFile = true;
+  result.mergedContent = undefined;
+  result.explanation = `${result.explanation} (file deletion)`;
+  return true;
+}
+
 // =============================================================================
 // MergeOrchestrator
 // =============================================================================
@@ -327,7 +341,8 @@ export class MergeOrchestrator {
 
         const result = await this.mergeFile(filePath, [snapshot], targetBranch);
 
-        // Handle DIRECT_COPY
+        // Handle DIRECT_COPY. A missing worktree file can be a legitimate task
+        // deletion; preserve that as a merge operation instead of failing.
         if (result.decision === MergeDecision.DIRECT_COPY) {
           const worktreeFile = path.join(resolvedWorktreePath, filePath);
           if (fs.existsSync(worktreeFile)) {
@@ -337,7 +352,7 @@ export class MergeOrchestrator {
               result.decision = MergeDecision.FAILED;
               result.error = 'Worktree file not found for DIRECT_COPY';
             }
-          } else {
+          } else if (!markDirectCopyDeletion(result, snapshot)) {
             result.decision = MergeDecision.FAILED;
             result.error = 'Worktree file not found for DIRECT_COPY';
           }
@@ -437,7 +452,8 @@ export class MergeOrchestrator {
 
         const result = await this.mergeFile(filePath, snapshots, targetBranch);
 
-        // Handle DIRECT_COPY for multi-task merge
+        // Handle DIRECT_COPY for multi-task merge. If no task has a remaining
+        // file and a snapshot records a deletion, apply the deletion.
         if (result.decision === MergeDecision.DIRECT_COPY) {
           let found = false;
           for (const tid of modifyingTaskIds) {
@@ -456,8 +472,11 @@ export class MergeOrchestrator {
             }
           }
           if (!found) {
-            result.decision = MergeDecision.FAILED;
-            result.error = 'Worktree file not found for DIRECT_COPY';
+            const deletionSnapshot = snapshots.find(snapshotDeletesFile);
+            if (!deletionSnapshot || !markDirectCopyDeletion(result, deletionSnapshot)) {
+              result.decision = MergeDecision.FAILED;
+              result.error = 'Worktree file not found for DIRECT_COPY';
+            }
           }
         }
 
@@ -662,7 +681,7 @@ export class MergeOrchestrator {
 
     const written: string[] = [];
     for (const [filePath, result] of report.fileResults) {
-      if (result.mergedContent !== undefined) {
+      if (result.mergedContent !== undefined && !result.deleteFile) {
         const outPath = path.join(dir, filePath);
         fs.mkdirSync(path.dirname(outPath), { recursive: true });
         fs.writeFileSync(outPath, result.mergedContent, 'utf8');
@@ -678,7 +697,16 @@ export class MergeOrchestrator {
 
     let success = true;
     for (const [filePath, result] of report.fileResults) {
-      if (result.mergedContent !== undefined && result.decision !== MergeDecision.FAILED) {
+      if (result.decision === MergeDecision.FAILED) continue;
+
+      if (result.deleteFile) {
+        const targetPath = path.join(this.projectDir, filePath);
+        try {
+          fs.rmSync(targetPath, { force: true });
+        } catch {
+          success = false;
+        }
+      } else if (result.mergedContent !== undefined) {
         const targetPath = path.join(this.projectDir, filePath);
         fs.mkdirSync(path.dirname(targetPath), { recursive: true });
         try {
@@ -710,6 +738,7 @@ export class MergeOrchestrator {
           decision: result.decision,
           explanation: result.explanation,
           error: result.error,
+          delete_file: result.deleteFile === true,
           conflicts_resolved: result.conflictsResolved.length,
           conflicts_remaining: result.conflictsRemaining.length,
         }])
