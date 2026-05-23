@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 
-import { MergeOrchestrator } from '../orchestrator';
+import { MergeOrchestrator, type MergeReport } from '../orchestrator';
+import { MergeDecision } from '../types';
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -42,10 +43,33 @@ describe('MergeOrchestrator', () => {
 
       expect(report.success).toBe(true);
       expect(deletion?.deleteFile).toBe(true);
+      expect(orchestrator.getApplicableFilePaths(report)).toEqual(['legacy.md']);
+      expect(orchestrator.getStageableFilePaths(report)).toEqual(['legacy.md']);
       expect(existsSync(join(projectDir, 'legacy.md'))).toBe(true);
 
       expect(orchestrator.applyToProject(report)).toBe(true);
       expect(existsSync(join(projectDir, 'legacy.md'))).toBe(false);
+
+      const alreadyGoneReport: MergeReport = {
+        success: true,
+        startedAt: new Date(),
+        tasksMerged: ['001-delete'],
+        stats: report.stats,
+        fileResults: new Map([
+          ['already-gone.md', {
+            decision: MergeDecision.DIRECT_COPY,
+            filePath: 'already-gone.md',
+            deleteFile: true,
+            conflictsResolved: [],
+            conflictsRemaining: [],
+            aiCallsMade: 0,
+            tokensUsed: 0,
+            explanation: 'Deletion already absent in target',
+          }],
+        ]),
+      };
+      expect(orchestrator.getApplicableFilePaths(alreadyGoneReport)).toEqual(['already-gone.md']);
+      expect(orchestrator.getStageableFilePaths(alreadyGoneReport)).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

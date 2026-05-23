@@ -1196,9 +1196,7 @@ export class AgentManager extends EventEmitter {
       return { success: false, message: report.error ?? 'Merge failed' };
     }
 
-    const mergedFilePaths = [...report.fileResults.entries()]
-      .filter(([, result]) => (result.mergedContent !== undefined || result.deleteFile) && result.decision !== MergeDecision.FAILED)
-      .map(([filePath]) => filePath);
+    const mergedFilePaths = orchestrator.getApplicableFilePaths(report);
     if (mergedFilePaths.length === 0) {
       return { success: false, message: 'Merge produced no files to apply' };
     }
@@ -1207,13 +1205,18 @@ export class AgentManager extends EventEmitter {
       return { success: false, message: 'Failed to apply merged files to project directory' };
     }
 
-    execFileSync(getToolPath('git'), ['add', '--', ...mergedFilePaths], {
+    const stageableFilePaths = orchestrator.getStageableFilePaths(report);
+    if (stageableFilePaths.length === 0) {
+      return { success: false, message: 'Merge applied but produced no stageable file changes' };
+    }
+
+    execFileSync(getToolPath('git'), ['add', '--', ...stageableFilePaths], {
       cwd: project.path,
       encoding: 'utf-8',
       env: getIsolatedGitEnv(),
     });
 
-    const stagedNames = execFileSync(getToolPath('git'), ['diff', '--cached', '--name-only', '--', ...mergedFilePaths], {
+    const stagedNames = execFileSync(getToolPath('git'), ['diff', '--cached', '--name-only', '--', ...stageableFilePaths], {
       cwd: project.path,
       encoding: 'utf-8',
       env: getIsolatedGitEnv(),
@@ -1223,7 +1226,7 @@ export class AgentManager extends EventEmitter {
     }
 
     const commitTitle = String(task.title || task.specId).replace(/\s+/g, ' ').trim();
-    execFileSync(getToolPath('git'), ['commit', '-m', `Auto-merge ${task.specId}: ${commitTitle}`, '--', ...mergedFilePaths], {
+    execFileSync(getToolPath('git'), ['commit', '-m', `Auto-merge ${task.specId}: ${commitTitle}`, '--', ...stageableFilePaths], {
       cwd: project.path,
       encoding: 'utf-8',
       env: getIsolatedGitEnv(),

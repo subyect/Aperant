@@ -239,6 +239,14 @@ function markDirectCopyDeletion(result: MergeResult, snapshot: TaskSnapshot): bo
   return true;
 }
 
+function isTrackedFile(projectDir: string, filePath: string): boolean {
+  const result = spawnSync('git', ['ls-files', '--error-unmatch', '--', filePath], {
+    cwd: projectDir,
+    encoding: 'utf8',
+  });
+  return result.status === 0;
+}
+
 // =============================================================================
 // MergeOrchestrator
 // =============================================================================
@@ -690,6 +698,23 @@ export class MergeOrchestrator {
     }
 
     return written;
+  }
+
+  getApplicableFilePaths(report: MergeReport): string[] {
+    return [...report.fileResults.entries()]
+      .filter(([, result]) => (result.mergedContent !== undefined || result.deleteFile) && result.decision !== MergeDecision.FAILED)
+      .map(([filePath]) => filePath);
+  }
+
+  getStageableFilePaths(report: MergeReport): string[] {
+    return [...report.fileResults.entries()]
+      .filter(([filePath, result]) => {
+        if (result.decision === MergeDecision.FAILED) return false;
+        if (result.mergedContent !== undefined) return true;
+        if (result.deleteFile) return isTrackedFile(this.projectDir, filePath);
+        return false;
+      })
+      .map(([filePath]) => filePath);
   }
 
   applyToProject(report: MergeReport): boolean {

@@ -2074,9 +2074,7 @@ export function registerWorktreeHandlers(
           });
 
 		          if (report.success) {
-		            const mergedFilePaths = [...report.fileResults.entries()]
-		              .filter(([, result]) => (result.mergedContent !== undefined || result.deleteFile) && result.decision !== MergeDecision.FAILED)
-		              .map(([filePath]) => filePath);
+		            const mergedFilePaths = orchestrator.getApplicableFilePaths(report);
 	            if (mergedFilePaths.length === 0) {
 	              mergeError = 'Merge produced no files to apply';
 	            }
@@ -2084,46 +2082,52 @@ export function registerWorktreeHandlers(
 	            const applied = mergedFilePaths.length > 0 && orchestrator.applyToProject(report);
 	            debug('Applied merge to project:', applied);
 
-	            if (applied) {
-	              // Stage only files produced by the merge.
-	              try {
-	                execFileSync(getToolPath('git'), ['add', '--', ...mergedFilePaths], {
-	                  cwd: project.path,
-	                  encoding: 'utf-8',
-	                  env: getIsolatedGitEnv()
-	                });
-	                debug('Staged merged files');
-              } catch (gitErr) {
-                debug('Failed to stage merged files:', gitErr);
-              }
+		            if (applied) {
+		              const stageableFilePaths = orchestrator.getStageableFilePaths(report);
+		              if (stageableFilePaths.length === 0) {
+		                mergeError = 'Merge applied but produced no stageable file changes';
+		                mergeSucceeded = false;
+		              } else {
+		                // Stage only files produced by the merge.
+		                try {
+		                  execFileSync(getToolPath('git'), ['add', '--', ...stageableFilePaths], {
+		                    cwd: project.path,
+		                    encoding: 'utf-8',
+		                    env: getIsolatedGitEnv()
+		                  });
+		                  debug('Staged merged files');
+		                } catch (gitErr) {
+		                  debug('Failed to stage merged files:', gitErr);
+		                }
 
-	              if (options?.noCommit !== true) {
-	                const stagedNames = execFileSync(getToolPath('git'), ['diff', '--cached', '--name-only', '--', ...mergedFilePaths], {
-	                  cwd: project.path,
-	                  encoding: 'utf-8',
-	                  env: getIsolatedGitEnv()
-	                }).trim();
-	                if (!stagedNames) {
-	                  mergeError = 'Merge applied but produced no staged changes; refusing to mark task done.';
-	                  mergeSucceeded = false;
-	                } else {
-	                  const commitTitle = String(task.title || task.specId).replace(/\s+/g, ' ').trim();
-	                  execFileSync(getToolPath('git'), ['commit', '-m', `Auto-merge ${task.specId}: ${commitTitle}`, '--', ...mergedFilePaths], {
-	                    cwd: project.path,
-	                    encoding: 'utf-8',
-	                    env: getIsolatedGitEnv()
-	                  });
-	                  fullMergeCommitSha = execFileSync(getToolPath('git'), ['rev-parse', '--short', 'HEAD'], {
-	                    cwd: project.path,
-	                    encoding: 'utf-8',
-	                    env: getIsolatedGitEnv()
-	                  }).trim();
-	                  mergeSucceeded = true;
-	                }
-	              } else {
-	                mergeSucceeded = true;
-	              }
-	            } else {
+		                if (options?.noCommit !== true) {
+		                  const stagedNames = execFileSync(getToolPath('git'), ['diff', '--cached', '--name-only', '--', ...stageableFilePaths], {
+		                    cwd: project.path,
+		                    encoding: 'utf-8',
+		                    env: getIsolatedGitEnv()
+		                  }).trim();
+		                  if (!stagedNames) {
+		                    mergeError = 'Merge applied but produced no staged changes; refusing to mark task done.';
+		                    mergeSucceeded = false;
+		                  } else {
+		                    const commitTitle = String(task.title || task.specId).replace(/\s+/g, ' ').trim();
+		                    execFileSync(getToolPath('git'), ['commit', '-m', `Auto-merge ${task.specId}: ${commitTitle}`, '--', ...stageableFilePaths], {
+		                      cwd: project.path,
+		                      encoding: 'utf-8',
+		                      env: getIsolatedGitEnv()
+		                    });
+		                    fullMergeCommitSha = execFileSync(getToolPath('git'), ['rev-parse', '--short', 'HEAD'], {
+		                      cwd: project.path,
+		                      encoding: 'utf-8',
+		                      env: getIsolatedGitEnv()
+		                    }).trim();
+		                    mergeSucceeded = true;
+		                  }
+		                } else {
+		                  mergeSucceeded = true;
+		                }
+		              }
+		            } else {
 	              mergeError = mergeError || 'Failed to apply merged files to project directory';
 	            }
           } else {
