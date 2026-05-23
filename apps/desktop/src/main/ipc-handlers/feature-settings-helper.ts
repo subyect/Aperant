@@ -15,6 +15,7 @@
 
 import { readSettingsFile } from '../settings-utils';
 import {
+  ALL_AVAILABLE_MODELS,
   DEFAULT_FEATURE_MODELS,
   DEFAULT_FEATURE_THINKING,
   resolveModelEquivalent,
@@ -53,6 +54,65 @@ function resolveActiveProvider(settings: Record<string, unknown>): BuiltinProvid
   return accounts[0]?.provider as BuiltinProvider | undefined;
 }
 
+function resolveActiveAccount(settings: Record<string, unknown>): ProviderAccount | undefined {
+  const priorityOrder = settings.globalPriorityOrder as string[] | undefined;
+  const accounts = settings.providerAccounts as ProviderAccount[] | undefined;
+
+  if (!accounts?.length) return undefined;
+  if (priorityOrder?.length) {
+    for (const accountId of priorityOrder) {
+      const account = accounts.find(a => a.id === accountId);
+      if (account) return account;
+    }
+  }
+  return accounts[0];
+}
+
+function isSubscriptionOnlyOpenAIAccount(account: ProviderAccount | undefined): boolean {
+  return account?.provider === 'openai'
+    && (account.authType === 'oauth' || account.billingModel === 'subscription');
+}
+
+function isSupportedFeatureModelForAccount(model: string, provider: BuiltinProvider, account?: ProviderAccount): boolean {
+  const entry = ALL_AVAILABLE_MODELS.find(m => m.value === model && m.provider === provider);
+  if (!entry) return false;
+  if (isSubscriptionOnlyOpenAIAccount(account) && entry.apiKeyOnly) return false;
+  return true;
+}
+
+function resolveFeatureModelForProvider(
+  model: string,
+  featureKey: FeatureKey,
+  provider?: BuiltinProvider,
+  account?: ProviderAccount,
+): string {
+  if (!provider) return model;
+
+  if (isSupportedFeatureModelForAccount(model, provider, account)) {
+    return model;
+  }
+
+  const equivalent = resolveModelEquivalent(model, provider);
+  if (equivalent && isSupportedFeatureModelForAccount(equivalent.modelId, provider, account)) {
+    return equivalent.modelId;
+  }
+
+  const fallback = DEFAULT_FEATURE_MODELS[featureKey];
+  if (isSupportedFeatureModelForAccount(fallback, provider, account)) {
+    return fallback;
+  }
+
+  const fallbackEquivalent = resolveModelEquivalent(fallback, provider);
+  if (fallbackEquivalent && isSupportedFeatureModelForAccount(fallbackEquivalent.modelId, provider, account)) {
+    return fallbackEquivalent.modelId;
+  }
+
+  const providerDefault = ALL_AVAILABLE_MODELS.find(m =>
+    m.provider === provider && !(isSubscriptionOnlyOpenAIAccount(account) && m.apiKeyOnly)
+  );
+  return providerDefault?.value ?? fallback;
+}
+
 /**
  * Get feature model and thinking level for a specific feature runner.
  *
@@ -70,6 +130,7 @@ export function getActiveProviderFeatureSettings(featureKey: FeatureKey): Featur
 
   // Try per-provider config first
   const activeProvider = resolveActiveProvider(settings);
+  const activeAccount = resolveActiveAccount(settings);
   if (activeProvider) {
     const providerConfig = (settings.providerAgentConfig as Record<string, Record<string, unknown>> | undefined)?.[activeProvider];
     if (providerConfig) {
@@ -81,7 +142,7 @@ export function getActiveProviderFeatureSettings(featureKey: FeatureKey): Featur
 
       if (model) {
         return {
-          model,
+          model: resolveFeatureModelForProvider(model, featureKey, activeProvider, activeAccount),
           thinkingLevel: thinking ?? DEFAULT_FEATURE_THINKING[featureKey],
         };
       }
@@ -95,14 +156,11 @@ export function getActiveProviderFeatureSettings(featureKey: FeatureKey): Featur
   const model = globalModels?.[featureKey] ?? DEFAULT_FEATURE_MODELS[featureKey];
   const thinkingLevel = globalThinking?.[featureKey] ?? DEFAULT_FEATURE_THINKING[featureKey];
 
-  // If the resolved model is an Anthropic shorthand (e.g. 'haiku') but the active
-  // provider is non-Anthropic, resolve to the provider's equivalent model so we
-  // don't send Anthropic model IDs to OpenAI/Google/etc. endpoints.
-  if (activeProvider && activeProvider !== 'anthropic') {
-    const equiv = resolveModelEquivalent(model, activeProvider);
-    if (equiv) {
-      return { model: equiv.modelId, thinkingLevel };
-    }
+  if (activeProvider) {
+    return {
+      model: resolveFeatureModelForProvider(model, featureKey, activeProvider, activeAccount),
+      thinkingLevel,
+    };
   }
 
   return { model, thinkingLevel };

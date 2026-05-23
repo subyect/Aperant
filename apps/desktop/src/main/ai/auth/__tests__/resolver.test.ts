@@ -27,6 +27,12 @@ vi.mock('../../../claude-profile/profile-scorer', () => ({
 // Mock model equivalence
 // ../../../../shared/ = src/shared/ (4 levels up from __tests__ = src/)
 vi.mock('../../../../shared/constants/models', () => ({
+  ALL_AVAILABLE_MODELS: [
+    { value: 'gpt-5.2', provider: 'openai', apiKeyOnly: true },
+    { value: 'gpt-5.2-codex', provider: 'openai' },
+    { value: 'gpt-5.1-codex-mini', provider: 'openai' },
+    { value: 'claude-sonnet-4-5-20250929', provider: 'anthropic' },
+  ],
   resolveModelEquivalent: vi.fn(),
 }));
 
@@ -436,6 +442,32 @@ describe('resolveAuthFromQueue', () => {
     const result = await resolveAuthFromQueue('haiku', [baseAccount]);
 
     expect(result?.resolvedModelId).toBe('claude-haiku-4-5');
+  });
+
+  it('falls back to a subscription-compatible Codex model for stale OpenAI subscription models', async () => {
+    const openAISubscriptionAccount = {
+      ...baseAccount,
+      id: 'openai-subscription',
+      provider: 'openai' as const,
+      authType: 'api-key' as const,
+      billingModel: 'subscription' as const,
+      apiKey: 'sk-openai-subscription',
+    };
+    mockResolveModelEquivalent.mockImplementation((model, provider) => {
+      if (model === 'sonnet' && provider === 'openai') {
+        return {
+          modelId: 'gpt-5.2-codex',
+          reasoning: { type: 'reasoning_effort', level: 'medium' },
+        };
+      }
+      return null;
+    });
+    _mockDetectProviderFromModel.mockReturnValue('openai');
+
+    const result = await resolveAuthFromQueue('gpt-5.5', [openAISubscriptionAccount]);
+
+    expect(result?.resolvedModelId).toBe('gpt-5.2-codex');
+    expect(result?.reasoningConfig).toEqual({ type: 'reasoning_effort', level: 'medium' });
   });
 
   it('falls through to next account when first has no credentials', async () => {

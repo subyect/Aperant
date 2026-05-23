@@ -26,7 +26,7 @@ import {
 } from './types';
 import type { ProviderAccount } from '../../../shared/types/provider-account';
 import type { BuiltinProvider } from '../../../shared/types/provider-account';
-import { resolveModelEquivalent } from '../../../shared/constants/models';
+import { ALL_AVAILABLE_MODELS, resolveModelEquivalent } from '../../../shared/constants/models';
 import { scoreProviderAccount } from '../../claude-profile/profile-scorer';
 import type { ClaudeAutoSwitchSettings } from '../../../shared/types/agent';
 
@@ -334,6 +334,38 @@ const BUILTIN_TO_SUPPORTED: Record<string, SupportedProvider> = {
   ollama: 'ollama',
 };
 
+function isOpenAISubscriptionAccount(account: ProviderAccount): boolean {
+  return account.provider === 'openai'
+    && (account.authType === 'oauth' || account.billingModel === 'subscription');
+}
+
+function resolveAccountModel(
+  requestedModel: string,
+  account: ProviderAccount,
+  modelSpec: ReturnType<typeof resolveModelEquivalent>,
+): {
+  modelId: string;
+  reasoningConfig: NonNullable<ReturnType<typeof resolveModelEquivalent>>['reasoning'] | { type: 'none' };
+} {
+  const resolvedModelId = modelSpec?.modelId ?? requestedModel;
+  const reasoningConfig = modelSpec?.reasoning ?? { type: 'none' as const };
+
+  if (!isOpenAISubscriptionAccount(account)) {
+    return { modelId: resolvedModelId, reasoningConfig };
+  }
+
+  const modelEntry = ALL_AVAILABLE_MODELS.find(m => m.value === resolvedModelId && m.provider === 'openai');
+  if (modelEntry && !modelEntry.apiKeyOnly) {
+    return { modelId: resolvedModelId, reasoningConfig };
+  }
+
+  const fallback = resolveModelEquivalent('sonnet', 'openai');
+  return {
+    modelId: fallback?.modelId ?? 'gpt-5.2-codex',
+    reasoningConfig: fallback?.reasoning ?? { type: 'reasoning_effort', level: 'medium' },
+  };
+}
+
 /**
  * Resolve auth from the global priority queue.
  *
@@ -404,11 +436,7 @@ export async function resolveAuthFromQueue(
       if (supportedProvider === 'ollama' && nativeProvider && nativeProvider !== 'ollama') continue;
     }
 
-    const resolvedModelId = modelSpec?.modelId ?? requestedModel;
-
-    // Note: Codex OAuth accounts now use .responses() for ALL models (not just
-    // Codex-named ones) in the provider factory, so no format mismatch guard
-    // is needed here. All OpenAI models are eligible through Codex OAuth.
+    const resolvedAccountModel = resolveAccountModel(requestedModel, account, modelSpec);
 
     // Resolve credentials for this account
     const auth = await resolveCredentialsForAccount(account, supportedProvider);
@@ -419,8 +447,8 @@ export async function resolveAuthFromQueue(
       ...auth,
       accountId: account.id,
       resolvedProvider: supportedProvider,
-      resolvedModelId,
-      reasoningConfig: modelSpec?.reasoning ?? { type: 'none' },
+      resolvedModelId: resolvedAccountModel.modelId,
+      reasoningConfig: resolvedAccountModel.reasoningConfig,
     };
   }
 
