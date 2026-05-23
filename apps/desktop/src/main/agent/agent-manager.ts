@@ -897,6 +897,47 @@ export class AgentManager extends EventEmitter {
     }
   }
 
+  private persistWorktreeSetupFailure(
+    project: Project | undefined,
+    task: Task | undefined,
+    message: string,
+  ): void {
+    if (!project || !task) return;
+    const now = new Date().toISOString();
+    let persisted = false;
+
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = safeParseJson<Record<string, unknown>>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
+
+        plan.status = 'in_progress';
+        plan.planStatus = 'in_progress';
+        plan.xstateState = 'coding';
+        plan.executionPhase = 'coding';
+        plan.recoveryNote = `Worktree setup failed; Aperant refused to run task code in the main checkout: ${message}`;
+        plan.lastEvent = {
+          eventId: `worktree-setup-failed-${Date.now()}`,
+          sequence: 0,
+          type: 'WORKTREE_SETUP_FAILED',
+          timestamp: now,
+        };
+        plan.updated_at = now;
+        delete plan.reviewReason;
+
+        writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+        persisted = true;
+      } catch (error) {
+        console.warn(`[AgentManager] Failed to persist worktree setup failure for ${task.specId}:`, error);
+      }
+    }
+
+    if (persisted) {
+      projectStore.invalidateTasksCache(project.id);
+    }
+  }
+
   /**
    * Register a task with the unified OperationRegistry for proactive swap support.
    * Extracted helper to avoid code duplication between spec creation and task execution.
@@ -1128,8 +1169,10 @@ export class AgentManager extends EventEmitter {
         console.warn(`[AgentManager] Task ${taskId} will run in worktree: ${worktreePath}`);
       } catch (err) {
         console.error(`[AgentManager] Failed to create worktree for ${taskId}:`, err);
-        // Fall back to running in project root (non-fatal)
-        console.warn(`[AgentManager] Falling back to project root for ${taskId}`);
+        const message = err instanceof Error ? err.message : String(err);
+        this.persistWorktreeSetupFailure(project, task, message);
+        this.emit('error', taskId, `Could not prepare isolated task worktree. Refusing to run task in the main project checkout: ${message}`, projectId);
+        return;
       }
     }
 
@@ -1251,6 +1294,9 @@ export class AgentManager extends EventEmitter {
         this.emit('error', taskId, `Could not sync task worktree with ${baseBranch}. Resolve worktree conflicts and retry QA.`);
         return;
       }
+    } else if (task?.metadata?.useWorktree !== false) {
+      this.emit('error', taskId, 'No isolated task worktree found for QA. Refusing to run QA in the main project checkout.');
+      return;
     }
     const effectiveCwd = worktreePath ?? projectPath;
     const effectiveProjectDir = worktreePath ?? projectPath;
