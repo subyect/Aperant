@@ -401,6 +401,7 @@ export class AgentManager extends EventEmitter {
         .filter((task) =>
           task.status === 'in_progress'
           || task.status === 'ai_review'
+          || this.shouldResumeIncompleteTerminalTask(project, task)
           || this.shouldRetryTerminalAgentError(project, task)
         )
         .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
@@ -496,6 +497,36 @@ export class AgentManager extends EventEmitter {
         const lastEventType = plan.lastEvent?.type;
         const recoveryNote = plan.recoveryNote ?? '';
         if (lastEventType === 'QA_AGENT_ERROR' || /terminal failure blocked/i.test(recoveryNote)) {
+          return true;
+        }
+      } catch {
+        // Ignore unreadable plans; normal task loading will surface JSON errors.
+      }
+    }
+
+    return false;
+  }
+
+  private shouldResumeIncompleteTerminalTask(project: Project, task: Task): boolean {
+    if (task.status !== 'human_review' && task.status !== 'error') return false;
+    if (task.reviewReason && task.reviewReason !== 'errors' && task.reviewReason !== 'qa_rejected') return false;
+    if (!task.subtasks.length || task.subtasks.every((subtask) => subtask.status === 'completed')) return false;
+
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as {
+          lastEvent?: { type?: string };
+          recoveryNote?: string;
+        };
+        const lastEventType = plan.lastEvent?.type ?? '';
+        const recoveryNote = plan.recoveryNote ?? '';
+        if (
+          lastEventType === 'PLANNING_FAILED'
+          || lastEventType === 'CODING_FAILED'
+          || /^QA_(?:FAILED|FIX_FAILED|MAX_ITERATIONS|REJECTED)/.test(lastEventType)
+          || /blocked terminal status/i.test(recoveryNote)
+        ) {
           return true;
         }
       } catch {
