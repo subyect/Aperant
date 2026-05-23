@@ -8,7 +8,16 @@ import { is } from '@electron-toolkit/utils';
 // ESM-compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-import { IPC_CHANNELS, DEFAULT_APP_SETTINGS, DEFAULT_AGENT_PROFILES, SPELL_CHECK_LANGUAGE_MAP, DEFAULT_SPELL_CHECK_LANGUAGE, sanitizeThinkingLevel, VALID_THINKING_LEVELS } from '../../shared/constants';
+import {
+  IPC_CHANNELS,
+  DEFAULT_APP_SETTINGS,
+  DEFAULT_AGENT_PROFILES,
+  SPELL_CHECK_LANGUAGE_MAP,
+  DEFAULT_SPELL_CHECK_LANGUAGE,
+  normalizeOpenAISubscriptionModel,
+  sanitizeThinkingLevel,
+  VALID_THINKING_LEVELS,
+} from '../../shared/constants';
 import { setAppLanguage } from '../app-language';
 import type {
   AppSettings,
@@ -27,6 +36,76 @@ import { loadProfilesFile } from '../utils/profile-manager';
 import { loadProfileStore } from '../claude-profile/profile-storage';
 
 const settingsPath = getSettingsPath();
+
+function hasOpenAISubscriptionAccount(settings: AppSettings): boolean {
+  return Boolean(settings.providerAccounts?.some((account) =>
+    account.provider === 'openai'
+    && (account.authType === 'oauth' || account.billingModel === 'subscription')
+  ));
+}
+
+function normalizeModelRecord(record: object | undefined): boolean {
+  if (!record) return false;
+
+  let changed = false;
+  const values = record as Record<string, unknown>;
+  for (const key of Object.keys(values)) {
+    const current = values[key];
+    if (typeof current !== 'string') continue;
+    const next = normalizeOpenAISubscriptionModel(current);
+    if (next !== current) {
+      values[key] = next;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function normalizeOpenAISubscriptionSettings(settings: AppSettings): boolean {
+  if (!hasOpenAISubscriptionAccount(settings)) return false;
+
+  let changed = false;
+  const normalizeField = (field: 'defaultModel'): void => {
+    const current = settings[field];
+    const next = normalizeOpenAISubscriptionModel(current);
+    if (next !== current) {
+      settings[field] = next;
+      changed = true;
+    }
+  };
+
+  normalizeField('defaultModel');
+  changed = normalizeModelRecord(settings.customPhaseModels) || changed;
+  changed = normalizeModelRecord(settings.featureModels) || changed;
+
+  const openAIConfig = settings.providerAgentConfig?.openai;
+  if (openAIConfig) {
+    changed = normalizeModelRecord(openAIConfig.customPhaseModels) || changed;
+    changed = normalizeModelRecord(openAIConfig.featureModels) || changed;
+  }
+
+  for (const entry of Object.values(settings.customMixedPhaseConfig ?? {})) {
+    if (entry.provider === 'openai') {
+      const next = normalizeOpenAISubscriptionModel(entry.modelId);
+      if (next !== entry.modelId) {
+        entry.modelId = next;
+        changed = true;
+      }
+    }
+  }
+
+  for (const entry of Object.values(settings.customMixedFeatureConfig ?? {})) {
+    if (entry.provider === 'openai') {
+      const next = normalizeOpenAISubscriptionModel(entry.modelId);
+      if (next !== entry.modelId) {
+        entry.modelId = next;
+        changed = true;
+      }
+    }
+  }
+
+  return changed;
+}
 
 async function migrateToProviderAccounts(settings: AppSettings): Promise<{ changed: boolean; settings: AppSettings }> {
   if (settings._migratedProviderAccounts) {
@@ -373,6 +452,11 @@ export function registerSettingsHandlers(
         needsSave = true;
       }
 
+      if (normalizeOpenAISubscriptionSettings(settings)) {
+        console.warn('[SETTINGS_GET] Migrated stale OpenAI subscription model settings to the current Codex model');
+        needsSave = true;
+      }
+
       // Migration: Clear CLI tool paths that are from a different platform
       // Fixes issue where Windows paths persisted on macOS (and vice versa)
       // when settings were synced/transferred between platforms
@@ -446,6 +530,8 @@ export function registerSettingsHandlers(
             newSettings.defaultModel = profile.model;
           }
         }
+
+        normalizeOpenAISubscriptionSettings(newSettings);
 
         writeFileSync(settingsPath, JSON.stringify(newSettings, null, 2), 'utf-8');
 

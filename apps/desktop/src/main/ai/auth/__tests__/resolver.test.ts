@@ -28,11 +28,19 @@ vi.mock('../../../claude-profile/profile-scorer', () => ({
 // ../../../../shared/ = src/shared/ (4 levels up from __tests__ = src/)
 vi.mock('../../../../shared/constants/models', () => ({
   ALL_AVAILABLE_MODELS: [
+    { value: 'gpt-5.5', provider: 'openai', apiKeyOnly: true },
+    { value: 'gpt-5.3-codex', provider: 'openai' },
     { value: 'gpt-5.2', provider: 'openai', apiKeyOnly: true },
     { value: 'gpt-5.2-codex', provider: 'openai' },
     { value: 'gpt-5.1-codex-mini', provider: 'openai' },
     { value: 'claude-sonnet-4-5-20250929', provider: 'anthropic' },
   ],
+  OPENAI_CODEX_DEFAULT_MODEL: 'gpt-5.3-codex',
+  normalizeOpenAISubscriptionModel: (model: string) => ({
+    'gpt-5.5': 'gpt-5.3-codex',
+    'gpt-5.2-codex': 'gpt-5.3-codex',
+    'gpt-5.1-codex-mini': 'gpt-5.3-codex',
+  } as Record<string, string>)[model] ?? model,
   resolveModelEquivalent: vi.fn(),
 }));
 
@@ -454,9 +462,15 @@ describe('resolveAuthFromQueue', () => {
       apiKey: 'sk-openai-subscription',
     };
     mockResolveModelEquivalent.mockImplementation((model, provider) => {
+      if (model === 'gpt-5.5' && provider === 'openai') {
+        return {
+          modelId: 'gpt-5.5',
+          reasoning: { type: 'reasoning_effort', level: 'high' },
+        };
+      }
       if (model === 'sonnet' && provider === 'openai') {
         return {
-          modelId: 'gpt-5.2-codex',
+          modelId: 'gpt-5.3-codex',
           reasoning: { type: 'reasoning_effort', level: 'medium' },
         };
       }
@@ -466,8 +480,8 @@ describe('resolveAuthFromQueue', () => {
 
     const result = await resolveAuthFromQueue('gpt-5.5', [openAISubscriptionAccount]);
 
-    expect(result?.resolvedModelId).toBe('gpt-5.2-codex');
-    expect(result?.reasoningConfig).toEqual({ type: 'reasoning_effort', level: 'medium' });
+    expect(result?.resolvedModelId).toBe('gpt-5.3-codex');
+    expect(result?.reasoningConfig).toEqual({ type: 'reasoning_effort', level: 'high' });
   });
 
   it('falls through to next account when first has no credentials', async () => {

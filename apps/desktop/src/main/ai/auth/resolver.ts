@@ -26,7 +26,12 @@ import {
 } from './types';
 import type { ProviderAccount } from '../../../shared/types/provider-account';
 import type { BuiltinProvider } from '../../../shared/types/provider-account';
-import { ALL_AVAILABLE_MODELS, resolveModelEquivalent } from '../../../shared/constants/models';
+import {
+  ALL_AVAILABLE_MODELS,
+  OPENAI_CODEX_DEFAULT_MODEL,
+  normalizeOpenAISubscriptionModel,
+  resolveModelEquivalent,
+} from '../../../shared/constants/models';
 import { scoreProviderAccount } from '../../claude-profile/profile-scorer';
 import type { ClaudeAutoSwitchSettings } from '../../../shared/types/agent';
 
@@ -354,14 +359,15 @@ function resolveAccountModel(
     return { modelId: resolvedModelId, reasoningConfig };
   }
 
-  const modelEntry = ALL_AVAILABLE_MODELS.find(m => m.value === resolvedModelId && m.provider === 'openai');
+  const subscriptionModelId = normalizeOpenAISubscriptionModel(resolvedModelId);
+  const modelEntry = ALL_AVAILABLE_MODELS.find(m => m.value === subscriptionModelId && m.provider === 'openai');
   if (modelEntry && !modelEntry.apiKeyOnly) {
-    return { modelId: resolvedModelId, reasoningConfig };
+    return { modelId: subscriptionModelId, reasoningConfig };
   }
 
   const fallback = resolveModelEquivalent('sonnet', 'openai');
   return {
-    modelId: fallback?.modelId ?? 'gpt-5.2-codex',
+    modelId: fallback?.modelId ?? OPENAI_CODEX_DEFAULT_MODEL,
     reasoningConfig: fallback?.reasoning ?? { type: 'reasoning_effort', level: 'medium' },
   };
 }

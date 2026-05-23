@@ -32,7 +32,7 @@ describe('getActiveProviderFeatureSettings', () => {
     });
 
     expect(getActiveProviderFeatureSettings('insights')).toEqual({
-      model: 'gpt-5.2-codex',
+      model: 'gpt-5.3-codex',
       thinkingLevel: 'medium',
     });
   });
@@ -51,10 +51,10 @@ describe('getActiveProviderFeatureSettings', () => {
       },
     });
 
-    expect(getActiveProviderFeatureSettings('insights').model).toBe('gpt-5.2-codex');
+    expect(getActiveProviderFeatureSettings('insights').model).toBe('gpt-5.3-codex');
   });
 
-  it('keeps supported OpenAI Codex subscription models', () => {
+  it('upgrades deprecated OpenAI Codex subscription models', () => {
     mockReadSettingsFile.mockReturnValue({
       globalPriorityOrder: ['openai-subscription'],
       providerAccounts: [{
@@ -68,6 +68,6 @@ describe('getActiveProviderFeatureSettings', () => {
       },
     });
 
-    expect(getActiveProviderFeatureSettings('utility').model).toBe('gpt-5.1-codex-mini');
+    expect(getActiveProviderFeatureSettings('utility').model).toBe('gpt-5.3-codex');
   });
 });

@@ -18,6 +18,7 @@ import {
   ALL_AVAILABLE_MODELS,
   DEFAULT_FEATURE_MODELS,
   DEFAULT_FEATURE_THINKING,
+  normalizeOpenAISubscriptionModel,
   resolveModelEquivalent,
 } from '../../shared/constants/models';
 import type { FeatureModelConfig, FeatureThinkingConfig } from '../../shared/types/settings';
@@ -88,13 +89,20 @@ function resolveFeatureModelForProvider(
 ): string {
   if (!provider) return model;
 
-  if (isSupportedFeatureModelForAccount(model, provider, account)) {
-    return model;
+  const requestedModel = isSubscriptionOnlyOpenAIAccount(account) && provider === 'openai'
+    ? normalizeOpenAISubscriptionModel(model)
+    : model;
+
+  if (isSupportedFeatureModelForAccount(requestedModel, provider, account)) {
+    return requestedModel;
   }
 
-  const equivalent = resolveModelEquivalent(model, provider);
-  if (equivalent && isSupportedFeatureModelForAccount(equivalent.modelId, provider, account)) {
-    return equivalent.modelId;
+  const equivalent = resolveModelEquivalent(requestedModel, provider);
+  const equivalentModel = equivalent && isSubscriptionOnlyOpenAIAccount(account) && provider === 'openai'
+    ? normalizeOpenAISubscriptionModel(equivalent.modelId)
+    : equivalent?.modelId;
+  if (equivalent && equivalentModel && isSupportedFeatureModelForAccount(equivalentModel, provider, account)) {
+    return equivalentModel;
   }
 
   const fallback = DEFAULT_FEATURE_MODELS[featureKey];

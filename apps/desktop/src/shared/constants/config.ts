@@ -3,6 +3,8 @@
  * Default settings, file paths, and project structure
  */
 
+import { OPENAI_CODEX_DEFAULT_MODEL } from './models';
+
 // ============================================
 // Terminal Timing Constants
 // ============================================
@@ -31,7 +33,7 @@ export const UI_SCALE_STEP = 5;
 export const DEFAULT_APP_SETTINGS = {
   theme: 'dark' as const,
   colorTheme: 'default' as const,
-  defaultModel: 'gpt-5.2-codex',
+  defaultModel: OPENAI_CODEX_DEFAULT_MODEL,
   agentFramework: 'auto-claude',
   pythonPath: undefined as string | undefined,
   gitPath: undefined as string | undefined,
@@ -78,7 +80,7 @@ export const DEFAULT_APP_SETTINGS = {
 // ============================================
 
 export const DEFAULT_PROJECT_SETTINGS = {
-  model: 'gpt-5.2-codex',
+  model: OPENAI_CODEX_DEFAULT_MODEL,
   memoryBackend: 'file' as const,
   linearSync: false,
   notifications: {

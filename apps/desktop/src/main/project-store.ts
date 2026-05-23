@@ -3,7 +3,15 @@ import { readFileSync, existsSync, mkdirSync, readdirSync, Dirent } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import type { Project, ProjectSettings, Task, TaskStatus, TaskMetadata, ImplementationPlan, ReviewReason, PlanSubtask, KanbanPreferences, ExecutionPhase } from '../shared/types';
-import { DEFAULT_PROJECT_SETTINGS, AUTO_BUILD_PATHS, getSpecsDir, JSON_ERROR_PREFIX, JSON_ERROR_TITLE_SUFFIX, TASK_STATUS_PRIORITY } from '../shared/constants';
+import {
+  DEFAULT_PROJECT_SETTINGS,
+  AUTO_BUILD_PATHS,
+  getSpecsDir,
+  JSON_ERROR_PREFIX,
+  JSON_ERROR_TITLE_SUFFIX,
+  TASK_STATUS_PRIORITY,
+  normalizeOpenAISubscriptionModel,
+} from '../shared/constants';
 import { getAutoBuildPath, isInitialized } from './project-initializer';
 import { getTaskWorktreeDir } from './worktree-paths';
 import { findAllSpecPaths } from './utils/spec-path-helpers';
@@ -70,14 +78,31 @@ export class ProjectStore {
       try {
         const content = readFileSync(this.storePath, 'utf-8');
         const data = JSON.parse(content);
+        let needsSave = false;
         // Convert date strings back to Date objects and normalize paths to absolute
-        data.projects = data.projects.map((p: Project) => ({
-          ...p,
-          // Ensure project.path is always absolute (critical for dev mode path resolution)
-          path: ensureAbsolutePath(p.path),
-          createdAt: new Date(p.createdAt),
-          updatedAt: new Date(p.updatedAt)
-        }));
+        data.projects = data.projects.map((p: Project) => {
+          const original = p.settings?.model;
+          const normalized = normalizeOpenAISubscriptionModel(original ?? DEFAULT_PROJECT_SETTINGS.model);
+          const changed = normalized !== original;
+          if (normalized !== original) {
+            needsSave = true;
+          }
+          return {
+            ...p,
+            // Ensure project.path is always absolute (critical for dev mode path resolution)
+            path: ensureAbsolutePath(p.path),
+            settings: {
+              ...DEFAULT_PROJECT_SETTINGS,
+              ...(p.settings ?? {}),
+              model: normalized,
+            },
+            createdAt: new Date(p.createdAt),
+            updatedAt: changed ? new Date() : new Date(p.updatedAt)
+          };
+        });
+        if (needsSave) {
+          writeFileAtomicSync(this.storePath, JSON.stringify(data, null, 2));
+        }
         return data;
       } catch {
         return { projects: [], settings: {} };

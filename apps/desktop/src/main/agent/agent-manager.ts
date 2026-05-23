@@ -398,7 +398,11 @@ export class AgentManager extends EventEmitter {
         .filter((task) => !task.metadata?.archivedAt);
 
       const activeTasks = tasks
-        .filter((task) => task.status === 'in_progress' || task.status === 'ai_review')
+        .filter((task) =>
+          task.status === 'in_progress'
+          || task.status === 'ai_review'
+          || this.shouldRetryTerminalAgentError(project, task)
+        )
         .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
 
       for (const task of activeTasks) {
@@ -432,7 +436,7 @@ export class AgentManager extends EventEmitter {
     const hasSpec = existsSync(specFilePath);
 
     try {
-      if (task.status === 'ai_review' && allSubtasksComplete) {
+      if ((task.status === 'ai_review' || this.shouldRetryTerminalAgentError(project, task)) && allSubtasksComplete) {
         this.persistRuntimeState(project, task, 'ai_review', 'review', 'qa_review', 'qa_review');
         console.warn(`[AgentManager] Startup recovery resuming QA for ${task.specId}`);
         await this.startQAProcess(task.id, project.path, task.specId, project.id);
@@ -477,6 +481,31 @@ export class AgentManager extends EventEmitter {
     }
   }
 
+  private shouldRetryTerminalAgentError(project: Project, task: Task): boolean {
+    if (task.status !== 'human_review' && task.status !== 'error') return false;
+    if (task.reviewReason && task.reviewReason !== 'errors' && task.reviewReason !== 'qa_rejected') return false;
+    if (!task.subtasks.length || task.subtasks.some((subtask) => subtask.status !== 'completed')) return false;
+
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as {
+          lastEvent?: { type?: string };
+          recoveryNote?: string;
+        };
+        const lastEventType = plan.lastEvent?.type;
+        const recoveryNote = plan.recoveryNote ?? '';
+        if (lastEventType === 'QA_AGENT_ERROR' || /terminal failure blocked/i.test(recoveryNote)) {
+          return true;
+        }
+      } catch {
+        // Ignore unreadable plans; normal task loading will surface JSON errors.
+      }
+    }
+
+    return false;
+  }
+
   private getMaxParallelTasks(project: Project): number {
     const configured = project.settings?.maxParallelTasks;
     return Number.isFinite(configured) && configured && configured > 0
@@ -508,6 +537,11 @@ export class AgentManager extends EventEmitter {
         plan.executionPhase = executionPhase;
         plan.updated_at = new Date().toISOString();
         if (status !== 'human_review') delete plan.reviewReason;
+        if (status === 'ai_review') {
+          delete plan.qa_signoff;
+          delete plan.final_acceptance;
+          delete plan.lastEvent;
+        }
         writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
         persisted = true;
       } catch (error) {

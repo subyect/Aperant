@@ -23,7 +23,7 @@ describe('getProviderPreset', () => {
   it('returns correct preset for openai provider', () => {
     const result = getProviderPreset('openai', 'auto');
     expect(result).not.toBeNull();
-    expect(result?.primaryModel).toBe('gpt-5.2-codex');
+    expect(result?.primaryModel).toBe('gpt-5.3-codex');
   });
 
   it('returns null for unknown presetId', () => {
@@ -53,7 +53,7 @@ describe('getProviderPresetOrFallback', () => {
 
   it('returns openai balanced preset exactly when available', () => {
     const result = getProviderPresetOrFallback('openai', 'balanced');
-    expect(result.primaryModel).toBe('gpt-5.2-codex');
+    expect(result.primaryModel).toBe('gpt-5.3-codex');
     expect(result.primaryThinking).toBe('medium');
   });
 
