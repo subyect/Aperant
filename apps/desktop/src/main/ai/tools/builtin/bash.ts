@@ -7,7 +7,7 @@
  * Supports timeouts, background execution, and descriptive metadata.
  */
 
-import { execFile } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { z } from 'zod/v3';
 
 import { findExecutable, isWindows, killProcessGracefully } from '../../../platform/index';
@@ -62,46 +62,127 @@ function resolveShell(): string {
   return '/bin/bash';
 }
 
+function terminateProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (!pid) return;
+
+  if (!isWindows()) {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // Fall through to direct child kill when the process group is already gone.
+    }
+  }
+
+  try {
+    if (isWindows()) {
+      killProcessGracefully(child);
+    } else {
+      child.kill(signal);
+    }
+  } catch {
+    // Process already exited; nothing to clean up.
+  }
+}
+
 function executeCommand(
   command: string,
   cwd: string,
   timeoutMs: number,
   abortSignal?: AbortSignal,
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  cleanupProcessGroup = true,
+): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean; aborted: boolean }> {
   const shell = resolveShell();
   const args = isWindows() && shell.toLowerCase().endsWith('cmd.exe')
     ? ['/c', command]
     : ['-c', command];
 
   return new Promise((resolve) => {
-    const child = execFile(
+    let timedOut = false;
+    let aborted = false;
+    let settled = false;
+    let stdout = '';
+    let stderr = '';
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
+
+    let child: ChildProcess | null = null;
+    child = spawn(
       shell,
       args,
       {
         cwd,
-        timeout: timeoutMs,
-        maxBuffer: 10 * 1024 * 1024,
-        signal: abortSignal,
-      },
-      (error, stdout, stderr) => {
-        const exitCode = error
-          ? ('code' in error && typeof error.code === 'number'
-              ? error.code
-              : 1)
-          : 0;
-        resolve({
-          stdout: typeof stdout === 'string' ? stdout : '',
-          stderr: typeof stderr === 'string' ? stderr : '',
-          exitCode,
-        });
+        detached: !isWindows(),
+        stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
 
-    // Ensure the child process is killed on abort
-    if (abortSignal) {
-      abortSignal.addEventListener('abort', () => {
-        killProcessGracefully(child);
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      stderr += chunk.toString();
+    });
+
+    const finish = (exitCode: number) => {
+      if (settled) return;
+      settled = true;
+
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      abortSignal?.removeEventListener('abort', onAbort);
+
+      // Clean up leaked descendants from commands that spawn dev servers,
+      // watchers, or Playwright webServer children and then exit/fail.
+      if (cleanupProcessGroup && child) {
+        terminateProcessTree(child, 'SIGTERM');
+      }
+
+      resolve({
+        stdout,
+        stderr,
+        exitCode: timedOut ? 124 : aborted ? 130 : exitCode,
+        timedOut,
+        aborted,
       });
+    };
+
+    child.on('error', () => finish(1));
+    child.on('close', (code) => finish(typeof code === 'number' ? code : 1));
+
+    const forceKill = () => {
+      forceKillTimer = setTimeout(() => {
+        if (child) {
+          terminateProcessTree(child, 'SIGKILL');
+        }
+      }, 5_000);
+      forceKillTimer.unref?.();
+    };
+
+    const terminate = (reason: 'timeout' | 'abort') => {
+      if (reason === 'timeout') timedOut = true;
+      if (reason === 'abort') aborted = true;
+      if (child) {
+        terminateProcessTree(child, 'SIGTERM');
+      }
+      forceKill();
+    };
+
+    function onAbort(): void {
+      terminate('abort');
+    }
+
+    if (timeoutMs > 0) {
+      timeoutTimer = setTimeout(() => terminate('timeout'), timeoutMs);
+      timeoutTimer.unref?.();
+    }
+
+    if (abortSignal?.aborted) {
+      terminate('abort');
+    } else if (abortSignal) {
+      abortSignal.addEventListener('abort', onAbort, { once: true });
     }
   });
 }
@@ -144,11 +225,11 @@ export const bashTool = Tool.define({
 
     if (run_in_background) {
       // Fire-and-forget for background commands
-      executeCommand(command, context.cwd, timeoutMs, context.abortSignal);
+      executeCommand(command, context.cwd, timeoutMs, context.abortSignal, false);
       return `Command started in background: ${command}`;
     }
 
-    const { stdout, stderr, exitCode } = await executeCommand(
+    const { stdout, stderr, exitCode, timedOut, aborted } = await executeCommand(
       command,
       context.cwd,
       timeoutMs,
@@ -167,6 +248,14 @@ export const bashTool = Tool.define({
 
     if (exitCode !== 0) {
       parts.push(`Exit code: ${exitCode}`);
+    }
+
+    if (timedOut) {
+      parts.push(`Command timed out after ${timeoutMs}ms; process tree was terminated.`);
+    }
+
+    if (aborted) {
+      parts.push('Command aborted; process tree was terminated.');
     }
 
     return parts.length > 0 ? parts.join('\n') : '(no output)';
