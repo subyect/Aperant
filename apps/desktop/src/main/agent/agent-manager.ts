@@ -16,7 +16,7 @@ import {
   ProcessType
 } from './types';
 import type { IdeationConfig, Project, Task } from '../../shared/types';
-import { getPlanPathsForSpec, readQaReportVerdictSync, recoverApprovedQASignoffForSpec, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
+import { getPlanPathsForSpec, readFailedQaEvidenceSync, recoverApprovedQASignoffForSpec, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
 import { AUTO_BUILD_PATHS, getSpecsDir } from '../../shared/constants';
 import { projectStore } from '../project-store';
 import { resolveAuth, resolveAuthFromQueue } from '../ai/auth/resolver';
@@ -836,9 +836,9 @@ export class AgentManager extends EventEmitter {
   private findFailedQaReport(project: Project, task: Task): { reportPath: string; content: string } | null {
     for (const planPath of getPlanPathsForSpec(project, task.specId)) {
       if (!existsSync(planPath)) continue;
-      const verdict = readQaReportVerdictSync(path.dirname(planPath));
-      if (verdict?.status === 'failed') {
-        return { reportPath: verdict.reportPath, content: verdict.content };
+      const failure = readFailedQaEvidenceSync(path.dirname(planPath));
+      if (failure) {
+        return failure;
       }
     }
     return null;

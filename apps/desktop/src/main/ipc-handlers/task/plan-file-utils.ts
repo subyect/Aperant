@@ -784,6 +784,27 @@ export function readQaReportVerdictSync(specDir: string): { status: 'approved' |
   }
 }
 
+export function readFailedQaEvidenceSync(specDir: string): { reportPath: string; content: string } | null {
+  const verdict = readQaReportVerdictSync(specDir);
+  if (verdict?.status === 'failed') {
+    return { reportPath: verdict.reportPath, content: verdict.content };
+  }
+
+  try {
+    const fixRequestPath = path.join(specDir, 'QA_FIX_REQUEST.md');
+    const content = readFileSync(fixRequestPath, 'utf-8');
+    const hasRejectedStatus = /(?:^|\n)\s*(?:\*\*)?\s*Status\s*:\s*(REJECTED|FAILED|FAIL|ISSUES)\s*(?:\*\*)?/i.test(content);
+    const hasFailedReport = /Failed QA Report|Aperant QA failed this task|QA failed/i.test(content);
+    if (hasRejectedStatus || hasFailedReport) {
+      return { reportPath: fixRequestPath, content };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 export function getPlanPathsForSpec(project: Project, specId: string): string[] {
   const specsBaseDir = getSpecsDir(project.autoBuildPath);
   const paths = [

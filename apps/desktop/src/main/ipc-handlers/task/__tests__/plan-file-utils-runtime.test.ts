@@ -54,12 +54,13 @@ describe('plan-file runtime guards', () => {
   let persistPlanStatusAndReasonSync: typeof import('../plan-file-utils').persistPlanStatusAndReasonSync;
   let syncPlanPhasesToMainSync: typeof import('../plan-file-utils').syncPlanPhasesToMainSync;
   let readQaReportVerdictSync: typeof import('../plan-file-utils').readQaReportVerdictSync;
+  let readFailedQaEvidenceSync: typeof import('../plan-file-utils').readFailedQaEvidenceSync;
   let readApprovedQASignoffFromReportSync: typeof import('../plan-file-utils').readApprovedQASignoffFromReportSync;
   let recoverApprovedQASignoffForSpec: typeof import('../plan-file-utils').recoverApprovedQASignoffForSpec;
 
   beforeEach(async () => {
     vi.resetModules();
-    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync, readQaReportVerdictSync, readApprovedQASignoffFromReportSync, recoverApprovedQASignoffForSpec } = await import('../plan-file-utils'));
+    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync, readQaReportVerdictSync, readFailedQaEvidenceSync, readApprovedQASignoffFromReportSync, recoverApprovedQASignoffForSpec } = await import('../plan-file-utils'));
     tempDir = mkdtempSync(path.join(tmpdir(), 'aperant-plan-'));
     planPath = path.join(tempDir, 'implementation_plan.json');
     writeFileSync(planPath, JSON.stringify(planWithSubtasks(), null, 2));
@@ -160,6 +161,15 @@ describe('plan-file runtime guards', () => {
     expect(verdict?.status).toBe('failed');
     expect(verdict?.content).toContain('Missing smoke evidence');
     expect(readApprovedQASignoffFromReportSync(tempDir)).toBeNull();
+  });
+
+  it('keeps failed QA fix requests as durable failure evidence', () => {
+    writeFileSync(path.join(tempDir, 'QA_FIX_REQUEST.md'), '# QA Fix Request\n\nStatus: REJECTED\n\nAperant QA failed this task.');
+
+    const failure = readFailedQaEvidenceSync(tempDir);
+
+    expect(failure?.reportPath.endsWith('QA_FIX_REQUEST.md')).toBe(true);
+    expect(failure?.content).toContain('Status: REJECTED');
   });
 
   it('still recovers approved QA signoff from passed reports', () => {
