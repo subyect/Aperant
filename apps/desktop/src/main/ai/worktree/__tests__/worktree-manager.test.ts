@@ -46,4 +46,38 @@ describe('syncWorktreeWithBaseBranch', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('reports files that conflict while restoring task edits after base sync', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'worktree-sync-conflict-'));
+    const projectDir = join(root, 'project');
+    const worktreeDir = join(root, 'task-worktree');
+
+    try {
+      git(root, ['init', '-b', 'main', projectDir]);
+      git(projectDir, ['config', 'user.email', 'test@example.com']);
+      git(projectDir, ['config', 'user.name', 'Test User']);
+
+      await mkdir(join(projectDir, 'src'), { recursive: true });
+      await writeFile(join(projectDir, 'src', 'shared.ts'), 'export const value = "base";\n');
+      git(projectDir, ['add', 'src/shared.ts']);
+      git(projectDir, ['commit', '-m', 'initial']);
+
+      git(projectDir, ['worktree', 'add', '-b', 'auto-claude/conflict-test', worktreeDir, 'main']);
+      await writeFile(join(worktreeDir, 'src', 'shared.ts'), 'export const value = "task";\n');
+
+      await writeFile(join(projectDir, 'src', 'shared.ts'), 'export const value = "main";\n');
+      git(projectDir, ['add', 'src/shared.ts']);
+      git(projectDir, ['commit', '-m', 'advance main']);
+
+      const result = await syncWorktreeWithBaseBranch(projectDir, worktreeDir, 'main');
+
+      expect(result.synced).toBe(true);
+      expect(result.stashed).toBe(true);
+      expect(result.conflicted).toBe(true);
+      expect(result.conflictFiles).toEqual(['src/shared.ts']);
+      expect(git(worktreeDir, ['diff', '--name-only', '--diff-filter=U'])).toBe('src/shared.ts');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

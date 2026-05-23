@@ -732,6 +732,143 @@ export class AgentManager extends EventEmitter {
     }
   }
 
+  private async resumeCodingForBaseSyncConflict(
+    project: Project,
+    task: Task,
+    conflictFiles: string[],
+    reason = 'base_sync_conflict',
+  ): Promise<void> {
+    this.persistBaseSyncConflictForCoding(project, task, conflictFiles, reason);
+    const baseBranch = task.metadata?.baseBranch || project.settings?.mainBranch;
+    await this.startTaskExecution(
+      task.id,
+      project.path,
+      task.specId,
+      {
+        parallel: false,
+        workers: 1,
+        baseBranch,
+        useWorktree: task.metadata?.useWorktree,
+        useLocalBranch: task.metadata?.useLocalBranch,
+        pushNewBranches: task.metadata?.pushNewBranches,
+      },
+      project.id,
+    );
+  }
+
+  private persistBaseSyncConflictForCoding(
+    project: Project,
+    task: Task,
+    conflictFiles: string[],
+    reason: string,
+  ): void {
+    const now = new Date().toISOString();
+    const normalizedFiles = conflictFiles.length > 0 ? conflictFiles : ['unknown conflicted paths'];
+    const recoverySubtaskId = 'aperant-base-sync-conflict';
+    const recoveryDescription = [
+      'Resolve the Git conflict markers created while updating this task worktree to the current base branch.',
+      '',
+      'Conflicted files:',
+      ...normalizedFiles.map((file) => `- ${file}`),
+      '',
+      'Preserve the task implementation and current base-branch behavior. Do not mark this subtask complete until `git diff --name-only --diff-filter=U` returns no files and focused verification for the touched area is recorded.',
+    ].join('\n');
+    let persisted = false;
+
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = safeParseJson<Record<string, any>>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
+
+        const phases = Array.isArray(plan.phases) ? plan.phases : [];
+        let phase = phases.find((candidate: Record<string, any>) => candidate?.id === 'aperant-base-sync-recovery' || candidate?.type === 'base_sync_recovery');
+        if (!phase) {
+          phase = {
+            id: 'aperant-base-sync-recovery',
+            phase: phases.length + 1,
+            name: 'Base branch sync recovery',
+            type: 'base_sync_recovery',
+            status: 'in_progress',
+            subtasks: [],
+          };
+          phases.push(phase);
+        }
+
+        const subtasks = Array.isArray(phase.subtasks) ? phase.subtasks : [];
+        let recoverySubtask = subtasks.find((subtask: Record<string, any>) => subtask?.id === recoverySubtaskId);
+        if (!recoverySubtask) {
+          recoverySubtask = {
+            id: recoverySubtaskId,
+            title: 'Resolve base branch sync conflicts',
+            description: recoveryDescription,
+            status: 'pending',
+            verification: {
+              type: 'command',
+              run: 'git diff --name-only --diff-filter=U && git status --short',
+            },
+          };
+          subtasks.push(recoverySubtask);
+        } else {
+          recoverySubtask.title = 'Resolve base branch sync conflicts';
+          recoverySubtask.description = recoveryDescription;
+          recoverySubtask.status = 'pending';
+          recoverySubtask.verification = {
+            type: 'command',
+            run: 'git diff --name-only --diff-filter=U && git status --short',
+          };
+        }
+
+        phase.subtasks = subtasks;
+        phase.status = 'in_progress';
+        plan.phases = phases;
+        plan.status = 'in_progress';
+        plan.planStatus = 'in_progress';
+        plan.xstateState = 'coding';
+        plan.executionPhase = 'coding';
+        delete plan.reviewReason;
+        plan.updated_at = now;
+        plan.recoveryNote = 'Base branch sync conflict while updating task worktree; continuing implementation.';
+        plan.base_sync_conflict = {
+          files: normalizedFiles,
+          reason,
+          updated_at: now,
+        };
+        plan.lastEvent = {
+          eventId: `base-sync-conflict-${Date.now()}`,
+          sequence: 0,
+          type: 'BASE_SYNC_CONFLICT',
+          timestamp: now,
+        };
+        delete plan.qa_signoff;
+        delete plan.final_acceptance;
+
+        writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+        writeFileAtomicSync(
+          path.join(path.dirname(planPath), 'BASE_SYNC_CONFLICT.md'),
+          [
+            '# Base Branch Sync Conflict',
+            '',
+            `Aperant updated this task worktree against the base branch and found unresolved Git conflicts at ${now}.`,
+            '',
+            'Resolve these files before returning to QA:',
+            ...normalizedFiles.map((file) => `- ${file}`),
+            '',
+            'After resolving, run focused verification and update implementation_plan.json.',
+            '',
+          ].join('\n'),
+        );
+        persisted = true;
+      } catch (error) {
+        console.warn(`[AgentManager] Failed to persist base sync conflict recovery for ${task.specId}:`, error);
+      }
+    }
+
+    if (persisted) {
+      projectStore.invalidateTasksCache(project.id);
+    }
+  }
+
   /**
    * Register a task with the unified OperationRegistry for proactive swap support.
    * Extracted helper to avoid code duplication between spec creation and task execution.
@@ -1057,6 +1194,18 @@ export class AgentManager extends EventEmitter {
     if (worktreePath) {
       try {
         const syncResult = await syncWorktreeWithBaseBranch(projectPath, worktreePath, baseBranch);
+        if (syncResult.conflicted) {
+          const conflictFiles = syncResult.conflictFiles ?? [];
+          if (project && task) {
+            console.warn(
+              `[AgentManager] QA worktree for ${specId} has base-sync conflicts; returning task to coding: ${conflictFiles.join(', ') || 'unknown files'}`
+            );
+            await this.resumeCodingForBaseSyncConflict(project, task, conflictFiles, syncResult.skippedReason);
+          } else {
+            this.emit('error', taskId, `Task worktree has unresolved base-sync conflicts: ${conflictFiles.join(', ') || 'unknown files'}`);
+          }
+          return;
+        }
         if (syncResult.synced) {
           console.warn(`[AgentManager] Synced QA worktree for ${specId} with ${baseBranch}${syncResult.stashed ? ' (stashed task edits)' : ''}`);
         }
@@ -1198,6 +1347,14 @@ export class AgentManager extends EventEmitter {
     const baseBranch = task.metadata?.baseBranch || project.settings?.mainBranch || 'main';
     try {
       const syncResult = await syncWorktreeWithBaseBranch(project.path, worktreePath, baseBranch);
+      if (syncResult.conflicted) {
+        const conflictFiles = syncResult.conflictFiles ?? [];
+        await this.resumeCodingForBaseSyncConflict(project, task, conflictFiles, syncResult.skippedReason);
+        return {
+          success: false,
+          message: `Worktree has base-sync conflicts; resumed coding to resolve ${conflictFiles.join(', ') || 'conflicted files'}`,
+        };
+      }
       if (syncResult.synced) {
         console.warn(`[AgentManager] Synced merge worktree for ${task.specId} with ${baseBranch}${syncResult.stashed ? ' (stashed task edits)' : ''}`);
       }
@@ -1699,6 +1856,18 @@ export class AgentManager extends EventEmitter {
       }
     } catch {
       // Not critical — agent can read spec itself
+    }
+
+    const baseSyncConflictPath = path.join(specDir, 'BASE_SYNC_CONFLICT.md');
+    try {
+      if (existsSync(baseSyncConflictPath)) {
+        parts.push('## Base Branch Sync Conflict');
+        parts.push('');
+        parts.push(readFileSync(baseSyncConflictPath, 'utf-8'));
+        parts.push('');
+      }
+    } catch {
+      // Not critical — recovery subtask still carries the conflict list.
     }
 
     // Read implementation_plan.json if it exists (resume scenario)

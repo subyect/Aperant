@@ -74,6 +74,8 @@ export interface WorktreeResult {
 export interface WorktreeSyncResult {
   synced: boolean;
   stashed: boolean;
+  conflicted?: boolean;
+  conflictFiles?: string[];
   skippedReason?: string;
 }
 
@@ -284,6 +286,17 @@ export async function syncWorktreeWithBaseBranch(
     return { synced: false, stashed: false, skippedReason: `Base branch ${baseBranch} not found` };
   }
 
+  const existingConflicts = await getUnmergedFiles(worktreePath);
+  if (existingConflicts.length > 0) {
+    return {
+      synced: false,
+      stashed: false,
+      conflicted: true,
+      conflictFiles: existingConflicts,
+      skippedReason: 'worktree_has_unmerged_conflicts',
+    };
+  }
+
   const alreadyContainsBase = await gitSucceeds(
     ['merge-base', '--is-ancestor', baseBranch, 'HEAD'],
     worktreePath,
@@ -336,10 +349,23 @@ export async function syncWorktreeWithBaseBranch(
   }
 
   if (stashed) {
-    await git(['stash', 'pop'], worktreePath);
+    await git(['stash', 'pop'], worktreePath, /* allowFailure */ true);
+    const conflictFiles = await getUnmergedFiles(worktreePath);
+    if (conflictFiles.length > 0) {
+      return { synced: true, stashed, conflicted: true, conflictFiles };
+    }
   }
 
   return { synced: true, stashed };
+}
+
+async function getUnmergedFiles(worktreePath: string): Promise<string[]> {
+  const output = await git(
+    ['diff', '--name-only', '--diff-filter=U'],
+    worktreePath,
+    /* allowFailure */ true,
+  );
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
 async function syncSpecDirectoryIntoWorktree(
