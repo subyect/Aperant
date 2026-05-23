@@ -13,9 +13,12 @@ import { join } from 'node:path';
 import { safeParseJson } from '../../utils/json-repair';
 import type { ExtractedInsights, InsightExtractionConfig } from '../runners/insight-extractor';
 import { extractSessionInsights } from '../runners/insight-extractor';
+import { isRateLimitError } from '../session/error-classifier';
 import type { SessionResult } from '../session/types';
 import type { SubtaskInfo } from './build-orchestrator';
 import {
+  RATE_LIMIT_PAUSE_FILE,
+  removePauseFile,
   writeAuthPauseFile,
   writeRateLimitPauseFile,
   waitForAuthResume,
@@ -205,10 +208,17 @@ export async function iterateSubtasks(
       return { totalSubtasks, completedSubtasks, stuckSubtasks, cancelled: true };
     }
 
-    if (result.outcome === 'rate_limited') {
+    if (isRateLimitedSessionResult(result)) {
       // Write pause file so the frontend can show a countdown
       const errorMessage = result.error?.message ?? 'Rate limit reached';
       writeRateLimitPauseFile(config.specDir, errorMessage, null);
+      if (config.sourceSpecDir && config.sourceSpecDir !== config.specDir) {
+        try {
+          writeRateLimitPauseFile(config.sourceSpecDir, errorMessage, null);
+        } catch {
+          // The worktree pause file is authoritative for the running worker.
+        }
+      }
 
       // Wait for the rate limit to reset (or user to resume early)
       await waitForRateLimitResume(
@@ -221,6 +231,10 @@ export async function iterateSubtasks(
       // Re-check abort after waiting
       if (config.abortSignal?.aborted) {
         return { totalSubtasks, completedSubtasks, stuckSubtasks, cancelled: true };
+      }
+
+      if (config.sourceSpecDir && config.sourceSpecDir !== config.specDir) {
+        removePauseFile(config.sourceSpecDir, RATE_LIMIT_PAUSE_FILE);
       }
 
       // Continue the loop — subtask will be retried
@@ -325,6 +339,12 @@ function buildRetryReason(
     return 'Agent hit the context window before the subtask was marked completed. Retrying the subtask.';
   }
   return result.error?.message ?? `Agent session ended with outcome "${result.outcome}". Retrying the subtask.`;
+}
+
+function isRateLimitedSessionResult(result: SessionResult): boolean {
+  return result.outcome === 'rate_limited'
+    || result.error?.code === 'rate_limited'
+    || isRateLimitError(result.error?.message ?? result.error);
 }
 
 function shouldKeepRetryingSubtask(subtask: PlanSubtask): boolean {
