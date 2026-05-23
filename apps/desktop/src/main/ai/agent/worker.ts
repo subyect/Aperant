@@ -1278,6 +1278,7 @@ function buildKickoffMessage(
           `Spec directory: ${specDir}.`,
           `Do not choose a different pending subtask.`,
           `Only mark subtask ${subtask.id} completed in implementation_plan.json after implementation and verification evidence are complete.`,
+          `Do not ask for confirmation or offer to continue later; finish this exact subtask or write a concrete blocker before ending.`,
         ].join(' ');
       }
       return `Read ${specDir}/implementation_plan.json and implement the next pending subtask. Project root: ${projectDir}. After completing the subtask, update its status to "completed" in implementation_plan.json.`;

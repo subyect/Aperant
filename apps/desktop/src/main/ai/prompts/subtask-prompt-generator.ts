@@ -333,6 +333,7 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
   // 6. Instructions
   sections.push(
     `## Instructions\n\n` +
+    `You are already authorized to complete this subtask. Do not ask the user for confirmation and do not stop with an offer to continue.\n\n` +
     `1. **Read the pattern files** to understand code style and conventions\n` +
     `2. **Read the files to modify** (if any) to understand current implementation\n` +
     `3. **Implement the subtask** following the patterns exactly\n` +
@@ -350,6 +351,8 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
     `- Focus ONLY on this subtask - don't modify unrelated code\n` +
     `- Do not mark the subtask complete just because you read files or found a previous attempt\n` +
     `- If the work is already implemented, run targeted verification and record the evidence in build-progress.txt before marking complete\n` +
+    `- Do not end your response until you have either updated this subtask status to "completed" or documented a concrete blocker in build-progress.txt\n` +
+    `- Never ask whether to proceed to the next step; execute the current subtask to completion\n` +
     `- If verification fails, FIX IT before marking complete\n` +
     `- If you encounter a blocker, document it in build-progress.txt\n`
   );

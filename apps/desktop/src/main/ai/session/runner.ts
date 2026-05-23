@@ -75,9 +75,11 @@ const POST_STREAM_TIMEOUT_MS = 10_000;
 
 /** Inactivity timeout for the stream consumption loop.
  *  If no stream parts arrive within this period, the stream is aborted.
- *  Protects against providers that accept the request but never send data
- *  (observed with OpenAI Codex via chatgpt.com/backend-api/codex/responses). */
-const STREAM_INACTIVITY_TIMEOUT_MS = 60_000;
+ *  This must be long enough for OpenAI/Codex reasoning steps and tool calls,
+ *  which can legitimately sit quiet for more than a minute before yielding.
+ *  It still protects against providers that accept the request and never send
+ *  data (observed with OpenAI Codex via chatgpt.com/backend-api/codex/responses). */
+const STREAM_INACTIVITY_TIMEOUT_MS = 300_000;
 
 // =============================================================================
 // Runner Options
