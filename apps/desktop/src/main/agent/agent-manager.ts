@@ -15,7 +15,7 @@ import {
   RoadmapConfig
 } from './types';
 import type { IdeationConfig, Project, Task } from '../../shared/types';
-import { resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
+import { getPlanPathsForSpec, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
 import { AUTO_BUILD_PATHS, getSpecsDir } from '../../shared/constants';
 import { projectStore } from '../project-store';
 import { resolveAuth, resolveAuthFromQueue } from '../ai/auth/resolver';
@@ -38,6 +38,9 @@ import { createMergeResolverFn } from '../ai/runners/merge-resolver';
 import { getToolPath } from '../cli-tool-manager';
 import { getIsolatedGitEnv } from '../utils/git-isolation';
 import { cleanupWorktree } from '../utils/worktree-cleanup';
+import { writeFileAtomicSync } from '../utils/atomic-file';
+
+const DEFAULT_MAX_PARALLEL_TASKS = 3;
 
 const APERANT_WORKFLOW_GUARD = `
 
@@ -378,9 +381,142 @@ export class AgentManager extends EventEmitter {
       } else {
         console.log(`[AgentManager] Startup recovery complete: No stuck subtasks found (scanned ${totalScanned} task(s))`);
       }
+
+      await this.resumeOrphanedWorkflowTasks(projects);
       this.scheduleHumanReviewMerge('startup-recovery', 1000);
     } catch (err) {
       console.error('[AgentManager] Startup recovery scan failed:', err);
+    }
+  }
+
+  private async resumeOrphanedWorkflowTasks(projects: Project[]): Promise<void> {
+    let totalStarted = 0;
+
+    for (const project of projects) {
+      const maxParallelTasks = this.getMaxParallelTasks(project);
+      const tasks = projectStore.getTasks(project.id)
+        .filter((task) => !task.metadata?.archivedAt);
+
+      const activeTasks = tasks
+        .filter((task) => task.status === 'in_progress' || task.status === 'ai_review')
+        .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
+
+      for (const task of activeTasks) {
+        if (this.countRunningProjectTasks(project) >= maxParallelTasks) break;
+        if (this.isRunning(task.id)) continue;
+        if (await this.resumePersistedWorkflowTask(project, task)) totalStarted++;
+      }
+
+      const queuedTasks = projectStore.getTasks(project.id)
+        .filter((task) => task.status === 'queue' && !task.metadata?.archivedAt)
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+      for (const task of queuedTasks) {
+        if (this.countRunningProjectTasks(project) >= maxParallelTasks) break;
+        if (this.isRunning(task.id)) continue;
+        if (await this.resumePersistedWorkflowTask(project, task)) totalStarted++;
+      }
+    }
+
+    if (totalStarted > 0) {
+      console.warn(`[AgentManager] Startup recovery resumed ${totalStarted} task worker(s)`);
+    }
+  }
+
+  private async resumePersistedWorkflowTask(project: Project, task: Task): Promise<boolean> {
+    const allSubtasksComplete = task.subtasks.length > 0 && task.subtasks.every((subtask) => subtask.status === 'completed');
+    const baseBranch = task.metadata?.baseBranch || project.settings?.mainBranch;
+    const specsBaseDir = getSpecsDir(project.autoBuildPath);
+    const specDir = path.join(project.path, specsBaseDir, task.specId);
+    const specFilePath = path.join(specDir, AUTO_BUILD_PATHS.SPEC_FILE);
+    const hasSpec = existsSync(specFilePath);
+
+    try {
+      if (task.status === 'ai_review' && allSubtasksComplete) {
+        this.persistRuntimeState(project, task, 'ai_review', 'review', 'qa_review', 'qa_review');
+        console.warn(`[AgentManager] Startup recovery resuming QA for ${task.specId}`);
+        await this.startQAProcess(task.id, project.path, task.specId, project.id);
+        return true;
+      }
+
+      this.persistRuntimeState(project, task, 'in_progress', 'in_progress', 'coding', 'coding');
+
+      if (!hasSpec) {
+        console.warn(`[AgentManager] Startup recovery resuming spec creation for ${task.specId}`);
+        await this.startSpecCreation(
+          task.id,
+          project.path,
+          task.description || task.title,
+          specDir,
+          task.metadata,
+          baseBranch,
+          project.id,
+        );
+        return true;
+      }
+
+      console.warn(`[AgentManager] Startup recovery resuming coding for ${task.specId}`);
+      await this.startTaskExecution(
+        task.id,
+        project.path,
+        task.specId,
+        {
+          parallel: false,
+          workers: 1,
+          baseBranch,
+          useWorktree: task.metadata?.useWorktree,
+          useLocalBranch: task.metadata?.useLocalBranch,
+          pushNewBranches: task.metadata?.pushNewBranches,
+        },
+        project.id,
+      );
+      return true;
+    } catch (error) {
+      console.warn(`[AgentManager] Startup recovery could not resume ${task.specId}:`, error);
+      return false;
+    }
+  }
+
+  private getMaxParallelTasks(project: Project): number {
+    const configured = project.settings?.maxParallelTasks;
+    return Number.isFinite(configured) && configured && configured > 0
+      ? Math.floor(configured)
+      : DEFAULT_MAX_PARALLEL_TASKS;
+  }
+
+  private countRunningProjectTasks(project: Project): number {
+    const tasks = projectStore.getTasks(project.id);
+    return tasks.filter((task) => this.isRunning(task.id)).length;
+  }
+
+  private persistRuntimeState(
+    project: Project,
+    task: Task,
+    status: Task['status'],
+    planStatus: string,
+    xstateState: string,
+    executionPhase: string,
+  ): void {
+    let persisted = false;
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as Record<string, unknown>;
+        plan.status = status;
+        plan.planStatus = planStatus;
+        plan.xstateState = xstateState;
+        plan.executionPhase = executionPhase;
+        plan.updated_at = new Date().toISOString();
+        if (status !== 'human_review') delete plan.reviewReason;
+        writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+        persisted = true;
+      } catch (error) {
+        console.warn(`[AgentManager] Failed to persist startup runtime state for ${task.specId}:`, error);
+      }
+    }
+
+    if (persisted) {
+      projectStore.invalidateTasksCache(project.id);
     }
   }
 
