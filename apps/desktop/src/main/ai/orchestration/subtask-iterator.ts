@@ -193,7 +193,7 @@ export async function iterateSubtasks(
     // usually recoverable provider/plan-marker failures, not implementation
     // dead ends.
     const maxAttemptsForSubtask = shouldKeepRetryingSubtask(subtask)
-      ? config.maxRetries * 12
+      ? config.maxRetries * 3
       : config.maxRetries;
     if (currentAttempt > maxAttemptsForSubtask) {
       stuckSubtasks.push(subtask.id);

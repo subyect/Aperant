@@ -60,6 +60,8 @@ describe('BuildOrchestrator coding phase', () => {
     const orchestrator = new BuildOrchestrator({
       specDir: tmpDir,
       projectDir: tmpDir,
+      maxSubtaskRetries: 1,
+      autoContinueDelayMs: 0,
       generatePrompt,
       runSession,
     });

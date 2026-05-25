@@ -47,7 +47,7 @@ const AUTO_CONTINUE_DELAY_MS = 3_000;
 const MAX_PLANNING_VALIDATION_RETRIES = 3;
 
 /** Maximum retries for a single subtask before marking stuck on hard failures */
-const MAX_SUBTASK_RETRIES = 12;
+const MAX_SUBTASK_RETRIES = 4;
 
 /** Delay before retrying after an error (ms) */
 const ERROR_RETRY_DELAY_MS = 5_000;
@@ -89,6 +89,10 @@ export interface BuildOrchestratorConfig {
   cliThinking?: string;
   /** Maximum iterations (0 = unlimited) */
   maxIterations?: number;
+  /** Override coding subtask retry budget. Defaults to the production budget. */
+  maxSubtaskRetries?: number;
+  /** Override delay between subtask attempts. Defaults to the production delay. */
+  autoContinueDelayMs?: number;
   /** Abort signal for cancellation */
   abortSignal?: AbortSignal;
   /** Callback to generate the system prompt for a given agent type and phase */
@@ -448,8 +452,8 @@ export class BuildOrchestrator extends EventEmitter {
       specDir: this.config.specDir,
       projectDir: this.config.projectDir,
       sourceSpecDir: this.config.sourceSpecDir,
-      maxRetries: MAX_SUBTASK_RETRIES,
-      autoContinueDelayMs: AUTO_CONTINUE_DELAY_MS,
+      maxRetries: this.config.maxSubtaskRetries ?? MAX_SUBTASK_RETRIES,
+      autoContinueDelayMs: this.config.autoContinueDelayMs ?? AUTO_CONTINUE_DELAY_MS,
       abortSignal: this.config.abortSignal,
       onSubtaskStart: (subtask, attempt) => {
         this.iteration++;
