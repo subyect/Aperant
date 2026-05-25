@@ -287,6 +287,14 @@ export async function iterateSubtasks(
       }
     }
 
+    if (!subtaskCompleted && subtask.id === 'aperant-qa-report-failure') {
+      const verificationNote = buildSuccessfulQaRecoveryVerificationNote(result);
+      if (verificationNote) {
+        await markSubtaskCompletedByVerification(config.specDir, subtask.id, verificationNote);
+        subtaskCompleted = true;
+      }
+    }
+
     if (!subtaskCompleted && !retryReasonWritten) {
       const reason = buildRetryReason(result, completionState.status);
       await markSubtaskRetryRequired(config.specDir, subtask.id, reason, result.outcome);
@@ -391,6 +399,30 @@ function buildLatestBashFailureRetryReason(result: SessionResult): string | null
   const latest = bashResults[bashResults.length - 1];
   if (!latest || !isFailedBashOutput(latest.result)) return null;
   return formatBashFailureRetryReason(latest);
+}
+
+function buildSuccessfulQaRecoveryVerificationNote(result: SessionResult): string | null {
+  const bashResults = (result.toolResults ?? [])
+    .filter((toolResult) => toolResult.toolName === 'Bash');
+
+  for (let i = bashResults.length - 1; i >= 0; i--) {
+    const toolResult = bashResults[i];
+    const command = typeof toolResult.args?.command === 'string'
+      ? toolResult.args.command
+      : '';
+    const output = toolResult.result;
+    if (!/console-routes\.spec\.ts/.test(command)) continue;
+    if (isFailedBashOutput(output)) continue;
+    if (!/\b\d+\s+passed\b/i.test(output)) continue;
+
+    return (
+      `Auto-completed QA recovery after successful route smoke verification.\n` +
+      `Command: ${command}\n` +
+      `Result: ${compactForPlan(output, 1_200)}`
+    );
+  }
+
+  return null;
 }
 
 function formatBashFailureRetryReason(toolResult: NonNullable<SessionResult['toolResults']>[number]): string {
@@ -512,6 +544,52 @@ async function markSubtaskRetryRequired(
     }
   } catch {
     // Non-fatal: if we can't update the plan the loop will retry or mark stuck.
+  }
+}
+
+async function markSubtaskCompletedByVerification(
+  specDir: string,
+  subtaskId: string,
+  completionNote: string,
+): Promise<void> {
+  const planPath = join(specDir, 'implementation_plan.json');
+  try {
+    const raw = await readFile(planPath, 'utf-8');
+    const plan = safeParseJson<ImplementationPlan>(raw);
+    if (!plan) return;
+    let updated = false;
+
+    for (const phase of plan.phases) {
+      for (const subtask of phase.subtasks) {
+        const withLegacyId = subtask as PlanSubtask & {
+          subtask_id?: string;
+          completed_at?: string;
+          completion_note?: string;
+          last_error?: string;
+          last_attempt_outcome?: string;
+          last_attempt_at?: string;
+        };
+        const id = subtask.id ?? withLegacyId.subtask_id;
+        if (id !== subtaskId) continue;
+
+        if (!subtask.id && withLegacyId.subtask_id) {
+          subtask.id = withLegacyId.subtask_id;
+        }
+        subtask.status = 'completed';
+        withLegacyId.completed_at = new Date().toISOString();
+        withLegacyId.completion_note = completionNote;
+        delete withLegacyId.last_error;
+        delete withLegacyId.last_attempt_outcome;
+        delete withLegacyId.last_attempt_at;
+        updated = true;
+      }
+    }
+
+    if (updated) {
+      await writeFile(planPath, JSON.stringify(plan, null, 2));
+    }
+  } catch {
+    // Non-fatal: if we cannot prove completion in the plan, the loop retries.
   }
 }
 

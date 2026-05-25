@@ -283,6 +283,57 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('Use the suggested verbose or narrower verifier');
   });
 
+  it('auto-completes QA recovery when route smoke verification passes but the agent forgets to mark the plan', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'QA recovery',
+          subtasks: [
+            {
+              id: 'aperant-qa-report-failure',
+              title: 'Resolve failed QA report',
+              description: 'Resolve route smoke QA failure.',
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        toolResults: [
+          {
+            toolName: 'Bash',
+            args: {
+              command: 'DEBUG=pw:webserver LAYER1_CONSOLE_E2E_PORT=3477 pnpm --filter @yect/layer1-console exec playwright test tests/e2e/console-routes.spec.ts --project=desktop --reporter=list --workers=1 --timeout=30000',
+            },
+            result: 'Running 38 tests using 1 worker\n38 passed (27.5s)',
+            durationMs: 27_500,
+            isError: false,
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; completion_note?: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(1);
+    expect(result.stuckSubtasks).toEqual([]);
+    expect(subtask.status).toBe('completed');
+    expect(subtask.completion_note).toContain('successful route smoke verification');
+    expect(subtask.last_error).toBeUndefined();
+  });
+
   it('passes prior retry context into the next subtask session', async () => {
     const plan = planWithStatus('pending') as ReturnType<typeof planWithStatus> & {
       phases: Array<{
