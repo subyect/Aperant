@@ -88,6 +88,10 @@ function buildImmediateCommandGuidance(command: string): string | null {
     && !/\bDEBUG=/.test(normalized);
   const runsRouteSmokeWithoutTestTimeout = runsConsoleRouteSmoke
     && !/--timeout(?:=|\s+)\d+\b/.test(normalized);
+  const runsRouteSmokeWithoutExplicitPort = runsConsoleRouteSmoke
+    && !/\bLAYER1_CONSOLE_E2E_PORT=/.test(normalized);
+  const runsRouteSmokeOnDefaultPort = runsConsoleRouteSmoke
+    && /\bLAYER1_CONSOLE_E2E_PORT=(?:["']?)3124(?:["']?)\b/.test(normalized);
   const alreadyVerbose = /--reporter(?:=|\s+)(list|github|json)\b/.test(normalized)
     || /\bDEBUG=/.test(normalized)
     || /\bPWDEBUG=/.test(normalized);
@@ -96,14 +100,20 @@ function buildImmediateCommandGuidance(command: string): string | null {
     (!runsPlaywrightWrapper
       && !runsLikelySilentPlaywrightLine
       && !runsLikelySilentRouteSmoke
-      && !runsRouteSmokeWithoutTestTimeout)
-    || (alreadyVerbose && !runsLikelySilentRouteSmoke && !runsRouteSmokeWithoutTestTimeout)
+      && !runsRouteSmokeWithoutTestTimeout
+      && !runsRouteSmokeWithoutExplicitPort
+      && !runsRouteSmokeOnDefaultPort)
+    || (alreadyVerbose
+      && !runsLikelySilentRouteSmoke
+      && !runsRouteSmokeWithoutTestTimeout
+      && !runsRouteSmokeWithoutExplicitPort
+      && !runsRouteSmokeOnDefaultPort)
   ) {
     return null;
   }
 
   const suggestedCommand = normalized.includes('console-routes')
-    ? 'DEBUG=pw:webserver LAYER1_CONSOLE_DATA_MODE=fixture LAYER1_CONSOLE_AUTH_DISABLED=true pnpm --filter @yect/layer1-console exec playwright test tests/e2e/console-routes.spec.ts --project=desktop --reporter=list --workers=1 --timeout=30000'
+    ? 'DEBUG=pw:webserver LAYER1_CONSOLE_E2E_PORT=$((3200 + $$ % 1000)) LAYER1_CONSOLE_DATA_MODE=fixture LAYER1_CONSOLE_AUTH_DISABLED=true pnpm --filter @yect/layer1-console exec playwright test tests/e2e/console-routes.spec.ts --project=desktop --reporter=list --workers=1 --timeout=30000'
     : 'pnpm exec playwright test --reporter=list --workers=1';
 
   return (

@@ -147,7 +147,7 @@ describe('Bash Tool', () => {
     );
 
     expect(result).toContain('Command is likely to run silently');
-    expect(result).toContain('DEBUG=pw:webserver LAYER1_CONSOLE_DATA_MODE=fixture LAYER1_CONSOLE_AUTH_DISABLED=true pnpm --filter @yect/layer1-console exec playwright test tests/e2e/console-routes.spec.ts --project=desktop --reporter=list --workers=1 --timeout=30000');
+    expect(result).toContain('DEBUG=pw:webserver LAYER1_CONSOLE_E2E_PORT=$((3200 + $$ % 1000)) LAYER1_CONSOLE_DATA_MODE=fixture LAYER1_CONSOLE_AUTH_DISABLED=true pnpm --filter @yect/layer1-console exec playwright test tests/e2e/console-routes.spec.ts --project=desktop --reporter=list --workers=1 --timeout=30000');
     expect(result).toContain('Do not rerun the same command unchanged');
     expect(mockSpawn).not.toHaveBeenCalled();
   });
@@ -196,11 +196,33 @@ describe('Bash Tool', () => {
     expect(mockSpawn).not.toHaveBeenCalled();
   });
 
+  it('rejects route smoke Playwright commands without an explicit non-default port', async () => {
+    const result = await bashTool.config.execute(
+      { command: 'cd packages/layer1-console && DEBUG=pw:webserver pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=list --workers=1 --timeout=30000' },
+      baseContext,
+    );
+
+    expect(result).toContain('Command is likely to run silently');
+    expect(result).toContain('LAYER1_CONSOLE_E2E_PORT=$((3200 + $$ % 1000))');
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it('rejects route smoke Playwright commands that force the default port', async () => {
+    const result = await bashTool.config.execute(
+      { command: 'cd packages/layer1-console && DEBUG=pw:webserver LAYER1_CONSOLE_E2E_PORT=3124 pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=list --workers=1 --timeout=30000' },
+      baseContext,
+    );
+
+    expect(result).toContain('Command is likely to run silently');
+    expect(result).toContain('LAYER1_CONSOLE_E2E_PORT=$((3200 + $$ % 1000))');
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
   it('allows verbose Playwright list reporter commands through the idle watchdog guard', async () => {
     setupSpawn('running with line reporter\n', '', 0);
 
     const result = await bashTool.config.execute(
-      { command: 'cd packages/layer1-console && DEBUG=pw:webserver pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=list --workers=1 --timeout=30000' },
+      { command: 'cd packages/layer1-console && DEBUG=pw:webserver LAYER1_CONSOLE_E2E_PORT=3134 pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=list --workers=1 --timeout=30000' },
       baseContext,
     );
 
@@ -354,7 +376,7 @@ describe('Bash Tool', () => {
 
     await bashTool.config.execute(
       {
-        command: 'cd packages/layer1-console && DEBUG=pw:webserver pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=list --workers=1 --timeout=30000',
+        command: 'cd packages/layer1-console && DEBUG=pw:webserver LAYER1_CONSOLE_E2E_PORT=3134 pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=list --workers=1 --timeout=30000',
         timeout: 600_000,
       },
       baseContext,
