@@ -113,6 +113,7 @@ interface PlanSubtask {
   files_to_modify?: string[];
   patterns_from?: string[];
   verification?: SubtaskInfo['verification'];
+  notes?: string;
   last_error?: string;
   last_attempt_outcome?: string;
 }
@@ -179,6 +180,7 @@ export async function iterateSubtasks(
       patternsFrom: subtask.patterns_from,
       verification: subtask.verification,
       status: subtask.status,
+      notes: subtask.notes,
       lastError: subtask.last_error,
       lastAttemptOutcome: subtask.last_attempt_outcome,
     };
@@ -304,7 +306,7 @@ export async function iterateSubtasks(
     }
 
     if (!subtaskCompleted && !retryReasonWritten) {
-      const reason = buildRetryReason(result, completionState.status);
+      const reason = buildRetryReason(result, completionState.status, subtask);
       await markSubtaskRetryRequired(config.specDir, subtask.id, reason, result.outcome);
     }
 
@@ -370,6 +372,7 @@ async function readSubtaskCompletionState(
 function buildRetryReason(
   result: SessionResult,
   currentStatus: string | undefined,
+  subtask?: PlanSubtask,
 ): string {
   const bashFailure = buildBashFailureRetryReason(result);
   if (bashFailure) {
@@ -378,12 +381,14 @@ function buildRetryReason(
 
   if (result.outcome === 'completed') {
     const finalMessage = getLastAssistantMessage(result);
-    if (finalMessage && looksLikeRepoLocalVerifierFailureSummary(finalMessage)) {
+    const persistedFailureContext = getPersistedVerifierFailureContext(subtask);
+    const verifierFailureContext = [finalMessage, persistedFailureContext].filter(Boolean).join('\n\n');
+    if (verifierFailureContext && looksLikeRepoLocalVerifierFailureSummary(verifierFailureContext)) {
       return (
         `Bash command failed during the attempt or the assistant reported a repo-local verifier failure, ` +
         `but the subtask was not completed in implementation_plan.json (current status: ${currentStatus ?? 'missing'}).\n` +
         `Do not stop with another blocker summary. Fix the repo-local imports, package exports, failed assertions, or test harness code needed by the required verifier, then rerun targeted verification before marking complete.\n\n` +
-        `Reported failure summary:\n${compactForPlan(finalMessage, 1_600)}`
+        `Reported failure summary:\n${compactForPlan(verifierFailureContext, 1_600)}`
       );
     }
     const falseCompletionWarning = finalMessage && looksLikeFalseCompletionClaim(finalMessage)
@@ -409,6 +414,14 @@ function buildRetryReason(
   return result.error?.message ?? `Agent session ended with outcome "${result.outcome}". Retrying the subtask.`;
 }
 
+function getPersistedVerifierFailureContext(subtask?: PlanSubtask): string | null {
+  const parts = [
+    typeof subtask?.notes === 'string' ? subtask.notes : '',
+    typeof subtask?.last_error === 'string' ? subtask.last_error : '',
+  ].map((part) => part.trim()).filter(Boolean);
+  return parts.length > 0 ? parts.join('\n\n') : null;
+}
+
 function looksLikeFalseCompletionClaim(message: string): boolean {
   return /\b(marked|updated|set)\b[\s\S]{0,80}\b(completed|complete|implementation_plan\.json|subtask)\b/i.test(message)
     || /\b(test|tests|verification|verifier|route smoke|smoke)\b[\s\S]{0,80}\b(pass|passed|passes|green|success|successful)\b/i.test(message)
@@ -420,7 +433,7 @@ function looksLikeRepoLocalVerifierFailureSummary(message: string): boolean {
   const reportsFailure = /\b(fail|failed|failing|failure|blocker|cannot mark|can't mark|did not mark|does not pass|do not pass|not complete yet)\b/i.test(message);
   if (!reportsFailure) return false;
 
-  return /Cannot find module|Module not found|Failed to resolve import|Does the file exist\?|unresolved imports?|module[-\s]resolution|import[-\s]resolution|failed suites?|failed tests?|assertion failure|Exit code:\s*[1-9]\d*/i.test(message);
+  return /Cannot find module|Module not found|Failed to resolve import|Does the file exist\?|unresolved(?:\s+[`'"]?@?[\w/-]+| imports?)?|missing (?:query )?modules?|missing workspace packages?|dist missing|package[-\s]resolution|module[-\s]resolution|import[-\s]resolution|startup 500s?|failed suites?|failed tests?|assertion failure|Exit code:\s*[1-9]\d*/i.test(message);
 }
 
 function getLastAssistantMessage(result: SessionResult): string | null {

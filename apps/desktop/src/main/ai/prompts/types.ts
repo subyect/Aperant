@@ -84,6 +84,8 @@ export interface SubtaskPromptInfo {
   verification?: SubtaskVerification;
   /** Current status */
   status?: string;
+  /** Persisted notes from the implementation plan */
+  notes?: string;
   /** Last retry error recorded on this subtask */
   lastError?: string;
   /** Last agent outcome recorded on this subtask */

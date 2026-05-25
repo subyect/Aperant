@@ -73,6 +73,7 @@ function needsYectConsoleRouteSmokeGuidance(
 ): boolean {
   const haystack = [
     subtask.description,
+    subtask.notes,
     subtask.lastError,
     typeof subtask.verification?.run === 'string' ? subtask.verification.run : '',
     typeof subtask.verification?.command === 'string' ? subtask.verification.command : '',
@@ -267,6 +268,12 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
     `## Description\n\n` +
     `${subtask.description}\n`
   );
+  if (subtask.notes) {
+    sections.push(
+      `\n## Persisted Subtask Notes\n\n` +
+      `${subtask.notes}\n`
+    );
+  }
 
   // 3. Retry context
   if (attemptCount > 0) {

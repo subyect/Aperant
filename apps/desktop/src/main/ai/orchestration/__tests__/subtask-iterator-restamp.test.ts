@@ -221,6 +221,43 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('@yect/layer1-db/testing');
   });
 
+  it('uses persisted subtask notes to classify hidden verifier failures', async () => {
+    const plan = planWithStatus('pending') as ReturnType<typeof planWithStatus> & {
+      phases: Array<{ subtasks: Array<{ notes?: string }> }>;
+    };
+    plan.phases[0].subtasks[0].id = 'aperant-qa-report-failure';
+    plan.phases[0].subtasks[0].notes = [
+      'Current failure is different from QA report: startup 500s from workspace/dist package resolution.',
+      '`@yect/layer1-db` dist missing query modules like `./query-helpers.js`, plus unresolved `@yect/layer1-engines` and `@yect/layer1-ingest`.',
+    ].join('\n');
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        messages: [
+          {
+            role: 'assistant',
+            content: 'Implemented and verified the QA recovery. I updated the subtask to completed.',
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('repo-local verifier failure');
+    expect(subtask.last_error).toContain('dist missing query modules');
+    expect(subtask.last_error).toContain('@yect/layer1-engines');
+  });
+
   it('counts a subtask completed when the agent updates the plan', async () => {
     await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
 

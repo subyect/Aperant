@@ -138,6 +138,7 @@ export interface SubtaskInfo {
     instructions?: string;
   };
   status: string;
+  notes?: string;
   lastError?: string;
   lastAttemptOutcome?: string;
 }
