@@ -50,6 +50,10 @@ import {
   BASE_SYNC_RECOVERY_SUBTASK_ID,
   isBaseSyncConflictRecoveryCurrent,
 } from './base-sync-recovery';
+import {
+  copyReviewArtifactsToMainSpec,
+  findPassingQaReport,
+} from './task-review-artifacts';
 
 const DEFAULT_MAX_PARALLEL_TASKS = 3;
 const MAX_CONCURRENT_PLANNING_RECOVERIES = 1;
@@ -1734,6 +1738,13 @@ export class AgentManager extends EventEmitter {
         for (const task of tasks) {
           if (!this.shouldAutoMergeHumanReviewTask(task)) continue;
           try {
+            const qaEvidence = this.getHumanReviewQaEvidence(project, task);
+            if (!qaEvidence.passingReportPath) {
+              await this.resumeQaForMissingPassingReport(project, task);
+              console.warn(`[AgentManager] Auto-merge deferred for ${task.specId}: missing passing qa_report.md; rerunning QA (${reason})`);
+              continue;
+            }
+
             const result = await this.mergeHumanReviewTask(project, task);
             if (result.success) {
               console.warn(`[AgentManager] Auto-merged human-review task ${task.specId} (${reason})${result.commitSha ? ` at ${result.commitSha}` : ''}`);
@@ -1755,6 +1766,35 @@ export class AgentManager extends EventEmitter {
     if (this.isRunning(task.id)) return false;
     if (!task.subtasks.length || task.subtasks.some((subtask) => subtask.status !== 'completed')) return false;
     return true;
+  }
+
+  private getHumanReviewQaEvidence(project: Project, task: Task): {
+    mainSpecDir: string;
+    worktreeSpecDir?: string;
+    passingReportPath: string | null;
+  } {
+    const specsBaseDir = getSpecsDir(project.autoBuildPath);
+    const mainSpecDir = path.join(project.path, specsBaseDir, task.specId);
+    const worktreePath = findTaskWorktree(project.path, task.specId);
+    const worktreeSpecDir = worktreePath && existsSync(worktreePath)
+      ? path.join(worktreePath, specsBaseDir, task.specId)
+      : undefined;
+    const specDirs = [
+      worktreeSpecDir,
+      mainSpecDir,
+    ].filter((candidate): candidate is string => Boolean(candidate));
+
+    return {
+      mainSpecDir,
+      worktreeSpecDir,
+      passingReportPath: findPassingQaReport(specDirs),
+    };
+  }
+
+  private async resumeQaForMissingPassingReport(project: Project, task: Task): Promise<void> {
+    this.persistRuntimeState(project, task, 'ai_review', 'review', 'qa_review', 'qa_review');
+    taskStateManager.prepareForRestart(task.id);
+    await this.startQAProcess(task.id, project.path, task.specId, project.id);
   }
 
   private async mergeHumanReviewTask(project: Project, task: Task): Promise<{ success: boolean; message: string; commitSha?: string }> {
@@ -1780,6 +1820,19 @@ export class AgentManager extends EventEmitter {
     } catch (error) {
       return { success: false, message: `Could not sync worktree with ${baseBranch}: ${error instanceof Error ? error.message : String(error)}` };
     }
+
+    const qaEvidence = this.getHumanReviewQaEvidence(project, task);
+    if (!qaEvidence.passingReportPath) {
+      await this.resumeQaForMissingPassingReport(project, task);
+      return { success: false, message: 'Missing passing qa_report.md; rerunning QA before merge' };
+    }
+    if (qaEvidence.worktreeSpecDir) {
+      const copied = copyReviewArtifactsToMainSpec(qaEvidence.mainSpecDir, qaEvidence.worktreeSpecDir);
+      if (copied.length > 0) {
+        console.warn(`[AgentManager] Preserved review artifacts for ${task.specId}: ${copied.join(', ')}`);
+      }
+    }
+
     const storageDir = path.join(project.path, project.autoBuildPath || '.auto-claude');
     const orchestrator = new MergeOrchestrator({
       projectDir: project.path,

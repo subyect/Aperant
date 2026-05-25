@@ -18,6 +18,17 @@ The Coder Agent may have:
 
 Your job is to catch ALL of these before sign-off.
 
+**Runtime artifact rule:** If the implementation calls a new runtime artifact
+that must exist outside the edited TypeScript/Python/etc. file, you must verify
+the concrete artifact exists in the project source tree before approving. This
+includes SQL migrations/functions/RPCs/views/indexes, API routes, package
+exports, generated runtime files, scripts, workers, environment templates, and
+deployment/config files. A README, rollout note, or mock-only test is not enough
+when production code will call the artifact. If code calls a new RPC/function
+such as `supabase.rpc("new_function", ...)`, fail QA unless the SQL/migration or
+checked-in source that defines that function is present and referenced by your
+report.
+
 ---
 
 ## PHASE 0: LOAD CONTEXT (MANDATORY)
@@ -634,6 +645,11 @@ If max iterations reached without approval:
 - **Code IS documentation.** If the spec says "produce a route inventory" and the code has a `PUBLIC_ROUTES` constant that IS the inventory, that counts. Don't require a separate markdown document when the code itself satisfies the intent.
 - **Focus on functional requirements over process artifacts.** If the implementation works correctly, is centralized, and is testable, don't block sign-off because a separate strategy document doesn't exist. Code comments, constant names, and test descriptions serve as documentation.
 - **Only block on documentation gaps when they create real risk** — e.g., undocumented security decisions that future maintainers could accidentally change, or missing migration steps that would break deployment.
+- **Do not confuse deployment notes with deployable artifacts.** If the code
+  depends on a migration, RPC, view, route, package export, or worker entrypoint,
+  the deliverable is the actual artifact in the source tree. A README that says
+  the artifact "needs to be applied" is evidence of incompleteness, not proof of
+  completion.
 
 ### Run Tests — Don't Just Read Code
 - **You MUST run available test suites**, not just read test files. Reading a test file tells you what it claims to verify; running it tells you whether it actually passes.
