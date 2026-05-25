@@ -11,6 +11,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { safeParseJson } from '../../utils/json-repair';
+import { preserveCompletedSubtasks } from '../../task-plan-guards';
 import type { ExtractedInsights, InsightExtractionConfig } from '../runners/insight-extractor';
 import { extractSessionInsights } from '../runners/insight-extractor';
 import { isRateLimitError } from '../session/error-classifier';
@@ -476,6 +477,15 @@ async function syncPhasesToMain(
     const mainRaw = await readFile(mainPlanPath, 'utf-8');
     const mainPlan = safeParseJson<Record<string, unknown>>(mainRaw);
     if (!mainPlan) return;
+
+    const restoredWorktreeCompletions = preserveCompletedSubtasks(
+      worktreePlan as unknown as Record<string, unknown>,
+      mainPlan,
+    );
+
+    if (restoredWorktreeCompletions) {
+      await writeFile(worktreePlanPath, JSON.stringify(worktreePlan, null, 2));
+    }
 
     mainPlan.phases = worktreePlan.phases;
     mainPlan.updated_at = new Date().toISOString();

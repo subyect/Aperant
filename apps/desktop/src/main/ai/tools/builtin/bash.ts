@@ -27,6 +27,7 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
+const DEFAULT_IDLE_TIMEOUT_MS = 180_000;
 const MAX_OUTPUT_LENGTH = 30_000;
 
 // ---------------------------------------------------------------------------
@@ -82,7 +83,7 @@ function executeCommand(
   abortSignal?: AbortSignal,
   cleanupProcessGroup = true,
   tracking?: { specDir?: string },
-): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean; aborted: boolean }> {
+): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean; idleTimedOut: boolean; aborted: boolean }> {
   const shell = resolveShell();
   const args = isWindows() && shell.toLowerCase().endsWith('cmd.exe')
     ? ['/c', command]
@@ -90,11 +91,13 @@ function executeCommand(
 
   return new Promise((resolve) => {
     let timedOut = false;
+    let idleTimedOut = false;
     let aborted = false;
     let settled = false;
     let stdout = '';
     let stderr = '';
     let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
     let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
     let trackingReady: Promise<void> = Promise.resolve();
 
@@ -124,12 +127,21 @@ function executeCommand(
       });
     }
 
+    const resetIdleTimer = () => {
+      if (!cleanupProcessGroup || timeoutMs <= DEFAULT_IDLE_TIMEOUT_MS) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => terminate('idle-timeout'), DEFAULT_IDLE_TIMEOUT_MS);
+      idleTimer.unref?.();
+    };
+
     child.stdout?.on('data', (chunk: Buffer | string) => {
       stdout += chunk.toString();
+      resetIdleTimer();
     });
 
     child.stderr?.on('data', (chunk: Buffer | string) => {
       stderr += chunk.toString();
+      resetIdleTimer();
     });
 
     const finish = (exitCode: number) => {
@@ -137,6 +149,7 @@ function executeCommand(
       settled = true;
 
       if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
       abortSignal?.removeEventListener('abort', onAbort);
 
@@ -159,8 +172,9 @@ function executeCommand(
           resolve({
             stdout,
             stderr,
-            exitCode: timedOut ? 124 : aborted ? 130 : exitCode,
+            exitCode: timedOut || idleTimedOut ? 124 : aborted ? 130 : exitCode,
             timedOut,
+            idleTimedOut,
             aborted,
           });
         });
@@ -178,8 +192,9 @@ function executeCommand(
       forceKillTimer.unref?.();
     };
 
-    const terminate = (reason: 'timeout' | 'abort') => {
+    const terminate = (reason: 'timeout' | 'idle-timeout' | 'abort') => {
       if (reason === 'timeout') timedOut = true;
+      if (reason === 'idle-timeout') idleTimedOut = true;
       if (reason === 'abort') aborted = true;
       if (child) {
         terminateProcessTree(child, 'SIGTERM');
@@ -194,6 +209,7 @@ function executeCommand(
     if (timeoutMs > 0) {
       timeoutTimer = setTimeout(() => terminate('timeout'), timeoutMs);
       timeoutTimer.unref?.();
+      resetIdleTimer();
     }
 
     if (abortSignal?.aborted) {
@@ -246,7 +262,7 @@ export const bashTool = Tool.define({
       return `Command started in background: ${command}`;
     }
 
-    const { stdout, stderr, exitCode, timedOut, aborted } = await executeCommand(
+    const { stdout, stderr, exitCode, timedOut, idleTimedOut, aborted } = await executeCommand(
       command,
       context.cwd,
       timeoutMs,
@@ -271,6 +287,10 @@ export const bashTool = Tool.define({
 
     if (timedOut) {
       parts.push(`Command timed out after ${timeoutMs}ms; process tree was terminated.`);
+    }
+
+    if (idleTimedOut) {
+      parts.push(`Command produced no output for ${DEFAULT_IDLE_TIMEOUT_MS}ms and was terminated to keep the worker moving.`);
     }
 
     if (aborted) {

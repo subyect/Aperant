@@ -274,4 +274,77 @@ describe('iterateSubtasks completion proof', () => {
     expect(result.completedSubtasks).toBe(2);
     expect(result.stuckSubtasks).toEqual([]);
   });
+
+  it('preserves completed main-plan subtasks when syncing a stale worktree plan', async () => {
+    const mainSpecDir = await mkdtemp(join(tmpdir(), 'subtask-iterator-main-'));
+    const mainPlanPath = join(mainSpecDir, 'implementation_plan.json');
+    const worktreePlan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Phase 1',
+          subtasks: [
+            {
+              id: '1.1',
+              title: 'Already done',
+              description: 'Already done',
+              status: 'pending',
+            },
+            {
+              id: '1.2',
+              title: 'Still pending',
+              description: 'Still pending',
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    };
+    const mainPlan = {
+      ...worktreePlan,
+      phases: [
+        {
+          name: 'Phase 1',
+          subtasks: [
+            {
+              ...worktreePlan.phases[0].subtasks[0],
+              status: 'completed',
+              completed_at: '2026-05-25T00:00:00.000Z',
+            },
+            worktreePlan.phases[0].subtasks[1],
+          ],
+        },
+      ],
+    };
+
+    await writeFile(planPath, JSON.stringify(worktreePlan, null, 2));
+    await writeFile(mainPlanPath, JSON.stringify(mainPlan, null, 2));
+
+    try {
+      await iterateSubtasks({
+        specDir: tmpDir,
+        sourceSpecDir: mainSpecDir,
+        projectDir: tmpDir,
+        maxRetries: 1,
+        autoContinueDelayMs: 0,
+        runSubtaskSession: async () => sessionResult('completed'),
+      });
+
+      const syncedMain = JSON.parse(await readFile(mainPlanPath, 'utf-8')) as typeof mainPlan;
+      const syncedWorktree = JSON.parse(await readFile(planPath, 'utf-8')) as typeof mainPlan;
+
+      expect(syncedMain.phases[0].subtasks[0]).toEqual(expect.objectContaining({
+        id: '1.1',
+        status: 'completed',
+        completed_at: '2026-05-25T00:00:00.000Z',
+      }));
+      expect(syncedWorktree.phases[0].subtasks[0]).toEqual(expect.objectContaining({
+        id: '1.1',
+        status: 'completed',
+        completed_at: '2026-05-25T00:00:00.000Z',
+      }));
+    } finally {
+      await rm(mainSpecDir, { recursive: true, force: true });
+    }
+  });
 });

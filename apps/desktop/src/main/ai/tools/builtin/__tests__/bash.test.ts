@@ -280,6 +280,48 @@ describe('Bash Tool', () => {
     setTimeoutSpy.mockRestore();
   });
 
+  it('terminates long foreground commands that stop producing output', async () => {
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    let child: (EventEmitter & {
+      pid: number;
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+      kill: ReturnType<typeof vi.fn>;
+    }) | null = null;
+
+    mockSpawn.mockImplementation(
+      () => {
+        child = new EventEmitter() as typeof child;
+        child!.pid = 1234;
+        child!.stdout = new EventEmitter();
+        child!.stderr = new EventEmitter();
+        child!.kill = vi.fn(() => true);
+        return child;
+      },
+    );
+
+    try {
+      const resultPromise = bashTool.config.execute(
+        { command: 'pnpm test:e2e', timeout: 600_000 },
+        baseContext,
+      );
+
+      await vi.advanceTimersByTimeAsync(180_000);
+
+      expect(killSpy).toHaveBeenCalledWith(-1234, 'SIGTERM');
+
+      child!.emit('close', null);
+      const result = await resultPromise;
+
+      expect(result).toContain('Command produced no output for 180000ms');
+      expect(result).toContain('Exit code: 124');
+    } finally {
+      killSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('should use /bin/bash as shell on non-Windows', async () => {
     mockIsWindows.mockReturnValue(false);
     setupSpawn('output', '', 0);
