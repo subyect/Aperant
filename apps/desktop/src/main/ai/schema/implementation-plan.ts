@@ -49,6 +49,28 @@ function normalizeStatus(value: unknown): string {
   return statusMap[lower] ?? (SUBTASK_STATUS_VALUES.includes(lower as typeof SUBTASK_STATUS_VALUES[number]) ? lower : 'pending');
 }
 
+function coerceVerification(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+
+  const raw = input as Record<string, unknown>;
+  const commands = Array.isArray(raw.commands)
+    ? raw.commands
+        .filter((command): command is string => typeof command === 'string' && command.trim().length > 0)
+        .map((command) => command.trim())
+    : [];
+  const run = typeof raw.run === 'string' && raw.run.trim().length > 0
+    ? raw.run
+    : commands.length > 0
+      ? commands.join(' && ')
+      : undefined;
+
+  return {
+    ...raw,
+    type: raw.type ?? raw.method ?? (run ? 'command' : undefined),
+    run,
+  };
+}
+
 // =============================================================================
 // Subtask Schema (with coercion)
 // =============================================================================
@@ -82,14 +104,7 @@ function coerceSubtask(input: unknown): unknown {
     // Coerce verification object: accept method as alias for type.
     // Non-object verification values (strings, etc.) are NOT coerced — let Zod
     // reject them so the validation retry loop can tell the LLM what's wrong.
-    verification: raw.verification && typeof raw.verification === 'object'
-      ? {
-          ...(raw.verification as Record<string, unknown>),
-          type: (raw.verification as Record<string, unknown>).type
-            ?? (raw.verification as Record<string, unknown>).method
-            ?? undefined,
-        }
-      : raw.verification,
+    verification: coerceVerification(raw.verification),
   };
 }
 
@@ -104,7 +119,7 @@ export const PlanSubtaskSchema = z.preprocess(coerceSubtask, z.object({
     type: z.string(),
     run: z.string().optional(),
     scenario: z.string().optional(),
-  }).optional(),
+  }).passthrough().optional(),
   // Passthrough unknown fields so we don't lose data the LLM added
 }).passthrough());
 

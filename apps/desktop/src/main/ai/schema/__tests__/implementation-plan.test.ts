@@ -151,6 +151,34 @@ describe('PlanSubtaskSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('coerces legacy command-array verification objects', () => {
+    const result = PlanSubtaskSchema.safeParse({
+      id: '4.4',
+      title: 'Run targeted analytics tests',
+      status: 'pending',
+      verification: {
+        commands: [
+          'pnpm --filter @yect/layer1-console test:analytics-filters',
+          'pnpm --filter @yect/layer1-console typecheck',
+        ],
+        results: ['analytics filters passed', 'typecheck passed'],
+        note: 'Recorded by an earlier agent run.',
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.verification?.type).toBe('command');
+      expect(result.data.verification?.run).toBe(
+        'pnpm --filter @yect/layer1-console test:analytics-filters && pnpm --filter @yect/layer1-console typecheck',
+      );
+      expect(result.data.verification?.commands).toEqual([
+        'pnpm --filter @yect/layer1-console test:analytics-filters',
+        'pnpm --filter @yect/layer1-console typecheck',
+      ]);
+    }
+  });
+
   it('coerces "files_modified" to "files_to_modify"', () => {
     const result = PlanSubtaskSchema.safeParse({
       id: '1.1',
