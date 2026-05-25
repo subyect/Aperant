@@ -59,6 +59,25 @@ export function completedSubtasksHaveBlockingErrors(plan: MutablePlan | null | u
   });
 }
 
+export function clearCompletedSubtaskDiagnostics(plan: MutablePlan | null | undefined): boolean {
+  const subtasks = Array.isArray(plan?.phases)
+    ? plan.phases.flatMap((phase: MutablePlan) => Array.isArray(phase.subtasks) ? phase.subtasks : [])
+    : [];
+  let changed = false;
+
+  for (const subtask of subtasks) {
+    if (subtask?.status !== 'completed') continue;
+    for (const key of ['last_error', 'last_attempt_outcome', 'last_attempt_at'] as const) {
+      if (subtask[key] !== undefined) {
+        delete subtask[key];
+        changed = true;
+      }
+    }
+  }
+
+  return changed;
+}
+
 export function statusRequiresCompletedSubtasks(status: TaskStatus, reviewReason?: string): boolean {
   if (status === 'done' || status === 'pr_created') return true;
   if (status !== 'human_review') return false;

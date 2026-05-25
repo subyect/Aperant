@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyTaskEventRuntimeState,
+  clearCompletedSubtaskDiagnostics,
   doneStatusHasIncompleteSubtasks,
   planNeedsContinuationAfterExit,
   isIncompleteSettledPlan,
@@ -70,6 +71,35 @@ describe('statusRequiresCompletedSubtasks', () => {
     expect(statusRequiresCompletedSubtasks('human_review', 'stopped')).toBe(true);
     expect(statusRequiresCompletedSubtasks('human_review', 'errors')).toBe(true);
     expect(statusRequiresCompletedSubtasks('human_review', 'qa_rejected')).toBe(true);
+  });
+});
+
+describe('clearCompletedSubtaskDiagnostics', () => {
+  it('removes stale retry errors from completed subtasks only', () => {
+    const plan = planWithSubtasks([
+      {
+        id: '1.1',
+        status: 'completed',
+        last_error: 'Agent session ended without marking the subtask completed.',
+        last_attempt_outcome: 'completed',
+        last_attempt_at: '2026-05-25T10:00:00.000Z',
+      },
+      {
+        id: '1.2',
+        status: 'pending',
+        last_error: 'Still failing.',
+        last_attempt_outcome: 'error',
+        last_attempt_at: '2026-05-25T10:01:00.000Z',
+      },
+    ]);
+
+    expect(clearCompletedSubtaskDiagnostics(plan)).toBe(true);
+
+    expect(plan.phases[0].subtasks[0].last_error).toBeUndefined();
+    expect(plan.phases[0].subtasks[0].last_attempt_outcome).toBeUndefined();
+    expect(plan.phases[0].subtasks[0].last_attempt_at).toBeUndefined();
+    expect(plan.phases[0].subtasks[1].last_error).toBe('Still failing.');
+    expect(plan.phases[0].subtasks[1].last_attempt_outcome).toBe('error');
   });
 });
 

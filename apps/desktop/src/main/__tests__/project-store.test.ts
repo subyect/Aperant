@@ -769,12 +769,20 @@ describe('ProjectStore', () => {
         executionPhase: 'complete',
         recoveryNote: 'Worktree setup failed; Aperant refused to run task code in the main checkout: git worktree failed.',
         human_feedback_pending: { requested_at: '2026-05-23T19:40:25.571Z' },
+        base_sync_conflict: {
+          files: ['packages/obyect/src/components/__tests__/optional-ui-dynamic-imports.test.ts'],
+          updated_at: '2026-05-25T09:58:40.552Z',
+        },
         qa_signoff: { status: 'approved', issues_found: [] },
         mergeCommit: 'abc1234',
       };
+      (plan.phases[0].subtasks[0] as Record<string, unknown>).last_error = 'Agent session ended without marking the subtask completed.';
+      (plan.phases[0].subtasks[0] as Record<string, unknown>).last_attempt_outcome = 'completed';
+      (plan.phases[0].subtasks[0] as Record<string, unknown>).last_attempt_at = '2026-05-25T10:00:00.000Z';
       writeSpec(specRoot, specId, plan);
       writeFileSync(path.join(specDir, 'QA_FIX_REQUEST.md'), 'Status: REJECTED\n');
       writeFileSync(path.join(specDir, 'QA_ESCALATION.md'), '# QA Escalation - Human Intervention Required\n');
+      writeFileSync(path.join(specDir, 'BASE_SYNC_CONFLICT.md'), '# Base Branch Sync Conflict\n');
 
       const { ProjectStore } = await import('../project-store');
       const store = new ProjectStore();
@@ -789,8 +797,13 @@ describe('ProjectStore', () => {
       expect(tasks.find((task) => task.specId === specId)?.status).toBe('done');
       expect(persistedPlan.recoveryNote).toBeUndefined();
       expect(persistedPlan.human_feedback_pending).toBeUndefined();
+      expect(persistedPlan.base_sync_conflict).toBeUndefined();
+      expect(persistedPlan.phases[0].subtasks[0].last_error).toBeUndefined();
+      expect(persistedPlan.phases[0].subtasks[0].last_attempt_outcome).toBeUndefined();
+      expect(persistedPlan.phases[0].subtasks[0].last_attempt_at).toBeUndefined();
       expect(existsSync(path.join(specDir, 'QA_FIX_REQUEST.md'))).toBe(false);
       expect(existsSync(path.join(specDir, 'QA_ESCALATION.md'))).toBe(false);
+      expect(existsSync(path.join(specDir, 'BASE_SYNC_CONFLICT.md'))).toBe(false);
     });
 
     it('should prefer original task description from requirements.json over plan description', async () => {

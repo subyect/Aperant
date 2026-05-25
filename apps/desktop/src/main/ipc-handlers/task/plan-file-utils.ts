@@ -33,6 +33,7 @@ import {
   applyRuntimePhaseState,
   applyTaskEventRuntimeState,
   checkSubtasksCompletion,
+  clearCompletedSubtaskDiagnostics,
   copyRuntimeStateFromSourcePlan,
   createApprovedQASignoffFromReport,
   doneStatusHasIncompleteSubtasks,
@@ -234,6 +235,8 @@ function clearBlockedTerminalRecoveryNote(plan: Record<string, unknown>): boolea
 
 function clearResolvedRecoveryState(plan: Record<string, unknown>): void {
   delete plan.human_feedback_pending;
+  delete plan.base_sync_conflict;
+  clearCompletedSubtaskDiagnostics(plan);
 
   if (typeof plan.recoveryNote !== 'string') return;
   if (
@@ -250,7 +253,7 @@ function clearResolvedRecoveryState(plan: Record<string, unknown>): void {
 }
 
 function clearResolvedFeedbackArtifacts(specDir: string): void {
-  for (const fileName of ['QA_FIX_REQUEST.md', 'QA_ESCALATION.md']) {
+  for (const fileName of ['QA_FIX_REQUEST.md', 'QA_ESCALATION.md', 'BASE_SYNC_CONFLICT.md']) {
     try {
       rmSync(path.join(specDir, fileName), { force: true });
     } catch {

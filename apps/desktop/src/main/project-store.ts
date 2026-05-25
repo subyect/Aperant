@@ -22,6 +22,7 @@ import { safeParseJson } from './utils/json-repair';
 import {
   applyRuntimePhaseState,
   checkSubtasksCompletion,
+  clearCompletedSubtaskDiagnostics,
   doneStatusHasIncompleteSubtasks,
   isQASignoffApproved,
   statusRequiresCompletedSubtasks,
@@ -913,6 +914,10 @@ export class ProjectStore {
       delete plan.human_feedback_pending;
       changed = true;
     }
+    if (plan.base_sync_conflict !== undefined) {
+      delete plan.base_sync_conflict;
+      changed = true;
+    }
 
     if (
       typeof plan.recoveryNote === 'string'
@@ -930,7 +935,9 @@ export class ProjectStore {
       changed = true;
     }
 
-    for (const fileName of ['QA_FIX_REQUEST.md', 'QA_ESCALATION.md']) {
+    changed = clearCompletedSubtaskDiagnostics(plan) || changed;
+
+    for (const fileName of ['QA_FIX_REQUEST.md', 'QA_ESCALATION.md', 'BASE_SYNC_CONFLICT.md']) {
       try {
         rmSync(path.join(path.dirname(planPath), fileName), { force: true });
       } catch {

@@ -213,17 +213,30 @@ describe('plan-file runtime guards', () => {
       xstateState: 'human_review',
       executionPhase: 'complete',
       recoveryNote: 'Blocked terminal phase complete: 2/2 subtasks complete.',
+      base_sync_conflict: {
+        files: ['packages/obyect/src/components/__tests__/optional-ui-dynamic-imports.test.ts'],
+        updated_at: '2026-05-25T09:58:40.552Z',
+      },
       phases: [
         {
           name: 'Implementation',
           subtasks: [
-            { id: '1.1', status: 'completed' },
+            {
+              id: '1.1',
+              status: 'completed',
+              last_error: 'Agent session ended without marking the subtask completed.',
+              last_attempt_outcome: 'completed',
+              last_attempt_at: '2026-05-25T10:00:00.000Z',
+            },
             { id: '1.2', status: 'completed' },
           ],
         },
       ],
       qa_signoff: { status: 'approved', issues_found: [] },
     }, null, 2));
+    writeFileSync(path.join(tempDir, 'QA_FIX_REQUEST.md'), 'Status: REJECTED\n');
+    writeFileSync(path.join(tempDir, 'QA_ESCALATION.md'), '# QA Escalation - Human Intervention Required\n');
+    writeFileSync(path.join(tempDir, 'BASE_SYNC_CONFLICT.md'), '# Base Branch Sync Conflict\n');
 
     updatePlanAfterAppMerge(planPath, 'done', 'completed', 'abc123');
 
@@ -233,6 +246,13 @@ describe('plan-file runtime guards', () => {
     expect(plan.planStatus).toBe('completed');
     expect(plan.mergeCommit).toBe('abc123');
     expect(plan.recoveryNote).toBeUndefined();
+    expect(plan.base_sync_conflict).toBeUndefined();
+    expect(plan.phases[0].subtasks[0].last_error).toBeUndefined();
+    expect(plan.phases[0].subtasks[0].last_attempt_outcome).toBeUndefined();
+    expect(plan.phases[0].subtasks[0].last_attempt_at).toBeUndefined();
+    expect(existsSync(path.join(tempDir, 'QA_FIX_REQUEST.md'))).toBe(false);
+    expect(existsSync(path.join(tempDir, 'QA_ESCALATION.md'))).toBe(false);
+    expect(existsSync(path.join(tempDir, 'BASE_SYNC_CONFLICT.md'))).toBe(false);
   });
 
   it('adds a pending human-feedback rework subtask when feedback arrives after QA', () => {
