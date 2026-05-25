@@ -129,7 +129,7 @@ export function registerTaskCRUDHandlers(agentManager: AgentManager): void {
    */
   ipcMain.handle(
     IPC_CHANNELS.TASK_LIST,
-    async (_, projectId: string, options?: { forceRefresh?: boolean }): Promise<IPCResult<Task[]>> => {
+    async (_, projectId: string, options?: { forceRefresh?: boolean; preserveActors?: boolean }): Promise<IPCResult<Task[]>> => {
       console.warn('[IPC] TASK_LIST called with projectId:', projectId, 'options:', options);
 
       // If forceRefresh is requested, invalidate cache and clear XState actors
@@ -137,8 +137,12 @@ export function registerTaskCRUDHandlers(agentManager: AgentManager): void {
       // and actors are recreated with fresh task data
       if (options?.forceRefresh) {
         projectStore.invalidateTasksCache(projectId);
-        taskStateManager.clearAllTasks();
-        console.warn('[IPC] TASK_LIST cache and task state cleared for forceRefresh');
+        if (!options.preserveActors) {
+          taskStateManager.clearAllTasks();
+          console.warn('[IPC] TASK_LIST cache and task state cleared for forceRefresh');
+        } else {
+          console.warn('[IPC] TASK_LIST cache cleared for forceRefresh; preserved task actors');
+        }
       }
 
       const tasks = projectStore.getTasks(projectId);

@@ -32,7 +32,9 @@ describe('generateSubtaskPrompt', () => {
       expect(prompt).toContain('Last agent outcome:** completed');
       expect(prompt).toContain('Do not ask the user for confirmation');
       expect(prompt).toContain('Never ask whether to proceed to the next step');
+      expect(prompt).toContain('update `implementation_plan.json` directly');
       expect(prompt).toContain('mcp__auto-claude__update_subtask_status');
+      expect(prompt).toContain('never stop because that helper is unavailable');
       expect(prompt).toContain('ONLY subtask `2.1`');
       expect(prompt).toContain('do not repeat that conclusion; fix those repo-local failures');
       expect(prompt).toContain('Do not end with only a narrative summary');

@@ -311,8 +311,8 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
     ) {
       sections.push(
         `\nThe previous agent said the work was complete, but the plan still shows this subtask as unfinished. ` +
-        `First verify the current code and tests. If the subtask is actually complete, call ` +
-        `\`mcp__auto-claude__update_subtask_status\` for ONLY subtask \`${subtask.id}\` with status ` +
+        `First verify the current code and tests. If the subtask is actually complete, update ` +
+        `\`implementation_plan.json\` for ONLY subtask \`${subtask.id}\` with status ` +
         `\`"completed"\`, then record the verification evidence in build-progress.txt. ` +
         `If it is not complete, finish the missing implementation before updating the plan. ` +
         `If the prior assistant message called repo-local import failures, failed tests, or workspace package resolution a blocker or "outside scope", do not repeat that conclusion; fix those repo-local failures as the next implementation work. ` +
@@ -461,7 +461,7 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
     `2. **Read the files to modify** (if any) to understand current implementation\n` +
     `3. **Implement the subtask** following the patterns exactly\n` +
     `4. **Run verification** and fix any issues\n` +
-    `5. **Update the plan** - after implementation and verification are complete, call \`mcp__auto-claude__update_subtask_status\` for ONLY this subtask with status \`"completed"\`. If that tool is unavailable, edit implementation_plan.json directly and set ONLY this subtask's status to "completed".\n\n` +
+    `5. **Update the plan** - after implementation and verification are complete, update \`implementation_plan.json\` directly and set ONLY this subtask's status to \`"completed"\`. If the \`mcp__auto-claude__update_subtask_status\` tool is available you may use it, but never stop because that helper is unavailable; use Edit/Write on the plan file instead.\n\n` +
     `## Quality Checklist\n\n` +
     `Before marking complete, verify:\n` +
     `- [ ] Follows patterns from reference files\n` +

@@ -450,8 +450,12 @@ export function useTaskDetail({ task }: UseTaskDetailOptions) {
 
     setIsLoadingPlan(true);
     try {
-      // Reload tasks from the project to get fresh implementation plan
-      const result = await window.electronAPI.getTasks(currentProject.id);
+      // Reload tasks from disk so the detail view does not stay on a stale
+      // cached empty plan while a worker has already written subtasks.
+      const result = await window.electronAPI.getTasks(currentProject.id, {
+        forceRefresh: true,
+        preserveActors: true,
+      });
 
       if (!result.success || !result.data) {
         console.error('[reloadPlanForIncompleteTask] Failed to reload tasks:', result.error);
@@ -484,6 +488,7 @@ export function useTaskDetail({ task }: UseTaskDetailOptions) {
         title: updatedTask.title,
         description: updatedTask.description,
         metadata: updatedTask.metadata,
+        executionProgress: updatedTask.executionProgress,
         updatedAt: new Date()
       });
 
