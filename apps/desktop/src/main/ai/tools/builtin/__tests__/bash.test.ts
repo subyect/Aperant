@@ -147,16 +147,27 @@ describe('Bash Tool', () => {
     );
 
     expect(result).toContain('Command is likely to run silently');
-    expect(result).toContain('pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=line');
+    expect(result).toContain('pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=list --workers=1');
     expect(result).toContain('Do not rerun the same command unchanged');
     expect(mockSpawn).not.toHaveBeenCalled();
   });
 
-  it('allows verbose Playwright commands through the idle watchdog guard', async () => {
+  it('rejects Playwright line reporter commands with a list reporter replacement', async () => {
+    const result = await bashTool.config.execute(
+      { command: 'cd packages/layer1-console && pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=line' },
+      baseContext,
+    );
+
+    expect(result).toContain('Command is likely to run silently');
+    expect(result).toContain('--reporter=list --workers=1');
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it('allows verbose Playwright list reporter commands through the idle watchdog guard', async () => {
     setupSpawn('running with line reporter\n', '', 0);
 
     const result = await bashTool.config.execute(
-      { command: 'cd packages/layer1-console && pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=line' },
+      { command: 'cd packages/layer1-console && pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=list --workers=1' },
       baseContext,
     );
 
@@ -260,7 +271,7 @@ describe('Bash Tool', () => {
     setupSpawn('output', '', 0);
 
     await bashTool.config.execute(
-      { command: 'pnpm exec playwright test --reporter=line' },
+      { command: 'pnpm exec playwright test --reporter=list' },
       baseContext,
     );
 
