@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { bashTool } from '../bash';
+import { cleanupStaleForegroundCommands } from '../bash-process-tracker';
 import type { ToolContext } from '../../types';
 
 // ---------------------------------------------------------------------------
@@ -20,12 +24,10 @@ vi.mock('../../../../env-utils', () => ({
 
 const mockIsWindows = vi.fn(() => false);
 const mockFindExecutable = vi.fn(() => null);
-const mockKillProcessGracefully = vi.fn();
 
 vi.mock('../../../../platform/index', () => ({
   isWindows: () => mockIsWindows(),
   findExecutable: (_name: string, _additionalPaths?: string[]) => mockFindExecutable(),
-  killProcessGracefully: (_childProcess: unknown, _options?: unknown) => mockKillProcessGracefully(),
 }));
 
 const mockBashSecurityHook = vi.fn(() => ({}));
@@ -248,6 +250,23 @@ describe('Bash Tool', () => {
     killSpy.mockRestore();
   });
 
+  it('removes foreground command tracking when the command finishes', async () => {
+    const specDir = await mkdtemp(join(tmpdir(), 'aperant-bash-track-finish-'));
+    setupSpawn('output', '', 0);
+
+    try {
+      await bashTool.config.execute(
+        { command: 'pnpm test' },
+        { ...baseContext, specDir },
+      );
+
+      await expect(readFile(join(specDir, '.aperant-active-commands.json'), 'utf-8'))
+        .rejects.toThrow();
+    } finally {
+      await rm(specDir, { recursive: true, force: true });
+    }
+  });
+
   it('should cap timeout to MAX_TIMEOUT_MS (600000)', async () => {
     setupSpawn('output', '', 0);
     const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
@@ -306,5 +325,41 @@ describe('Bash Tool', () => {
     expect(args[1]).toBe('dir');
 
     process.env.ComSpec = origComSpec;
+  });
+
+  it('cleans stale foreground command groups recorded for a spec', async () => {
+    const specDir = await mkdtemp(join(tmpdir(), 'aperant-bash-processes-'));
+    const activeCommandsPath = join(specDir, '.aperant-active-commands.json');
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+
+    await writeFile(activeCommandsPath, JSON.stringify([
+      {
+        pid: 4321,
+        command: 'pnpm test:e2e',
+        cwd: '/test/project',
+        startedAt: new Date().toISOString(),
+        foreground: true,
+      },
+      {
+        pid: 9876,
+        command: 'pnpm dev',
+        cwd: '/test/project',
+        startedAt: new Date().toISOString(),
+        foreground: false,
+      },
+    ], null, 2));
+
+    try {
+      const killed = await cleanupStaleForegroundCommands(specDir);
+      const remaining = JSON.parse(await readFile(activeCommandsPath, 'utf-8')) as Array<{ pid: number }>;
+
+      expect(killed).toBe(1);
+      expect(killSpy).toHaveBeenCalledWith(-4321, 'SIGTERM');
+      expect(killSpy).not.toHaveBeenCalledWith(-9876, 'SIGTERM');
+      expect(remaining).toEqual([expect.objectContaining({ pid: 9876 })]);
+    } finally {
+      killSpy.mockRestore();
+      await rm(specDir, { recursive: true, force: true });
+    }
   });
 });

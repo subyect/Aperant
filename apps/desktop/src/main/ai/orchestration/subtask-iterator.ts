@@ -15,6 +15,7 @@ import type { ExtractedInsights, InsightExtractionConfig } from '../runners/insi
 import { extractSessionInsights } from '../runners/insight-extractor';
 import { isRateLimitError } from '../session/error-classifier';
 import type { SessionResult } from '../session/types';
+import { cleanupStaleForegroundCommands } from '../tools/builtin/bash-process-tracker';
 import type { SubtaskInfo } from './build-orchestrator';
 import {
   RATE_LIMIT_PAUSE_FILE,
@@ -201,6 +202,8 @@ export async function iterateSubtasks(
 
     // Notify start
     config.onSubtaskStart?.(subtaskInfo, currentAttempt);
+
+    await cleanupStaleForegroundCommands(config.specDir);
 
     // Run the session
     const result = await config.runSubtaskSession(subtaskInfo, currentAttempt);

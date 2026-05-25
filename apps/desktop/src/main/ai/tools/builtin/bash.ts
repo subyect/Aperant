@@ -11,10 +11,15 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { z } from 'zod/v3';
 
 import { getAugmentedEnv } from '../../../env-utils';
-import { findExecutable, isWindows, killProcessGracefully } from '../../../platform/index';
+import { findExecutable, isWindows } from '../../../platform/index';
 import { bashSecurityHook } from '../../security/bash-validator';
 import { Tool } from '../define';
 import { ToolPermission } from '../types';
+import {
+  registerActiveCommand,
+  terminateProcessGroupByPid,
+  unregisterActiveCommand,
+} from './bash-process-tracker';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -67,24 +72,7 @@ function terminateProcessTree(child: ChildProcess, signal: NodeJS.Signals): void
   const pid = child.pid;
   if (!pid) return;
 
-  if (!isWindows()) {
-    try {
-      process.kill(-pid, signal);
-      return;
-    } catch {
-      // Fall through to direct child kill when the process group is already gone.
-    }
-  }
-
-  try {
-    if (isWindows()) {
-      killProcessGracefully(child);
-    } else {
-      child.kill(signal);
-    }
-  } catch {
-    // Process already exited; nothing to clean up.
-  }
+  terminateProcessGroupByPid(pid, signal);
 }
 
 function executeCommand(
@@ -93,6 +81,7 @@ function executeCommand(
   timeoutMs: number,
   abortSignal?: AbortSignal,
   cleanupProcessGroup = true,
+  tracking?: { specDir?: string },
 ): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean; aborted: boolean }> {
   const shell = resolveShell();
   const args = isWindows() && shell.toLowerCase().endsWith('cmd.exe')
@@ -107,6 +96,7 @@ function executeCommand(
     let stderr = '';
     let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
     let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
+    let trackingReady: Promise<void> = Promise.resolve();
 
     let child: ChildProcess | null = null;
     child = spawn(
@@ -119,6 +109,20 @@ function executeCommand(
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
+    const childPid = child.pid;
+    const shouldTrack = Boolean(tracking?.specDir && childPid && cleanupProcessGroup);
+
+    if (shouldTrack && tracking?.specDir && childPid) {
+      trackingReady = registerActiveCommand(tracking.specDir, {
+        pid: childPid,
+        command,
+        cwd,
+        startedAt: new Date().toISOString(),
+        foreground: true,
+      }).catch(() => {
+        // Tracking is best-effort; command execution must continue.
+      });
+    }
 
     child.stdout?.on('data', (chunk: Buffer | string) => {
       stdout += chunk.toString();
@@ -142,13 +146,24 @@ function executeCommand(
         terminateProcessTree(child, 'SIGTERM');
       }
 
-      resolve({
-        stdout,
-        stderr,
-        exitCode: timedOut ? 124 : aborted ? 130 : exitCode,
-        timedOut,
-        aborted,
-      });
+      trackingReady
+        .then(async () => {
+          if (shouldTrack && tracking?.specDir && childPid) {
+            await unregisterActiveCommand(tracking.specDir, childPid);
+          }
+        })
+        .catch(() => {
+          // Non-fatal cleanup; stale markers are handled before the next attempt.
+        })
+        .finally(() => {
+          resolve({
+            stdout,
+            stderr,
+            exitCode: timedOut ? 124 : aborted ? 130 : exitCode,
+            timedOut,
+            aborted,
+          });
+        });
     };
 
     child.on('error', () => finish(1));
@@ -236,6 +251,8 @@ export const bashTool = Tool.define({
       context.cwd,
       timeoutMs,
       context.abortSignal,
+      true,
+      { specDir: context.specDir },
     );
 
     const parts: string[] = [];
