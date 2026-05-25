@@ -348,6 +348,22 @@ describe('Bash Tool', () => {
     setTimeoutSpy.mockRestore();
   });
 
+  it('caps route smoke command timeout even when the agent requests a longer timeout', async () => {
+    setupSpawn('output', '', 0);
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+
+    await bashTool.config.execute(
+      {
+        command: 'cd packages/layer1-console && DEBUG=pw:webserver pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=list --workers=1 --timeout=30000',
+        timeout: 600_000,
+      },
+      baseContext,
+    );
+
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 120_000);
+    setTimeoutSpy.mockRestore();
+  });
+
   it('terminates long foreground commands that stop producing output', async () => {
     vi.useFakeTimers();
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);

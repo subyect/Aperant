@@ -27,6 +27,7 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
+const MAX_ROUTE_SMOKE_TIMEOUT_MS = 120_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 180_000;
 const MAX_OUTPUT_LENGTH = 30_000;
 
@@ -79,8 +80,8 @@ function terminateProcessTree(child: ChildProcess, signal: NodeJS.Signals): void
 function buildImmediateCommandGuidance(command: string): string | null {
   const normalized = command.replace(/\s+/g, ' ').trim();
   const runsPlaywrightWrapper = /\bpnpm\b.*\btest:e2e\b/.test(normalized);
-  const runsPlaywrightTest = /\bplaywright\s+test\b/.test(normalized);
-  const runsConsoleRouteSmoke = runsPlaywrightTest && /\bconsole-routes\.spec\.ts\b/.test(normalized);
+  const runsPlaywrightTest = isPlaywrightTestCommand(normalized);
+  const runsConsoleRouteSmoke = isConsoleRouteSmokeCommand(normalized);
   const runsLikelySilentPlaywrightLine = runsPlaywrightTest
     && /--reporter(?:=|\s+)line\b/.test(normalized);
   const runsLikelySilentRouteSmoke = runsConsoleRouteSmoke
@@ -111,6 +112,19 @@ function buildImmediateCommandGuidance(command: string): string | null {
     `${suggestedCommand}\n` +
     `Do not rerun the same command unchanged.`
   );
+}
+
+function normalizeCommand(command: string): string {
+  return command.replace(/\s+/g, ' ').trim();
+}
+
+function isPlaywrightTestCommand(normalizedCommand: string): boolean {
+  return /\bplaywright\s+test\b/.test(normalizedCommand);
+}
+
+function isConsoleRouteSmokeCommand(normalizedCommand: string): boolean {
+  return isPlaywrightTestCommand(normalizedCommand)
+    && /\bconsole-routes\.spec\.ts\b/.test(normalizedCommand);
 }
 
 function executeCommand(
@@ -291,7 +305,11 @@ export const bashTool = Tool.define({
       return `Error: Command not allowed — ${reason}`;
     }
 
-    const timeoutMs = Math.min(timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
+    const normalizedCommand = normalizeCommand(command);
+    const timeoutCapMs = isConsoleRouteSmokeCommand(normalizedCommand)
+      ? MAX_ROUTE_SMOKE_TIMEOUT_MS
+      : MAX_TIMEOUT_MS;
+    const timeoutMs = Math.min(timeout ?? DEFAULT_TIMEOUT_MS, timeoutCapMs);
 
     if (run_in_background) {
       // Fire-and-forget for background commands
