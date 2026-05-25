@@ -127,6 +127,7 @@ export interface SubtaskInfo {
   verification?: {
     type?: 'command' | 'api' | 'browser' | 'e2e' | 'manual';
     command?: string;
+    run?: string;
     expected?: string;
     method?: string;
     url?: string;

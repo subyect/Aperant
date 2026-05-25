@@ -328,9 +328,10 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
   const verification = subtask.verification;
 
   if (verification?.type === 'command') {
+    const command = verification.command ?? verification.run ?? 'echo "No command specified"';
     sections.push(
       `Run this command to verify:\n` +
-      `\`\`\`bash\n${verification.command ?? 'echo "No command specified"'}\n\`\`\`\n` +
+      `\`\`\`bash\n${command}\n\`\`\`\n` +
       `Expected: ${verification.expected ?? 'Success'}\n`
     );
   } else if (verification?.type === 'api') {

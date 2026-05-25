@@ -67,4 +67,31 @@ describe('generateSubtaskPrompt', () => {
       await rm(projectDir, { recursive: true, force: true });
     }
   });
+
+  it('renders command verification stored in run fields', async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), 'subtask-prompt-run-verification-'));
+    const specDir = join(projectDir, '.auto-claude', 'specs', '001-test');
+
+    try {
+      const prompt = await generateSubtaskPrompt({
+        projectDir,
+        specDir,
+        subtask: {
+          id: 'aperant-base-sync-conflict',
+          description: 'Resolve base branch conflicts.',
+          phaseName: 'Base branch sync recovery',
+          status: 'pending',
+          verification: {
+            type: 'command',
+            run: 'git diff --name-only --diff-filter=U && git status --short',
+          },
+        },
+      });
+
+      expect(prompt).toContain('git diff --name-only --diff-filter=U && git status --short');
+      expect(prompt).not.toContain('echo "No command specified"');
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
 });
