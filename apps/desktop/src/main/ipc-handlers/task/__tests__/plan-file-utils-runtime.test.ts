@@ -91,6 +91,67 @@ describe('plan-file runtime guards', () => {
     expect(plan.recoveryNote).toBe('Blocked terminal status human_review: 1/2 subtasks complete.');
   });
 
+  it('does not overwrite recovery context during normal in-progress persistence', () => {
+    writeFileSync(planPath, JSON.stringify({
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      recoveryNote: 'QA report failed; continuing coding with QA findings as mandatory recovery work.',
+      phases: [
+        {
+          name: 'Recovery',
+          subtasks: [{ id: 'aperant-qa-report-failure', status: 'pending' }],
+        },
+      ],
+    }, null, 2));
+
+    expect(persistPlanStatusAndReasonSync(
+      planPath,
+      'in_progress',
+      undefined,
+      'project-1',
+      'coding',
+      'coding',
+    )).toBe(true);
+
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+
+    expect(plan.status).toBe('in_progress');
+    expect(plan.xstateState).toBe('coding');
+    expect(plan.executionPhase).toBe('coding');
+    expect(plan.recoveryNote).toBe('QA report failed; continuing coding with QA findings as mandatory recovery work.');
+  });
+
+  it('removes stale zero-subtask in-progress recovery notes', () => {
+    writeFileSync(planPath, JSON.stringify({
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      recoveryNote: 'Blocked terminal status in_progress: 0/0 subtasks complete.',
+      phases: [
+        {
+          name: 'Recovery',
+          subtasks: [{ id: 'aperant-qa-report-failure', status: 'pending' }],
+        },
+      ],
+    }, null, 2));
+
+    expect(persistPlanStatusAndReasonSync(
+      planPath,
+      'in_progress',
+      undefined,
+      'project-1',
+      'coding',
+      'coding',
+    )).toBe(true);
+
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+
+    expect(plan.recoveryNote).toBeUndefined();
+  });
+
   it('coerces complete phase updates with pending subtasks back to coding runtime state', () => {
     expect(persistPlanPhaseSync(planPath, 'complete', 'project-1')).toBe(true);
 

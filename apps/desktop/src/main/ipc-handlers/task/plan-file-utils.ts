@@ -431,7 +431,11 @@ export function persistPlanStatusAndReasonSync(
       delete plan.final_acceptance;
       delete plan.mergeCommit;
       delete plan.mergedAt;
-      plan.recoveryNote = `Blocked terminal status ${status}: ${activeGuard.completedCount}/${activeGuard.totalCount} subtasks complete.`;
+      if (activeGuard.incomplete) {
+        plan.recoveryNote = `Blocked terminal status ${status}: ${activeGuard.completedCount}/${activeGuard.totalCount} subtasks complete.`;
+      } else if (plan.recoveryNote === 'Blocked terminal status in_progress: 0/0 subtasks complete.') {
+        delete plan.recoveryNote;
+      }
     } else if (reviewReason !== undefined) {
       plan.reviewReason = reviewReason;
     } else {
