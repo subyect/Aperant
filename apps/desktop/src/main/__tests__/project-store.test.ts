@@ -650,6 +650,76 @@ describe('ProjectStore', () => {
       expect(tasks[0].subtasks.every((subtask) => subtask.status === 'completed')).toBe(true);
     });
 
+    it('prefers active feedback recovery worktree over terminal main task', async () => {
+      const specId = '008-terminal-main-feedback-rework';
+      writeSpec(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs'),
+        specId,
+        {
+          ...makePlan({
+            feature: 'Terminal Main Feedback Rework',
+            status: 'done',
+            subtaskStatuses: ['completed', 'completed'],
+            updatedAt: '2024-01-03T00:00:00Z',
+          }),
+          qa_signoff: { status: 'approved', issues_found: [] },
+          mergeCommit: 'abc1234',
+          mergedAt: '2024-01-03T00:00:00Z',
+          final_acceptance: ['merged'],
+        },
+      );
+      writeSpec(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId, '.auto-claude', 'specs'),
+        specId,
+        {
+          ...makePlan({
+            feature: 'Terminal Main Feedback Rework',
+            status: 'in_progress',
+            subtaskStatuses: ['completed', 'completed', 'pending'],
+            updatedAt: '2024-01-04T00:00:00Z',
+          }),
+          human_feedback_pending: { requested_at: '2026-05-25T12:00:00.000Z' },
+          phases: [
+            {
+              phase: 1,
+              name: 'Phase 1',
+              type: 'implementation',
+              subtasks: [
+                { id: 'subtask-1', title: 'Subtask 1', description: 'Subtask 1', status: 'completed' },
+                { id: 'subtask-2', title: 'Subtask 2', description: 'Subtask 2', status: 'completed' },
+              ],
+            },
+            {
+              id: 'aperant-human-feedback-rework',
+              phase: 2,
+              name: 'Human review feedback',
+              type: 'human_feedback_rework',
+              status: 'in_progress',
+              subtasks: [
+                {
+                  id: 'aperant-human-feedback-rework',
+                  title: 'Address human review feedback',
+                  description: 'Address feedback.',
+                  status: 'pending',
+                },
+              ],
+            },
+          ],
+        },
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].location).toBe('worktree');
+      expect(tasks[0].status).toBe('in_progress');
+      expect(tasks[0].subtasks.some((subtask) => subtask.id === 'aperant-human-feedback-rework')).toBe(true);
+    });
+
     it('clears stale blocked terminal notes from completed tasks on load', async () => {
       const specId = '009-terminal-note';
       const specRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');

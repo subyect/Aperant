@@ -378,9 +378,25 @@ function buildRetryReason(
 
   if (result.outcome === 'completed') {
     const finalMessage = getLastAssistantMessage(result);
+    if (finalMessage && looksLikeRepoLocalVerifierFailureSummary(finalMessage)) {
+      return (
+        `Bash command failed during the attempt or the assistant reported a repo-local verifier failure, ` +
+        `but the subtask was not completed in implementation_plan.json (current status: ${currentStatus ?? 'missing'}).\n` +
+        `Do not stop with another blocker summary. Fix the repo-local imports, package exports, failed assertions, or test harness code needed by the required verifier, then rerun targeted verification before marking complete.\n\n` +
+        `Reported failure summary:\n${compactForPlan(finalMessage, 1_600)}`
+      );
+    }
+    const falseCompletionWarning = finalMessage && looksLikeFalseCompletionClaim(finalMessage)
+      ? (
+        `\n\nWARNING: The previous assistant message claimed this subtask was completed, tests passed, or the plan was updated, ` +
+        `but implementation_plan.json still shows the subtask as ${currentStatus ?? 'missing'}. ` +
+        `Do not repeat that claim. Treat the prior summary as untrusted until you verify the actual plan file and shell output.`
+      )
+      : '';
     return (
       `Agent session ended without marking the subtask completed in implementation_plan.json (current status: ${currentStatus ?? 'missing'}). ` +
       `Retrying until the plan proves completion.` +
+      falseCompletionWarning +
       (finalMessage ? `\n\nLast assistant message:\n${compactForPlan(finalMessage, 1_200)}` : '')
     );
   }
@@ -391,6 +407,20 @@ function buildRetryReason(
     return 'Agent hit the context window before the subtask was marked completed. Retrying the subtask.';
   }
   return result.error?.message ?? `Agent session ended with outcome "${result.outcome}". Retrying the subtask.`;
+}
+
+function looksLikeFalseCompletionClaim(message: string): boolean {
+  return /\b(marked|updated|set)\b[\s\S]{0,80}\b(completed|complete|implementation_plan\.json|subtask)\b/i.test(message)
+    || /\b(test|tests|verification|verifier|route smoke|smoke)\b[\s\S]{0,80}\b(pass|passed|passes|green|success|successful)\b/i.test(message)
+    || /\bimplemented and verified\b/i.test(message)
+    || /\bif you want\b/i.test(message);
+}
+
+function looksLikeRepoLocalVerifierFailureSummary(message: string): boolean {
+  const reportsFailure = /\b(fail|failed|failing|failure|blocker|cannot mark|can't mark|did not mark|does not pass|do not pass|not complete yet)\b/i.test(message);
+  if (!reportsFailure) return false;
+
+  return /Cannot find module|Module not found|Failed to resolve import|Does the file exist\?|unresolved imports?|module[-\s]resolution|import[-\s]resolution|failed suites?|failed tests?|assertion failure|Exit code:\s*[1-9]\d*/i.test(message);
 }
 
 function getLastAssistantMessage(result: SessionResult): string | null {

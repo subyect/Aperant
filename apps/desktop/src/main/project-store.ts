@@ -416,6 +416,9 @@ export class ProjectStore {
     }
 
     if (this.isTerminalMainTask(mainTask)) {
+      if (this.isActiveRecoveryWorktreeForTerminalTask(worktreeTask, mainTask)) {
+        return true;
+      }
       return false;
     }
 
@@ -464,6 +467,48 @@ export class ProjectStore {
 
   private isTerminalMainTask(task: Task): boolean {
     return task.location === 'main' && (task.status === 'done' || task.status === 'pr_created');
+  }
+
+  private isActiveRecoveryWorktreeForTerminalTask(worktreeTask: Task, mainTask: Task): boolean {
+    if (!this.isActiveWorktreeTask(worktreeTask)) return false;
+    if (worktreeTask.updatedAt.getTime() < mainTask.updatedAt.getTime()) return false;
+    if (!worktreeTask.specsPath) return false;
+
+    const planPath = path.join(worktreeTask.specsPath, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
+    try {
+      const content = readFileSync(planPath, 'utf-8');
+      const plan = safeParseJson<Record<string, any>>(content);
+      if (!plan) return false;
+
+      if (plan.human_feedback_pending !== undefined) return true;
+
+      if (
+        typeof plan.recoveryNote === 'string'
+        && (
+          /^QA report failed\b/.test(plan.recoveryNote)
+          || /^Base branch sync conflict\b/.test(plan.recoveryNote)
+          || /^Recovered (stale terminal status|from stale done status)\b/.test(plan.recoveryNote)
+          || /^Terminal failure blocked\b/.test(plan.recoveryNote)
+          || /^Worktree setup failed\b/.test(plan.recoveryNote)
+        )
+      ) {
+        return true;
+      }
+
+      const recoverySubtaskIds = new Set([
+        'aperant-human-feedback-rework',
+        'aperant-qa-report-failure',
+        'aperant-base-sync-conflict',
+      ]);
+      const subtasks = Array.isArray(plan.phases)
+        ? plan.phases.flatMap((phase: Record<string, any>) => Array.isArray(phase.subtasks) ? phase.subtasks : [])
+        : [];
+      return subtasks.some((subtask: Record<string, any>) => {
+        return recoverySubtaskIds.has(String(subtask?.id ?? '')) && subtask?.status !== 'completed';
+      });
+    } catch {
+      return false;
+    }
   }
 
   private isActiveWorktreeTask(task: Task): boolean {

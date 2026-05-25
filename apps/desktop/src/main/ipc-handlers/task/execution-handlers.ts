@@ -185,6 +185,11 @@ function markHumanFeedbackPendingInSpecDir(
 
   delete plan.qa_signoff;
   delete plan.final_acceptance;
+  delete plan.reviewReason;
+  delete plan.mergeCommit;
+  delete plan.mergedAt;
+  delete plan.merge_commit;
+  delete plan.merged_at;
   plan.human_feedback_pending = {
     requested_at: new Date().toISOString(),
     preview: feedback?.slice(0, 500) ?? null,

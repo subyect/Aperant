@@ -160,6 +160,67 @@ describe('iterateSubtasks completion proof', () => {
     expect(written.phases[0].subtasks[0].last_error).toContain('TS2307 cannot find ./query-helpers.js');
   });
 
+  it('warns when the assistant claims completion but the plan is still pending', async () => {
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+
+    await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        messages: [
+          {
+            role: 'assistant',
+            content: 'Implemented and verified subtask 4.2. Tests passed and I marked the subtask completed in implementation_plan.json. If you want, I can provide the diff.',
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('WARNING');
+    expect(subtask.last_error).toContain('claimed this subtask was completed');
+    expect(subtask.last_error).toContain('untrusted');
+  });
+
+  it('classifies repo-local blocker summaries as failed implementation attempts', async () => {
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+
+    await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              'I did not mark the subtask complete because verification does not pass.',
+              'The current blocker is failed suites due to Failed to resolve import "@yect/layer1-db/testing".',
+            ].join('\n'),
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('Bash command failed during the attempt or the assistant reported a repo-local verifier failure');
+    expect(subtask.last_error).toContain('Do not stop with another blocker summary');
+    expect(subtask.last_error).toContain('@yect/layer1-db/testing');
+  });
+
   it('counts a subtask completed when the agent updates the plan', async () => {
     await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
 
