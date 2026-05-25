@@ -305,6 +305,14 @@ export async function iterateSubtasks(
       }
     }
 
+    if (!subtaskCompleted) {
+      const verificationNote = buildSuccessfulSubtaskVerificationNote(result);
+      if (verificationNote) {
+        await markSubtaskCompletedByVerification(config.specDir, subtask.id, verificationNote);
+        subtaskCompleted = true;
+      }
+    }
+
     if (!subtaskCompleted && !retryReasonWritten) {
       const reason = buildRetryReason(result, completionState.status, subtask);
       await markSubtaskRetryRequired(config.specDir, subtask.id, reason, result.outcome);
@@ -542,6 +550,45 @@ function buildSuccessfulBaseSyncRecoveryVerificationNote(result: SessionResult):
   }
 
   return null;
+}
+
+function buildSuccessfulSubtaskVerificationNote(result: SessionResult): string | null {
+  if (result.outcome !== 'completed') return null;
+  const finalMessage = getLastAssistantMessage(result);
+  if (!finalMessage || !looksLikeFalseCompletionClaim(finalMessage)) return null;
+
+  const verifier = findLatestPassingVerifier(result);
+  if (!verifier) return null;
+
+  return (
+    `Auto-completed subtask after the agent reported completion and the latest verifier passed.\n` +
+    `Command: ${verifier.command}\n` +
+    `Result: ${compactForPlan(verifier.output, 1_200)}`
+  );
+}
+
+function findLatestPassingVerifier(result: SessionResult): { command: string; output: string } | null {
+  const bashResults = (result.toolResults ?? [])
+    .filter((toolResult) => toolResult.toolName === 'Bash');
+
+  for (let i = bashResults.length - 1; i >= 0; i--) {
+    const toolResult = bashResults[i];
+    const command = typeof toolResult.args?.command === 'string'
+      ? toolResult.args.command
+      : '';
+    const output = toolResult.result;
+    if (!looksLikeVerifierCommand(command, output)) continue;
+    if (isFailedBashOutput(output)) return null;
+    if (/\bfailed\b/i.test(output) && !/\b0\s+failed\b/i.test(output)) return null;
+    return { command, output };
+  }
+
+  return null;
+}
+
+function looksLikeVerifierCommand(command: string, output: string): boolean {
+  if (hasPassingTestEvidence(output)) return true;
+  return /\b(test|vitest|playwright|typecheck|tsc|lint|build)\b/i.test(command);
 }
 
 function hasUnmergedFileEvidence(output: string): boolean {

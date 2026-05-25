@@ -604,6 +604,113 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toBeUndefined();
   });
 
+  it('auto-completes a normal subtask when the latest verifier passes and the agent forgets the plan update', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: 'P3-S2',
+              title: 'Update interaction tests',
+              description: 'Update route interaction tests.',
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        messages: [
+          {
+            role: 'assistant',
+            content: 'Implemented and verified P3-S2. Tests passed and I updated the subtask to completed.',
+          },
+        ],
+        toolResults: [
+          {
+            toolName: 'Bash',
+            args: { command: 'pnpm --filter layer1-console test -- reddit' },
+            result: 'Test Files 1 passed (1)\nTests 8 passed (8)',
+            durationMs: 8_000,
+            isError: false,
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; completion_note?: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(1);
+    expect(result.stuckSubtasks).toEqual([]);
+    expect(subtask.status).toBe('completed');
+    expect(subtask.completion_note).toContain('latest verifier passed');
+    expect(subtask.last_error).toBeUndefined();
+  });
+
+  it('does not auto-complete a normal subtask when the latest verifier fails', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: 'P2-S3',
+              title: 'Add retry behavior',
+              description: 'Add retry behavior.',
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        messages: [
+          {
+            role: 'assistant',
+            content: 'Implemented and verified P2-S3. Tests passed and I updated the subtask to completed.',
+          },
+        ],
+        toolResults: [
+          {
+            toolName: 'Bash',
+            args: { command: 'pnpm --filter @yect/layer1-ingest test src/__tests__/orchestrator-retry.test.ts' },
+            result: 'Tests 2 failed (2)\nExit code: 1',
+            durationMs: 250,
+            isError: true,
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('Bash command failed during the attempt');
+  });
+
   it('keeps base sync recovery pending when git still reports an unmerged file', async () => {
     const plan = {
       feature: 'test',
