@@ -607,6 +607,14 @@ export class AgentManager extends EventEmitter {
     const hasPlanSubtasks = this.taskHasPlanSubtasks(project, task);
 
     try {
+      if (task.status === 'in_progress' && this.hasPendingQaReportRecovery(project, task)) {
+        const failure = this.findFailedQaReport(project, task);
+        if (failure) {
+          this.persistQaReportFailureForCoding(project, task, failure.content, failure.reportPath);
+          console.warn(`[AgentManager] Startup recovery refreshed failed QA evidence for ${task.specId}`);
+        }
+      }
+
       if ((task.status === 'ai_review' || this.shouldRetryTerminalAgentError(project, task)) && allSubtasksComplete) {
         if (recoverApprovedQASignoffForSpec(project, task.specId, 'workflow-recovery-qa-report')) {
           taskStateManager.handleUiEvent(task.id, {
@@ -685,6 +693,30 @@ export class AgentManager extends EventEmitter {
         if (checkSubtasksCompletion(plan).totalCount > 0) return true;
       } catch {
         // Ignore unreadable plans; startup recovery will surface the task state normally.
+      }
+    }
+
+    return false;
+  }
+
+  private hasPendingQaReportRecovery(project: Project, task: Task): boolean {
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = safeParseJson<Record<string, any>>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
+        const recoveryNote = typeof plan.recoveryNote === 'string' ? plan.recoveryNote : '';
+        const hasQaRecoveryNote = /^QA report failed\b/.test(recoveryNote);
+        const hasPendingQaRecoverySubtask = Array.isArray(plan.phases)
+          && plan.phases.some((phase: Record<string, any>) =>
+            Array.isArray(phase?.subtasks)
+            && phase.subtasks.some((subtask: Record<string, any>) =>
+              subtask?.id === 'aperant-qa-report-failure' && subtask?.status !== 'completed'
+            )
+          );
+        if (hasQaRecoveryNote || hasPendingQaRecoverySubtask) return true;
+      } catch {
+        // Ignore unreadable plans; normal task loading will surface JSON errors.
       }
     }
 
