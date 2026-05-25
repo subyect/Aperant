@@ -93,4 +93,8 @@ describe('isBaseSyncConflictRecoveryCurrent', () => {
       ),
     ).toBe(false);
   });
+
+  it('does not restamp just because the internal conflict reason changed', () => {
+    expect(isBaseSyncConflictRecoveryCurrent(currentPlan(), files, 'base_sync_conflict', description)).toBe(true);
+  });
 });

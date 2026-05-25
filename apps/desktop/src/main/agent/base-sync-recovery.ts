@@ -22,7 +22,7 @@ function getBaseSyncRecoverySubtask(plan: RecordLike): RecordLike | null {
 export function isBaseSyncConflictRecoveryCurrent(
   plan: RecordLike,
   normalizedFiles: string[],
-  reason: string,
+  _reason: string,
   recoveryDescription: string,
 ): boolean {
   const recoverySubtask = getBaseSyncRecoverySubtask(plan);
@@ -40,9 +40,7 @@ export function isBaseSyncConflictRecoveryCurrent(
     && plan.reviewReason === undefined
     && plan.qa_signoff === undefined
     && plan.final_acceptance === undefined
-    && plan.lastEvent?.type === 'BASE_SYNC_CONFLICT'
     && sameStringArray(conflict?.files, normalizedFiles)
-    && conflict?.reason === reason
     && recoverySubtask.title === 'Resolve base branch sync conflicts'
     && recoverySubtask.description === recoveryDescription
     && (recoverySubtask.status === 'pending' || recoverySubtask.status === 'in_progress')
