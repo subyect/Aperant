@@ -53,10 +53,15 @@ vi.mock('../../providers/factory', () => ({
   detectProviderFromModel: vi.fn(),
 }));
 
+vi.mock('../../providers/oauth-fetch', () => ({
+  ensureValidOAuthToken: vi.fn(),
+}));
+
 import { ensureValidToken, reactiveTokenRefresh } from '../../../claude-profile/token-refresh';
 import { scoreProviderAccount } from '../../../claude-profile/profile-scorer';
 import { resolveModelEquivalent } from '../../../../shared/constants/models';
 import { detectProviderFromModel } from '../../providers/factory';
+import { ensureValidOAuthToken } from '../../providers/oauth-fetch';
 import {
   resolveAuth,
   hasCredentials,
@@ -71,6 +76,7 @@ const mockReactiveTokenRefresh = vi.mocked(reactiveTokenRefresh);
 const mockScoreProviderAccount = vi.mocked(scoreProviderAccount);
 const mockResolveModelEquivalent = vi.mocked(resolveModelEquivalent);
 const _mockDetectProviderFromModel = vi.mocked(detectProviderFromModel);
+const mockEnsureValidOAuthToken = vi.mocked(ensureValidOAuthToken);
 const tempDirs: string[] = [];
 
 // Helper: reset the module-level settings accessor between tests
@@ -408,6 +414,38 @@ describe('resolveAuth — Stage 0: Provider Account', () => {
 
     const auth = await resolveAuth({ provider: 'openai' });
     expect(auth?.source).toBe('environment');
+  });
+
+  it('resolves OpenAI Codex OAuth from APERANT_USER_DATA_DIR for worker-safe provider account auth', async () => {
+    const userDataDir = createCodexUserDataDir();
+    process.env.APERANT_USER_DATA_DIR = userDataDir;
+    mockEnsureValidOAuthToken.mockResolvedValueOnce('fresh-access-token');
+    registerSettingsAccessor((key) => {
+      if (key === 'providerAccounts') {
+        return JSON.stringify([
+          {
+            id: 'openai-codex-subscription',
+            provider: 'openai',
+            isActive: true,
+            authType: 'oauth',
+            billingModel: 'subscription',
+          },
+        ]);
+      }
+      return undefined;
+    });
+
+    const auth = await resolveAuth({ provider: 'openai' });
+
+    expect(mockEnsureValidOAuthToken).toHaveBeenCalledWith(
+      join(userDataDir, 'codex-auth.json'),
+      'openai',
+    );
+    expect(auth).toMatchObject({
+      apiKey: 'codex-oauth-placeholder',
+      source: 'codex-oauth',
+      oauthTokenFilePath: join(userDataDir, 'codex-auth.json'),
+    });
   });
 });
 

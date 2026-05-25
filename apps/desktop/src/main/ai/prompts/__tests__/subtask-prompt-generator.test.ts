@@ -32,7 +32,8 @@ describe('generateSubtaskPrompt', () => {
       expect(prompt).toContain('Last agent outcome:** completed');
       expect(prompt).toContain('Do not ask the user for confirmation');
       expect(prompt).toContain('Never ask whether to proceed to the next step');
-      expect(prompt).toContain('set ONLY this subtask');
+      expect(prompt).toContain('mcp__auto-claude__update_subtask_status');
+      expect(prompt).toContain('ONLY subtask `2.1`');
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }

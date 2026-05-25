@@ -13,6 +13,11 @@ vi.mock('node:child_process', () => ({
   spawn: (...args: unknown[]) => mockSpawn(...args),
 }));
 
+const mockGetAugmentedEnv = vi.fn(() => ({ PATH: '/opt/homebrew/bin:/usr/bin:/bin' }));
+vi.mock('../../../../env-utils', () => ({
+  getAugmentedEnv: () => mockGetAugmentedEnv(),
+}));
+
 const mockIsWindows = vi.fn(() => false);
 const mockFindExecutable = vi.fn(() => null);
 const mockKillProcessGracefully = vi.fn();
@@ -203,6 +208,24 @@ describe('Bash Tool', () => {
       expect.any(String),
       expect.any(Array),
       expect.objectContaining({ cwd: '/test/project' }),
+    );
+  });
+
+  it('should pass augmented environment to spawned commands so GUI app launches can find package managers', async () => {
+    setupSpawn('output', '', 0);
+
+    await bashTool.config.execute(
+      { command: 'pnpm --version' },
+      baseContext,
+    );
+
+    expect(mockGetAugmentedEnv).toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Array),
+      expect.objectContaining({
+        env: expect.objectContaining({ PATH: expect.stringContaining('/opt/homebrew/bin') }),
+      }),
     );
   });
 

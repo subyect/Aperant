@@ -14,7 +14,6 @@
  * existing claude-profile/ utilities.
  */
 
-import * as path from 'node:path';
 import { ensureValidToken, reactiveTokenRefresh } from '../../claude-profile/token-refresh';
 import type { SupportedProvider } from '../providers/types';
 import { detectProviderFromModel } from '../providers/factory';
@@ -34,7 +33,7 @@ import {
 } from '../../../shared/constants/models';
 import { scoreProviderAccount } from '../../claude-profile/profile-scorer';
 import type { ClaudeAutoSwitchSettings } from '../../../shared/types/agent';
-import { ensureCodexOAuthAccount } from './codex-account';
+import { ensureCodexOAuthAccount, getCodexAuthFilePath } from './codex-account';
 
 // ============================================
 // Z.AI Endpoint Routing
@@ -67,6 +66,18 @@ export function registerSettingsAccessor(accessor: SettingsAccessor): void {
   _getSettingsValue = accessor;
 }
 
+async function resolveCodexOAuthTokenFilePath(): Promise<string | null> {
+  const envPath = getCodexAuthFilePath();
+  if (envPath) return envPath;
+
+  try {
+    const { app } = await import('electron');
+    return getCodexAuthFilePath(app.getPath('userData'));
+  } catch {
+    return null;
+  }
+}
+
 // ============================================
 // Stage 0: Provider Account (Unified Accounts)
 // ============================================
@@ -97,9 +108,8 @@ async function resolveFromProviderAccount(ctx: AuthResolverContext): Promise<Res
 
   // File-based OAuth accounts (e.g., OpenAI Codex)
   if (account.authType === 'oauth' && account.provider === 'openai') {
-    // Resolve token file path on main thread (has electron.app access)
-    const { app } = await import('electron');
-    const tokenFilePath = path.join(app.getPath('userData'), 'codex-auth.json');
+    const tokenFilePath = await resolveCodexOAuthTokenFilePath();
+    if (!tokenFilePath) return null;
     const { ensureValidOAuthToken } = await import('../providers/oauth-fetch');
     const token = await ensureValidOAuthToken(tokenFilePath, 'openai');
     if (token) {
@@ -550,8 +560,8 @@ async function resolveCredentialsForAccount(
   // File-based OAuth (e.g., OpenAI Codex subscription)
   if (account.authType === 'oauth' && account.provider === 'openai') {
     try {
-      const { app } = await import('electron');
-      const tokenFilePath = path.join(app.getPath('userData'), 'codex-auth.json');
+      const tokenFilePath = await resolveCodexOAuthTokenFilePath();
+      if (!tokenFilePath) return null;
       const { ensureValidOAuthToken } = await import('../providers/oauth-fetch');
       const token = await ensureValidOAuthToken(tokenFilePath, 'openai');
       if (token) {

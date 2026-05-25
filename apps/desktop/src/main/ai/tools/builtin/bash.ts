@@ -10,6 +10,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { z } from 'zod/v3';
 
+import { getAugmentedEnv } from '../../../env-utils';
 import { findExecutable, isWindows, killProcessGracefully } from '../../../platform/index';
 import { bashSecurityHook } from '../../security/bash-validator';
 import { Tool } from '../define';
@@ -114,6 +115,7 @@ function executeCommand(
       {
         cwd,
         detached: !isWindows(),
+        env: getAugmentedEnv(),
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );

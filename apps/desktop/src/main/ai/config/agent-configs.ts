@@ -317,7 +317,7 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
   // UTILITY PHASES (Minimal, no MCP)
   // ═══════════════════════════════════════════════════════════════════════
   insights: {
-    tools: [...ALL_BUILTIN_TOOLS],
+    tools: [...BASE_READ_TOOLS],
     mcpServers: [],
     autoClaudeTools: [],
     thinkingDefault: 'low',

@@ -118,6 +118,14 @@ describe('AGENT_CONFIGS', () => {
     expect(config.mcpServers).toHaveLength(0);
   });
 
+  it('should keep insights read-only for codebase chat stability', () => {
+    const config = AGENT_CONFIGS.insights;
+    expect(config.tools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(config.tools).not.toContain('Write');
+    expect(config.tools).not.toContain('Edit');
+    expect(config.tools).not.toContain('Bash');
+  });
+
   it('should only give SpawnSubagent to orchestrator agent types', () => {
     const orchestratorTypes: AgentType[] = ['spec_orchestrator', 'build_orchestrator'];
     const nonOrchestratorTypes = Object.keys(AGENT_CONFIGS).filter(

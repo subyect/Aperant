@@ -147,6 +147,20 @@ describe('ToolRegistry', () => {
     );
   });
 
+  it('should bind only read tools for insights chat', () => {
+    const registry = new ToolRegistry();
+    for (const name of [...BASE_READ_TOOLS, ...BASE_WRITE_TOOLS, ...WEB_TOOLS]) {
+      registry.registerTool(name, createMockDefinedTool(name));
+    }
+
+    const tools = registry.getToolsForAgent('insights', createMockContext());
+
+    expect(Object.keys(tools).sort()).toEqual([...BASE_READ_TOOLS].sort());
+    expect(Object.keys(tools)).not.toContain('Write');
+    expect(Object.keys(tools)).not.toContain('Edit');
+    expect(Object.keys(tools)).not.toContain('Bash');
+  });
+
   it('should bind tools with the provided context', () => {
     const registry = new ToolRegistry();
     const mockTool = createMockDefinedTool('Read');
