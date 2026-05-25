@@ -128,6 +128,16 @@ describe('runInsightsQuery', () => {
     expect(result.toolCalls).toEqual([]);
   });
 
+  it('instructs codebase chat to use read-only tools without asking for permission', async () => {
+    mockStreamText.mockReturnValue(makeStream([{ type: 'text-delta', text: 'Done.' }]));
+
+    await runInsightsQuery(baseConfig());
+
+    const call = mockCreateSimpleClient.mock.calls[0]?.[0] as { systemPrompt?: string };
+    expect(call.systemPrompt).toContain('use the available read-only tools');
+    expect(call.systemPrompt).toContain('Do not ask for permission to inspect files');
+  });
+
   it('returns empty text and no task suggestion when stream is empty', async () => {
     mockStreamText.mockReturnValue(makeStream([]));
 

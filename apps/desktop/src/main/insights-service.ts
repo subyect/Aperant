@@ -13,6 +13,50 @@ import { SessionStorage } from './insights/session-storage';
 import { SessionManager } from './insights/session-manager';
 import { InsightsExecutor } from './insights/insights-executor';
 
+const TRANSIENT_ASSISTANT_ERROR_PREFIXES = [
+  'Insights request failed:',
+  'Failed to send message:',
+];
+
+function shouldKeepHistoryMessage(
+  message: InsightsChatMessage,
+  index: number,
+  messages: InsightsChatMessage[],
+): boolean {
+  if (message.role !== 'user' && message.role !== 'assistant') return false;
+  if (index === messages.length - 1 && message.role === 'user') return false;
+
+  const content = message.content.trim();
+  if (!content) return false;
+
+  if (
+    message.role === 'assistant'
+    && TRANSIENT_ASSISTANT_ERROR_PREFIXES.some((prefix) => content.startsWith(prefix))
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+export function buildInsightsConversationHistory(
+  messages: InsightsChatMessage[],
+): Array<{ role: string; content: string }> {
+  return messages
+    .filter(shouldKeepHistoryMessage)
+    .map((m) => {
+      const imageCount = m.images?.length ?? 0;
+      const imageNotation = imageCount > 0 && m.role === 'user'
+        ? `\n[User previously attached ${imageCount} image(s) - not visible in this context]`
+        : '';
+
+      return {
+        role: m.role,
+        content: imageNotation ? m.content + imageNotation : m.content,
+      };
+    });
+}
+
 /**
  * Service for AI-powered codebase insights chat
  *
@@ -184,23 +228,7 @@ export class InsightsService extends EventEmitter {
     session.updatedAt = new Date();
     this.sessionManager.saveSession(projectPath, session);
 
-    // Build conversation history for context
-    // Add notation when images are present so the AI has context
-    // For historical messages (all but the last), use past tense to avoid confusion
-    const conversationHistory = session.messages.map((m, index) => {
-      const imageCount = m.images?.length ?? 0;
-      const isLastMessage = index === session.messages.length - 1;
-      let imageNotation = '';
-      if (imageCount > 0 && m.role === 'user') {
-        imageNotation = isLastMessage
-          ? `\n[User attached ${imageCount} image(s)]`
-          : `\n[User previously attached ${imageCount} image(s) - not visible in this context]`;
-      }
-      return {
-        role: m.role,
-        content: imageNotation ? m.content + imageNotation : m.content
-      };
-    });
+    const conversationHistory = buildInsightsConversationHistory(session.messages);
 
     // Use provided modelConfig or fall back to session's config
     const configToUse = modelConfig || session.modelConfig;
