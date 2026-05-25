@@ -369,7 +369,12 @@ function buildRetryReason(
   }
 
   if (result.outcome === 'completed') {
-    return `Agent session ended without marking the subtask completed in implementation_plan.json (current status: ${currentStatus ?? 'missing'}). Retrying until the plan proves completion.`;
+    const finalMessage = getLastAssistantMessage(result);
+    return (
+      `Agent session ended without marking the subtask completed in implementation_plan.json (current status: ${currentStatus ?? 'missing'}). ` +
+      `Retrying until the plan proves completion.` +
+      (finalMessage ? `\n\nLast assistant message:\n${compactForPlan(finalMessage, 1_200)}` : '')
+    );
   }
   if (result.outcome === 'max_steps') {
     return 'Agent hit the max step limit before the subtask was marked completed. Retrying the subtask.';
@@ -378,6 +383,19 @@ function buildRetryReason(
     return 'Agent hit the context window before the subtask was marked completed. Retrying the subtask.';
   }
   return result.error?.message ?? `Agent session ended with outcome "${result.outcome}". Retrying the subtask.`;
+}
+
+function getLastAssistantMessage(result: SessionResult): string | null {
+  const messages = result.messages ?? [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role !== 'assistant') continue;
+    const content = typeof message.content === 'string'
+      ? message.content.trim()
+      : '';
+    if (content) return content;
+  }
+  return null;
 }
 
 function buildBashFailureRetryReason(result: SessionResult): string | null {

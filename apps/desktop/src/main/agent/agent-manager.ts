@@ -1132,6 +1132,36 @@ export class AgentManager extends EventEmitter {
     }
   }
 
+  private clearRecoveredWorktreeSetupFailure(
+    project: Project,
+    task: Task,
+  ): void {
+    let persisted = false;
+
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = safeParseJson<Record<string, any>>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
+        if (typeof plan.recoveryNote !== 'string' || !plan.recoveryNote.startsWith('Worktree setup failed;')) continue;
+
+        delete plan.recoveryNote;
+        if (plan.lastEvent?.type === 'WORKTREE_SETUP_FAILED') {
+          delete plan.lastEvent;
+        }
+        plan.updated_at = new Date().toISOString();
+        writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+        persisted = true;
+      } catch (error) {
+        console.warn(`[AgentManager] Failed to clear recovered worktree setup failure for ${task.specId}:`, error);
+      }
+    }
+
+    if (persisted) {
+      projectStore.invalidateTasksCache(project.id);
+    }
+  }
+
   /**
    * Register a task with the unified OperationRegistry for proactive swap support.
    * Extracted helper to avoid code duplication between spec creation and task execution.
@@ -1361,6 +1391,9 @@ export class AgentManager extends EventEmitter {
             `[AgentManager] Coding worktree for ${specId} has base-sync conflicts; adding recovery subtask: ${conflictFiles.join(', ') || 'unknown files'}`
           );
           this.persistBaseSyncConflictForCoding(project, task, conflictFiles, syncCheck.skippedReason ?? 'base_sync_conflict');
+        }
+        if (project && task) {
+          this.clearRecoveredWorktreeSetupFailure(project, task);
         }
         console.warn(`[AgentManager] Task ${taskId} will run in worktree: ${worktreePath}`);
       } catch (err) {

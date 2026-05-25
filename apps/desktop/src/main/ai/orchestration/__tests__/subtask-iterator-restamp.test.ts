@@ -137,6 +137,29 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('without marking the subtask completed');
   });
 
+  it('records the final assistant message when a session ends without a plan marker', async () => {
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+
+    await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        messages: [
+          { role: 'assistant', content: 'I found the current blocker: TS2307 cannot find ./query-helpers.js.' },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ last_error?: string }> }>;
+    };
+
+    expect(written.phases[0].subtasks[0].last_error).toContain('Last assistant message');
+    expect(written.phases[0].subtasks[0].last_error).toContain('TS2307 cannot find ./query-helpers.js');
+  });
+
   it('counts a subtask completed when the agent updates the plan', async () => {
     await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
 

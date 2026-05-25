@@ -293,7 +293,8 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
         `First verify the current code and tests. If the subtask is actually complete, call ` +
         `\`mcp__auto-claude__update_subtask_status\` for ONLY subtask \`${subtask.id}\` with status ` +
         `\`"completed"\`, then record the verification evidence in build-progress.txt. ` +
-        `If it is not complete, finish the missing implementation before updating the plan.\n`
+        `If it is not complete, finish the missing implementation before updating the plan. ` +
+        `Do not end with only a narrative summary, handoff note, or blocker note unless you have first proved that the blocker cannot be fixed inside this worktree.\n`
       );
     }
     if (
