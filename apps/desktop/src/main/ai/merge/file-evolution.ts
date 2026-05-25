@@ -35,8 +35,10 @@ import {
 
 export const DEFAULT_EXTENSIONS = new Set([
   '.py', '.js', '.ts', '.tsx', '.jsx',
+  '.mjs', '.cjs', '.mts', '.cts',
   '.json', '.yaml', '.yml', '.toml',
   '.md', '.txt', '.html', '.css', '.scss',
+  '.sql', '.sh', '.bash',
   '.go', '.rs', '.java', '.kt', '.swift',
 ]);
 
@@ -256,6 +258,18 @@ export class FileEvolutionTracker {
     this.storage.saveEvolutions(this.evolutions);
   }
 
+  private clearTaskSnapshots(taskId: string): void {
+    for (const [filePath, evolution] of [...this.evolutions.entries()]) {
+      const originalCount = evolution.taskSnapshots.length;
+      evolution.taskSnapshots = evolution.taskSnapshots.filter((snapshot) => snapshot.taskId !== taskId);
+      if (evolution.taskSnapshots.length === 0) {
+        this.evolutions.delete(filePath);
+      } else if (evolution.taskSnapshots.length !== originalCount) {
+        this.evolutions.set(filePath, evolution);
+      }
+    }
+  }
+
   /**
    * Capture baseline state of files for a task.
    */
@@ -407,6 +421,11 @@ export class FileEvolutionTracker {
     }
 
     const changedFiles = [...changedFileSet].filter(isMergeCandidatePath);
+
+    // Refresh must reflect the current worktree, not every historical attempt
+    // for this task. Otherwise a retry can merge stale files that are no longer
+    // changed while missing newly-created artifacts.
+    this.clearTaskSnapshots(taskId);
 
     for (const filePath of changedFiles) {
       try {
