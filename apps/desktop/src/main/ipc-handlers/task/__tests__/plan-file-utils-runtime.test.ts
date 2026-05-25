@@ -206,6 +206,34 @@ describe('plan-file runtime guards', () => {
     expect(plan.recoveryNote).toBe('Blocked terminal phase complete: 1/2 subtasks complete.');
   });
 
+  it('keeps qa_fixing phase updates in coding when recovery work remains pending', () => {
+    writeFileSync(planPath, JSON.stringify({
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            { id: '1.1', status: 'completed' },
+            { id: 'aperant-qa-report-failure', status: 'pending' },
+          ],
+        },
+      ],
+      qa_signoff: { status: 'approved', issues_found: [] },
+    }, null, 2));
+
+    expect(persistPlanPhaseSync(planPath, 'qa_fixing', 'project-1')).toBe(true);
+
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+
+    expect(plan.status).toBe('in_progress');
+    expect(plan.xstateState).toBe('coding');
+    expect(plan.executionPhase).toBe('coding');
+    expect(plan.qa_signoff).toBeUndefined();
+  });
+
   it('clears stale blocked terminal notes when app merge records a completed task', () => {
     writeFileSync(planPath, JSON.stringify({
       status: 'human_review',

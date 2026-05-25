@@ -122,6 +122,25 @@ describe('runtime completion guards', () => {
     expect(plan.recoveryNote).toBe('Blocked terminal event QA_PASSED: 1/2 subtasks complete.');
   });
 
+  it('keeps QA fixing events in coding while recovery subtasks are pending', () => {
+    const plan = planWithSubtasks([
+      { id: '1.1', status: 'completed' },
+      { id: 'aperant-qa-report-failure', status: 'pending' },
+    ], {
+      status: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      qa_signoff: { status: 'approved', issues_found: [] },
+    });
+
+    expect(applyTaskEventRuntimeState(plan, 'QA_FIXING_STARTED')).toBe(true);
+
+    expect(plan.status).toBe('in_progress');
+    expect(plan.xstateState).toBe('coding');
+    expect(plan.executionPhase).toBe('coding');
+    expect(plan.qa_signoff).toBeUndefined();
+  });
+
   it('turns QA_PASSED with completed subtasks into approved human review even if qa_signoff is missing', () => {
     const plan = planWithSubtasks([
       { id: '1.1', status: 'completed' },

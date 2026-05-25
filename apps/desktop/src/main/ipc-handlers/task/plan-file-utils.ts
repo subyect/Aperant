@@ -474,9 +474,17 @@ export function persistPlanStatusAndReasonSync(
     const activeGuard = statusRequiresCompletedSubtasks(status, reviewReason)
       ? doneStatusHasIncompleteSubtasks(plan)
       : { incomplete: false, completedCount: 0, totalCount: 0 };
-    const finalStatus = activeGuard.incomplete ? 'in_progress' : status;
-    const finalXStateState = activeGuard.incomplete ? 'coding' : xstateState;
-    const finalExecutionPhase = activeGuard.incomplete ? 'coding' : executionPhase;
+    const completion = checkSubtasksCompletion(plan);
+    const reviewWithPendingWork = (
+      status === 'ai_review'
+      || xstateState === 'qa_review'
+      || xstateState === 'qa_fixing'
+      || executionPhase === 'qa_review'
+      || executionPhase === 'qa_fixing'
+    ) && completion.totalCount > 0 && !completion.allCompleted;
+    const finalStatus = activeGuard.incomplete || reviewWithPendingWork ? 'in_progress' : status;
+    const finalXStateState = activeGuard.incomplete || reviewWithPendingWork ? 'coding' : xstateState;
+    const finalExecutionPhase = activeGuard.incomplete || reviewWithPendingWork ? 'coding' : executionPhase;
     plan.status = finalStatus;
     plan.planStatus = mapStatusToPlanStatus(finalStatus);
     if (finalStatus === 'in_progress') {
@@ -487,6 +495,8 @@ export function persistPlanStatusAndReasonSync(
       delete plan.mergedAt;
       if (activeGuard.incomplete) {
         plan.recoveryNote = `Blocked terminal status ${status}: ${activeGuard.completedCount}/${activeGuard.totalCount} subtasks complete.`;
+      } else if (reviewWithPendingWork && typeof plan.recoveryNote !== 'string') {
+        plan.recoveryNote = `Blocked review status ${status}: ${completion.completedCount}/${completion.totalCount} subtasks complete.`;
       } else if (plan.recoveryNote === 'Blocked terminal status in_progress: 0/0 subtasks complete.') {
         delete plan.recoveryNote;
       }
@@ -578,6 +588,15 @@ export function persistPlanPhaseSync(
       phase === 'planning'
       && currentXState === 'coding'
       && checkSubtasksCompletion(plan).totalCount > 0
+    ) {
+      phaseToPersist = 'coding';
+    }
+
+    const completion = checkSubtasksCompletion(plan);
+    if (
+      (phaseToPersist === 'qa_review' || phaseToPersist === 'qa_fixing')
+      && completion.totalCount > 0
+      && !completion.allCompleted
     ) {
       phaseToPersist = 'coding';
     }

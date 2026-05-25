@@ -158,7 +158,13 @@ export function applyTaskEventRuntimeState(plan: MutablePlan | null | undefined,
   if (eventType === 'PLANNING_STARTED') return applyRuntimePhaseState(plan, 'planning');
   if (eventType === 'CODING_STARTED' || eventType === 'QA_FIXING_COMPLETE') return applyRuntimePhaseState(plan, 'coding');
   if (eventType === 'ALL_SUBTASKS_DONE' || eventType === 'QA_STARTED') return applyRuntimePhaseState(plan, 'qa_review');
-  if (eventType === 'QA_FAILED' || eventType === 'QA_FIXING_STARTED') return applyRuntimePhaseState(plan, 'qa_fixing');
+  if (eventType === 'QA_FAILED' || eventType === 'QA_FIXING_STARTED') {
+    const guard = checkSubtasksCompletion(plan);
+    if (!guard.allCompleted) {
+      return applyRuntimePhaseState(plan, 'coding');
+    }
+    return applyRuntimePhaseState(plan, 'qa_fixing');
+  }
   if (eventType === 'QA_PASSED') {
     const guard = checkSubtasksCompletion(plan);
     if (!guard.allCompleted) {
