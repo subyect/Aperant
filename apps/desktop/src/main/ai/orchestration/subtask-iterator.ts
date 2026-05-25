@@ -306,7 +306,7 @@ export async function iterateSubtasks(
     }
 
     if (!subtaskCompleted) {
-      const verificationNote = buildSuccessfulSubtaskVerificationNote(result);
+      const verificationNote = buildSuccessfulSubtaskVerificationNote(result, subtask);
       if (verificationNote) {
         await markSubtaskCompletedByVerification(config.specDir, subtask.id, verificationNote);
         subtaskCompleted = true;
@@ -411,7 +411,7 @@ function buildRetryReason(
       && looksLikeFalseCompletionClaim(finalMessage)
       && !hasConcreteCompletionEvidence(result)
       ? (
-        `\n\nWARNING: The previous session did not produce a passing verifier tool result or any Edit/Write tool call. ` +
+        `\n\nWARNING: The previous session did not produce a passing verifier tool result or any project Edit/Write tool call. ` +
         `Do not answer with another completion summary. First make the necessary repository edits or run a real targeted verifier, then re-open implementation_plan.json and update only this subtask to "completed" when the file readback proves it.`
       )
       : '';
@@ -468,14 +468,35 @@ function getLastAssistantMessage(result: SessionResult): string | null {
 }
 
 function hasConcreteCompletionEvidence(result: SessionResult): boolean {
-  return findLatestPassingVerifier(result) !== null || hasWriteLikeToolResult(result);
+  return findLatestPassingVerifier(result) !== null || findProjectWriteLikeToolResult(result) !== null;
 }
 
-function hasWriteLikeToolResult(result: SessionResult): boolean {
-  return (result.toolResults ?? []).some((toolResult) => {
+function findProjectWriteLikeToolResult(result: SessionResult): NonNullable<SessionResult['toolResults']>[number] | null {
+  for (const toolResult of result.toolResults ?? []) {
     const toolName = String(toolResult.toolName ?? '');
-    return /^(Edit|Write|MultiEdit|NotebookEdit)$/i.test(toolName);
-  });
+    if (!/^(Edit|Write|MultiEdit|NotebookEdit)$/i.test(toolName)) continue;
+    if (!isProjectFileWrite(toolResult.args)) continue;
+    return toolResult;
+  }
+  return null;
+}
+
+function isProjectFileWrite(args: Record<string, unknown> | undefined): boolean {
+  const filePath = getToolFilePath(args);
+  if (!filePath) return false;
+  const normalized = filePath.replace(/\\/g, '/');
+  if (normalized.includes('/.auto-claude/')) return false;
+  if (normalized.startsWith('.auto-claude/')) return false;
+  return true;
+}
+
+function getToolFilePath(args: Record<string, unknown> | undefined): string | null {
+  if (!args) return null;
+  for (const key of ['file_path', 'filePath', 'path']) {
+    const value = args[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
 }
 
 function buildBashFailureRetryReason(result: SessionResult): string | null {
@@ -572,19 +593,37 @@ function buildSuccessfulBaseSyncRecoveryVerificationNote(result: SessionResult):
   return null;
 }
 
-function buildSuccessfulSubtaskVerificationNote(result: SessionResult): string | null {
+function buildSuccessfulSubtaskVerificationNote(
+  result: SessionResult,
+  subtask?: PlanSubtask,
+): string | null {
   if (result.outcome !== 'completed') return null;
   const finalMessage = getLastAssistantMessage(result);
   if (!finalMessage || !looksLikeFalseCompletionClaim(finalMessage)) return null;
 
   const verifier = findLatestPassingVerifier(result);
-  if (!verifier) return null;
+  if (verifier) {
+    return (
+      `Auto-completed subtask after the agent reported completion and the latest verifier passed.\n` +
+      `Command: ${verifier.command}\n` +
+      `Result: ${compactForPlan(verifier.output, 1_200)}`
+    );
+  }
 
-  return (
-    `Auto-completed subtask after the agent reported completion and the latest verifier passed.\n` +
-    `Command: ${verifier.command}\n` +
-    `Result: ${compactForPlan(verifier.output, 1_200)}`
-  );
+  const projectWrite = findProjectWriteLikeToolResult(result);
+  if (projectWrite && isManualVerificationSubtask(subtask)) {
+    return (
+      `Auto-completed manual-verification subtask after the agent reported completion and edited project files.\n` +
+      `Tool: ${projectWrite.toolName}\n` +
+      `File: ${getToolFilePath(projectWrite.args) ?? '(file unavailable)'}`
+    );
+  }
+
+  return null;
+}
+
+function isManualVerificationSubtask(subtask?: PlanSubtask): boolean {
+  return (subtask?.verification as { type?: string } | undefined)?.type === 'manual';
 }
 
 function findLatestPassingVerifier(result: SessionResult): { command: string; output: string } | null {

@@ -187,7 +187,7 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('WARNING');
     expect(subtask.last_error).toContain('claimed this subtask was completed');
     expect(subtask.last_error).toContain('untrusted');
-    expect(subtask.last_error).toContain('did not produce a passing verifier tool result or any Edit/Write tool call');
+    expect(subtask.last_error).toContain('did not produce a passing verifier tool result or any project Edit/Write tool call');
   });
 
   it('classifies repo-local blocker summaries as failed implementation attempts', async () => {
@@ -716,6 +716,116 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.status).toBe('completed');
     expect(subtask.completion_note).toContain('latest verifier passed');
     expect(subtask.last_error).toBeUndefined();
+  });
+
+  it('auto-completes an explicit manual-verification subtask when project files were edited', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: 'P2-S4',
+              title: 'Implement failure categorization mapping',
+              description: 'Implement centralized mapping.',
+              status: 'pending',
+              verification: { type: 'manual', run: 'Inspect failure payloads.' },
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        messages: [
+          {
+            role: 'assistant',
+            content: 'Implemented and verified P2-S4. I updated the subtask to completed.',
+          },
+        ],
+        toolResults: [
+          {
+            toolName: 'Edit',
+            args: { file_path: 'packages/layer1-ingest/src/retry-runtime.ts' },
+            result: 'Done',
+            durationMs: 200,
+            isError: false,
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; completion_note?: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(1);
+    expect(result.stuckSubtasks).toEqual([]);
+    expect(subtask.status).toBe('completed');
+    expect(subtask.completion_note).toContain('manual-verification subtask');
+    expect(subtask.completion_note).toContain('packages/layer1-ingest/src/retry-runtime.ts');
+    expect(subtask.last_error).toBeUndefined();
+  });
+
+  it('does not auto-complete a manual-verification subtask after only spec artifact writes', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: 'P2-S4',
+              title: 'Implement failure categorization mapping',
+              description: 'Implement centralized mapping.',
+              status: 'pending',
+              verification: { type: 'manual', run: 'Inspect failure payloads.' },
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        messages: [
+          {
+            role: 'assistant',
+            content: 'Implemented and verified P2-S4. I updated the subtask to completed.',
+          },
+        ],
+        toolResults: [
+          {
+            toolName: 'Write',
+            args: { file_path: '.auto-claude/specs/task/build-progress.txt' },
+            result: 'Done',
+            durationMs: 200,
+            isError: false,
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('did not produce a passing verifier tool result or any project Edit/Write tool call');
   });
 
   it('does not auto-complete a normal subtask when the latest verifier fails', async () => {
