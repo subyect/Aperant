@@ -697,7 +697,7 @@ describe('ProjectStore', () => {
         planStatus: 'completed',
         xstateState: 'done',
         executionPhase: 'complete',
-        recoveryNote: 'QA report failed; continuing coding with QA findings as mandatory recovery work.',
+        recoveryNote: 'Worktree setup failed; Aperant refused to run task code in the main checkout: git worktree failed.',
         human_feedback_pending: { requested_at: '2026-05-23T19:40:25.571Z' },
         qa_signoff: { status: 'approved', issues_found: [] },
         mergeCommit: 'abc1234',

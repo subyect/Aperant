@@ -241,6 +241,7 @@ function clearResolvedRecoveryState(plan: Record<string, unknown>): void {
     || /^QA report failed\b/.test(plan.recoveryNote)
     || /^Base branch sync conflict\b/.test(plan.recoveryNote)
     || /^Terminal failure blocked\b/.test(plan.recoveryNote)
+    || /^Worktree setup failed\b/.test(plan.recoveryNote)
     || /^Reset to queue by backend stability reset\b/.test(plan.recoveryNote)
     || /^Recovered (stale terminal status|from stale done status)\b/.test(plan.recoveryNote)
   ) {
