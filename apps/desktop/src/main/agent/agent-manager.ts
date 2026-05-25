@@ -54,6 +54,7 @@ import {
   copyReviewArtifactsToMainSpec,
   findPassingQaReport,
 } from './task-review-artifacts';
+import { canAutoMergeCompletedHumanReviewTask } from './human-review-merge-guard';
 
 const DEFAULT_MAX_PARALLEL_TASKS = 3;
 const MAX_CONCURRENT_PLANNING_RECOVERIES = 1;
@@ -1736,7 +1737,7 @@ export class AgentManager extends EventEmitter {
       for (const project of projects) {
         const tasks = projectStore.getTasks(project.id);
         for (const task of tasks) {
-          if (!this.shouldAutoMergeHumanReviewTask(task)) continue;
+          if (!this.shouldAutoMergeHumanReviewTask(project, task)) continue;
           try {
             const qaEvidence = this.getHumanReviewQaEvidence(project, task);
             if (!qaEvidence.passingReportPath) {
@@ -1761,11 +1762,28 @@ export class AgentManager extends EventEmitter {
     }
   }
 
-  private shouldAutoMergeHumanReviewTask(task: Task): boolean {
-    if (task.status !== 'human_review' || task.reviewReason !== 'completed') return false;
+  private shouldAutoMergeHumanReviewTask(project: Project, task: Task): boolean {
     if (this.isRunning(task.id)) return false;
-    if (!task.subtasks.length || task.subtasks.some((subtask) => subtask.status !== 'completed')) return false;
-    return true;
+    return canAutoMergeCompletedHumanReviewTask(task, this.readHumanReviewPlanCandidates(project, task));
+  }
+
+  private readHumanReviewPlanCandidates(project: Project, task: Task): Array<Record<string, unknown>> {
+    const specsBaseDir = getSpecsDir(project.autoBuildPath);
+    const planPaths = [
+      path.join(project.path, specsBaseDir, task.specId, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN),
+    ];
+    const worktreePath = findTaskWorktree(project.path, task.specId);
+    if (worktreePath && existsSync(worktreePath)) {
+      planPaths.push(path.join(worktreePath, specsBaseDir, task.specId, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN));
+    }
+
+    const plans: Array<Record<string, unknown>> = [];
+    for (const planPath of planPaths) {
+      if (!existsSync(planPath)) continue;
+      const parsed = safeParseJson<Record<string, unknown>>(readFileSync(planPath, 'utf-8'));
+      if (parsed) plans.push(parsed);
+    }
+    return plans;
   }
 
   private getHumanReviewQaEvidence(project: Project, task: Task): {
