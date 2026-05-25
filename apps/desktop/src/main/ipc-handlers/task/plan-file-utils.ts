@@ -225,6 +225,13 @@ function ensureCompletedReviewQASignoff(
   return true;
 }
 
+function clearBlockedTerminalRecoveryNote(plan: Record<string, unknown>): boolean {
+  if (typeof plan.recoveryNote !== 'string') return false;
+  if (!/^Blocked terminal (event|phase|status)\b/.test(plan.recoveryNote)) return false;
+  delete plan.recoveryNote;
+  return true;
+}
+
 /**
  * Persist task status to implementation_plan.json file.
  * This is thread-safe and prevents race conditions when multiple handlers update the same file.
@@ -464,8 +471,8 @@ export function persistPlanStatusAndReasonSync(
     if (finalExecutionPhase) {
       plan.executionPhase = finalExecutionPhase;
     }
-    if (synthesizedQASignoff && typeof plan.recoveryNote === 'string' && plan.recoveryNote.startsWith('Blocked terminal event QA_PASSED:')) {
-      delete plan.recoveryNote;
+    if (!activeGuard.incomplete && (synthesizedQASignoff || finalStatus !== 'in_progress')) {
+      clearBlockedTerminalRecoveryNote(plan);
     }
     plan.updated_at = new Date().toISOString();
 
@@ -579,6 +586,8 @@ export function persistPlanPhaseSync(
         plan.xstateState = 'coding';
         plan.executionPhase = 'coding';
         plan.recoveryNote = `Blocked terminal phase ${phase}: ${activeGuard.completedCount}/${activeGuard.totalCount} subtasks complete.`;
+      } else {
+        clearBlockedTerminalRecoveryNote(plan);
       }
       if (mappedStatus === 'in_progress') {
         delete plan.reviewReason;
@@ -1155,6 +1164,7 @@ export function updatePlanAfterAppMerge(planPath: string, status: TaskStatus, pl
           }
         }
       }
+      clearBlockedTerminalRecoveryNote(plan);
     }
     plan.mergedAt = new Date().toISOString();
     if (commitSha) plan.mergeCommit = commitSha;

@@ -499,6 +499,7 @@ describe('ProjectStore', () => {
         services_involved: [],
         status: 'human_review',
         reviewReason: 'completed',
+        qa_signoff: { status: 'approved', issues_found: [] },
         phases: [
           {
             phase: 1,
@@ -540,6 +541,9 @@ describe('ProjectStore', () => {
         workflow_type: 'feature',
         services_involved: [],
         status: 'done', // Explicitly set by user
+        qa_signoff: { status: 'approved', issues_found: [] },
+        mergeCommit: 'abc1234',
+        mergedAt: '2024-01-01T00:00:00Z',
         phases: [
           {
             phase: 1,
@@ -610,12 +614,18 @@ describe('ProjectStore', () => {
       writeSpec(
         path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs'),
         specId,
-        makePlan({
-          feature: 'Terminal Main',
-          status: 'done',
-          subtaskStatuses: ['completed', 'completed'],
-          updatedAt: '2024-01-03T00:00:00Z',
-        }),
+        {
+          ...makePlan({
+            feature: 'Terminal Main',
+            status: 'done',
+            subtaskStatuses: ['completed', 'completed'],
+            updatedAt: '2024-01-03T00:00:00Z',
+          }),
+          qa_signoff: { status: 'approved', issues_found: [] },
+          mergeCommit: 'abc1234',
+          mergedAt: '2024-01-03T00:00:00Z',
+          final_acceptance: ['merged'],
+        },
       );
       writeSpec(
         path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId, '.auto-claude', 'specs'),
@@ -638,6 +648,39 @@ describe('ProjectStore', () => {
       expect(tasks[0].location).toBe('main');
       expect(tasks[0].status).toBe('done');
       expect(tasks[0].subtasks.every((subtask) => subtask.status === 'completed')).toBe(true);
+    });
+
+    it('clears stale blocked terminal notes from completed tasks on load', async () => {
+      const specId = '009-terminal-note';
+      const specRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');
+      const plan = {
+        ...makePlan({
+          feature: 'Terminal Note',
+          status: 'done',
+          subtaskStatuses: ['completed', 'completed'],
+          updatedAt: '2024-01-03T00:00:00Z',
+        }),
+        planStatus: 'completed',
+        xstateState: 'done',
+        executionPhase: 'complete',
+        recoveryNote: 'Blocked terminal phase complete: 2/2 subtasks complete.',
+        qa_signoff: { status: 'approved', issues_found: [] },
+        mergeCommit: 'abc1234',
+      };
+      writeSpec(specRoot, specId, plan);
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(specRoot, specId, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(tasks.find((task) => task.specId === specId)?.status).toBe('done');
+      expect(persistedPlan.recoveryNote).toBeUndefined();
     });
 
     it('should prefer original task description from requirements.json over plan description', async () => {

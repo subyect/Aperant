@@ -58,10 +58,11 @@ describe('plan-file runtime guards', () => {
   let readApprovedQASignoffFromReportSync: typeof import('../plan-file-utils').readApprovedQASignoffFromReportSync;
   let recoverApprovedQASignoffForSpec: typeof import('../plan-file-utils').recoverApprovedQASignoffForSpec;
   let ensureHumanFeedbackReworkSubtask: typeof import('../plan-file-utils').ensureHumanFeedbackReworkSubtask;
+  let updatePlanAfterAppMerge: typeof import('../plan-file-utils').updatePlanAfterAppMerge;
 
   beforeEach(async () => {
     vi.resetModules();
-    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync, readQaReportVerdictSync, readFailedQaEvidenceSync, readApprovedQASignoffFromReportSync, recoverApprovedQASignoffForSpec, ensureHumanFeedbackReworkSubtask } = await import('../plan-file-utils'));
+    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync, readQaReportVerdictSync, readFailedQaEvidenceSync, readApprovedQASignoffFromReportSync, recoverApprovedQASignoffForSpec, ensureHumanFeedbackReworkSubtask, updatePlanAfterAppMerge } = await import('../plan-file-utils'));
     tempDir = mkdtempSync(path.join(tmpdir(), 'aperant-plan-'));
     planPath = path.join(tempDir, 'implementation_plan.json');
     writeFileSync(planPath, JSON.stringify(planWithSubtasks(), null, 2));
@@ -203,6 +204,35 @@ describe('plan-file runtime guards', () => {
     expect(plan.xstateState).toBe('coding');
     expect(plan.executionPhase).toBe('coding');
     expect(plan.recoveryNote).toBe('Blocked terminal phase complete: 1/2 subtasks complete.');
+  });
+
+  it('clears stale blocked terminal notes when app merge records a completed task', () => {
+    writeFileSync(planPath, JSON.stringify({
+      status: 'human_review',
+      planStatus: 'review',
+      xstateState: 'human_review',
+      executionPhase: 'complete',
+      recoveryNote: 'Blocked terminal phase complete: 2/2 subtasks complete.',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            { id: '1.1', status: 'completed' },
+            { id: '1.2', status: 'completed' },
+          ],
+        },
+      ],
+      qa_signoff: { status: 'approved', issues_found: [] },
+    }, null, 2));
+
+    updatePlanAfterAppMerge(planPath, 'done', 'completed', 'abc123');
+
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+
+    expect(plan.status).toBe('done');
+    expect(plan.planStatus).toBe('completed');
+    expect(plan.mergeCommit).toBe('abc123');
+    expect(plan.recoveryNote).toBeUndefined();
   });
 
   it('adds a pending human-feedback rework subtask when feedback arrives after QA', () => {

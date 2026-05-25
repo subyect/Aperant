@@ -784,10 +784,25 @@ export class ProjectStore {
 
     const doneGuard = doneStatusHasIncompleteSubtasks(plan as unknown as Record<string, unknown>);
     if (!doneGuard.incomplete) {
+      const recoveryNote = (plan as unknown as { recoveryNote?: unknown }).recoveryNote;
+      if (typeof recoveryNote === 'string' && /^Blocked terminal (event|phase|status)\b/.test(recoveryNote)) {
+        const correctedPlan = plan as unknown as Record<string, unknown>;
+        delete correctedPlan.recoveryNote;
+        correctedPlan.updated_at = new Date().toISOString();
+        try {
+          writeFileAtomicSync(planPath, JSON.stringify(correctedPlan, null, 2));
+          console.warn(`[ProjectStore] Cleared stale terminal recovery note for completed task ${taskName}.`);
+        } catch (writeError) {
+          console.error(`[ProjectStore] Failed to clear stale terminal recovery note for ${taskName}:`, writeError);
+        }
+      }
       return { status: finalStatus, reviewReason: finalReviewReason };
     }
 
     const { allCompleted } = checkSubtasksCompletion(plan as unknown as Record<string, unknown>);
+    if (allCompleted && finalStatus === 'human_review' && finalReviewReason !== 'completed') {
+      return { status: finalStatus, reviewReason: finalReviewReason };
+    }
     const correctedPlan = plan as unknown as Record<string, unknown>;
     if (allCompleted && Array.isArray(correctedPlan.phases)) {
       for (const phase of correctedPlan.phases as Array<{ status?: string; subtasks?: Array<{ status?: string }> }>) {
