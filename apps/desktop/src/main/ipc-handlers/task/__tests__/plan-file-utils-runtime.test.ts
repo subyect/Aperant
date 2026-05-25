@@ -323,6 +323,60 @@ describe('plan-file runtime guards', () => {
     expect(readApprovedQASignoffFromReportSync(tempDir)).toBeNull();
   });
 
+  it('parses generated QA reports that use Final Status and Result fields', () => {
+    writeFileSync(path.join(tempDir, 'qa_report.md'), [
+      '# QA Report',
+      '',
+      '**Final Status**: MAX ITERATIONS REACHED',
+      '**Result**: FAILED',
+      '',
+      'QA validation reached the maximum iterations without approval.',
+    ].join('\n'));
+
+    const verdict = readQaReportVerdictSync(tempDir);
+    const failure = readFailedQaEvidenceSync(tempDir);
+
+    expect(verdict?.status).toBe('failed');
+    expect(failure?.reportPath.endsWith('qa_report.md')).toBe(true);
+    expect(failure?.content).toContain('MAX ITERATIONS REACHED');
+  });
+
+  it('uses QA escalation reports as fallback failure evidence', () => {
+    writeFileSync(path.join(tempDir, 'QA_ESCALATION.md'), [
+      '# QA Escalation - Human Intervention Required',
+      '',
+      'Recurring Issues',
+    ].join('\n'));
+
+    const failure = readFailedQaEvidenceSync(tempDir);
+
+    expect(failure?.reportPath.endsWith('QA_ESCALATION.md')).toBe(true);
+    expect(failure?.content).toContain('Recurring Issues');
+  });
+
+  it('parses generated approved QA reports that use Result fields', () => {
+    writeFileSync(path.join(tempDir, 'qa_report.md'), [
+      '# QA Report',
+      '',
+      '**Final Status**: APPROVED',
+      '**Result**: PASSED',
+      '',
+      'QA validation passed successfully.',
+    ].join('\n'));
+
+    const verdict = readQaReportVerdictSync(tempDir);
+
+    expect(verdict?.status).toBe('approved');
+    expect(readFailedQaEvidenceSync(tempDir)).toBeNull();
+  });
+
+  it('does not treat stale escalation files as failed when the QA report is approved', () => {
+    writeFileSync(path.join(tempDir, 'qa_report.md'), '**Result**: PASSED\n');
+    writeFileSync(path.join(tempDir, 'QA_ESCALATION.md'), '# QA Escalation - Human Intervention Required\n');
+
+    expect(readFailedQaEvidenceSync(tempDir)).toBeNull();
+  });
+
   it('keeps failed QA fix requests as durable failure evidence', () => {
     writeFileSync(path.join(tempDir, 'QA_FIX_REQUEST.md'), '# QA Fix Request\n\nStatus: REJECTED\n\nAperant QA failed this task.');
 

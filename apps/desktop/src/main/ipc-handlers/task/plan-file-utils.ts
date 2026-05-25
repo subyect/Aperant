@@ -894,7 +894,7 @@ export function readQaReportVerdictSync(specDir: string): { status: 'approved' |
   try {
     const reportPath = path.join(specDir, AUTO_BUILD_PATHS.QA_REPORT);
     const content = readFileSync(reportPath, 'utf-8');
-    const match = content.match(/(?:^|\n)\s*(?:\*\*)?\s*Status\s*:\s*(PASSED|PASS|APPROVED|FAILED|FAIL|REJECTED|ISSUES)\s*(?:\*\*)?/i);
+    const match = content.match(/(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?\s*(?:Status|Final Status|Result)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*(PASSED|PASS|APPROVED|FAILED|FAIL|REJECTED|ISSUES|ESCALATED|MAX ITERATIONS REACHED)\s*(?:\*\*)?/i);
     if (!match) return null;
     const normalized = match[1].toLowerCase();
     return {
@@ -922,7 +922,19 @@ export function readFailedQaEvidenceSync(specDir: string): { reportPath: string;
       return { reportPath: fixRequestPath, content };
     }
   } catch {
-    return null;
+    // No durable fix request; keep looking for generated escalation evidence.
+  }
+
+  if (!verdict) {
+    try {
+      const escalationPath = path.join(specDir, 'QA_ESCALATION.md');
+      const content = readFileSync(escalationPath, 'utf-8');
+      if (/QA Escalation|Human Intervention Required|Recurring Issues|maximum iterations/i.test(content)) {
+        return { reportPath: escalationPath, content };
+      }
+    } catch {
+      return null;
+    }
   }
 
   return null;

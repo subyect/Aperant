@@ -37,6 +37,7 @@ import {
   planNeedsContinuationAfterExit,
   type PlanContinuationMode,
 } from "../task-plan-guards";
+import { processTypeCanEmitQaResult } from "./agent-events-recovery";
 
 // Timeout for fallback safety net to check if task is still stuck after process exit
 const STUCK_TASK_FALLBACK_TIMEOUT_MS = 500;
@@ -103,7 +104,7 @@ function recoverQaReportResult(
   project: Project | undefined,
   source: string,
 ): boolean {
-  if (processType !== "qa-process" || !task || !project) return false;
+  if (!processTypeCanEmitQaResult(processType) || !task || !project) return false;
 
   if (recoverApprovedQASignoffForSpec(project, task.specId, source)) {
     taskStateManager.handleUiEvent(task.id, {
