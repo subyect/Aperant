@@ -294,6 +294,7 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
         `\`mcp__auto-claude__update_subtask_status\` for ONLY subtask \`${subtask.id}\` with status ` +
         `\`"completed"\`, then record the verification evidence in build-progress.txt. ` +
         `If it is not complete, finish the missing implementation before updating the plan. ` +
+        `If the prior assistant message called repo-local import failures, failed tests, or workspace package resolution a blocker or "outside scope", do not repeat that conclusion; fix those repo-local failures as the next implementation work. ` +
         `Do not end with only a narrative summary, handoff note, or blocker note unless you have first proved that the blocker cannot be fixed inside this worktree.\n`
       );
     }

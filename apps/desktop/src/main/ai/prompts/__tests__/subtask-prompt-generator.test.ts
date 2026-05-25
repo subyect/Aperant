@@ -34,6 +34,7 @@ describe('generateSubtaskPrompt', () => {
       expect(prompt).toContain('Never ask whether to proceed to the next step');
       expect(prompt).toContain('mcp__auto-claude__update_subtask_status');
       expect(prompt).toContain('ONLY subtask `2.1`');
+      expect(prompt).toContain('do not repeat that conclusion; fix those repo-local failures');
       expect(prompt).toContain('Do not end with only a narrative summary');
     } finally {
       await rm(projectDir, { recursive: true, force: true });
