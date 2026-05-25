@@ -78,22 +78,31 @@ function terminateProcessTree(child: ChildProcess, signal: NodeJS.Signals): void
 
 function buildImmediateCommandGuidance(command: string): string | null {
   const normalized = command.replace(/\s+/g, ' ').trim();
-  const runsPlaywrightWrapper = /\bpnpm\s+test:e2e\b/.test(normalized);
-  const runsLikelySilentPlaywrightLine = /\bpnpm\s+(?:exec\s+)?playwright\s+test\b/.test(normalized)
+  const runsPlaywrightWrapper = /\bpnpm\b.*\btest:e2e\b/.test(normalized);
+  const runsPlaywrightTest = /\bplaywright\s+test\b/.test(normalized);
+  const runsConsoleRouteSmoke = runsPlaywrightTest && /\bconsole-routes\.spec\.ts\b/.test(normalized);
+  const runsLikelySilentPlaywrightLine = runsPlaywrightTest
     && /--reporter(?:=|\s+)line\b/.test(normalized);
-  const runsLikelySilentRouteSmoke = /\bpnpm\s+(?:exec\s+)?playwright\s+test\b/.test(normalized)
-    && /\bconsole-routes\.spec\.ts\b/.test(normalized)
+  const runsLikelySilentRouteSmoke = runsConsoleRouteSmoke
     && !/\bDEBUG=/.test(normalized);
+  const runsRouteSmokeWithoutTestTimeout = runsConsoleRouteSmoke
+    && !/--timeout(?:=|\s+)\d+\b/.test(normalized);
   const alreadyVerbose = /--reporter(?:=|\s+)(list|github|json)\b/.test(normalized)
     || /\bDEBUG=/.test(normalized)
     || /\bPWDEBUG=/.test(normalized);
 
-  if ((!runsPlaywrightWrapper && !runsLikelySilentPlaywrightLine && !runsLikelySilentRouteSmoke) || (alreadyVerbose && !runsLikelySilentRouteSmoke)) {
+  if (
+    (!runsPlaywrightWrapper
+      && !runsLikelySilentPlaywrightLine
+      && !runsLikelySilentRouteSmoke
+      && !runsRouteSmokeWithoutTestTimeout)
+    || (alreadyVerbose && !runsLikelySilentRouteSmoke && !runsRouteSmokeWithoutTestTimeout)
+  ) {
     return null;
   }
 
   const suggestedCommand = normalized.includes('console-routes')
-    ? 'cd packages/layer1-console && DEBUG=pw:webserver pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=list --workers=1'
+    ? 'DEBUG=pw:webserver LAYER1_CONSOLE_DATA_MODE=fixture LAYER1_CONSOLE_AUTH_DISABLED=true pnpm --filter @yect/layer1-console exec playwright test tests/e2e/console-routes.spec.ts --project=desktop --reporter=list --workers=1 --timeout=30000'
     : 'pnpm exec playwright test --reporter=list --workers=1';
 
   return (
