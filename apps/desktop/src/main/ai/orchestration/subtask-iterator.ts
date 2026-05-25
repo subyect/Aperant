@@ -115,6 +115,11 @@ interface PlanSubtask {
   last_attempt_outcome?: string;
 }
 
+const RECOVERY_SUBTASK_PRIORITY = [
+  'aperant-base-sync-conflict',
+  'aperant-qa-report-failure',
+];
+
 // =============================================================================
 // Core Functions
 // =============================================================================
@@ -510,8 +515,26 @@ function getNextPendingSubtask(
   plan: ImplementationPlan,
   stuckSubtaskIds: string[],
 ): { subtask: PlanSubtask; phaseName: string } | null {
+  for (const recoverySubtaskId of RECOVERY_SUBTASK_PRIORITY) {
+    const recoverySubtask = findRunnableSubtask(
+      plan,
+      stuckSubtaskIds,
+      (subtask) => subtask.id === recoverySubtaskId,
+    );
+    if (recoverySubtask) return recoverySubtask;
+  }
+
+  return findRunnableSubtask(plan, stuckSubtaskIds);
+}
+
+function findRunnableSubtask(
+  plan: ImplementationPlan,
+  stuckSubtaskIds: string[],
+  predicate: (subtask: PlanSubtask) => boolean = () => true,
+): { subtask: PlanSubtask; phaseName: string } | null {
   for (const phase of plan.phases) {
     for (const subtask of phase.subtasks) {
+      if (!predicate(subtask)) continue;
       if (
         subtask.status === 'pending' &&
         !stuckSubtaskIds.includes(subtask.id)

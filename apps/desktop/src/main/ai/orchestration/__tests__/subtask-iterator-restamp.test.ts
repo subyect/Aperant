@@ -219,4 +219,59 @@ describe('iterateSubtasks completion proof', () => {
       filesToModify: ['src/example.ts'],
     }));
   });
+
+  it('prioritizes recovery subtasks before normal pending work', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: '1.1',
+              title: 'Normal work',
+              description: 'Do normal work',
+              status: 'pending',
+            },
+          ],
+        },
+        {
+          name: 'Base branch sync recovery',
+          subtasks: [
+            {
+              id: 'aperant-base-sync-conflict',
+              title: 'Resolve conflicts',
+              description: 'Resolve the conflict before continuing.',
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const seen: string[] = [];
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async (subtask) => {
+        seen.push(subtask.id);
+        const current = JSON.parse(await readFile(planPath, 'utf-8')) as typeof plan;
+        for (const phase of current.phases) {
+          for (const item of phase.subtasks) {
+            if (item.id === subtask.id) item.status = 'completed';
+          }
+        }
+        await writeFile(planPath, JSON.stringify(current, null, 2));
+        return sessionResult('completed');
+      },
+    });
+
+    expect(seen).toEqual(['aperant-base-sync-conflict', '1.1']);
+    expect(result.completedSubtasks).toBe(2);
+    expect(result.stuckSubtasks).toEqual([]);
+  });
 });
