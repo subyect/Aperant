@@ -404,6 +404,57 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toBeUndefined();
   });
 
+  it('auto-completes QA recovery when a broader test verifier passes but the agent forgets to mark the plan', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'QA recovery',
+          subtasks: [
+            {
+              id: 'aperant-qa-report-failure',
+              title: 'Resolve failed QA report',
+              description: 'Resolve the QA failure.',
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        toolResults: [
+          {
+            toolName: 'Bash',
+            args: {
+              command: 'pnpm --filter layer1-console test -- --runInBand',
+            },
+            result: 'Test Files 87 passed (87)\nTests 339 passed (339)',
+            durationMs: 18_000,
+            isError: false,
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; completion_note?: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(1);
+    expect(result.stuckSubtasks).toEqual([]);
+    expect(subtask.status).toBe('completed');
+    expect(subtask.completion_note).toContain('successful test verification');
+    expect(subtask.last_error).toBeUndefined();
+  });
+
   it('auto-completes base sync recovery when git reports no unmerged files', async () => {
     const plan = {
       feature: 'test',

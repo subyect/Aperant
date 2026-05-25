@@ -17,7 +17,7 @@
 
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync } from 'fs';
-import { cp, rm } from 'fs/promises';
+import { cp, rm, writeFile } from 'fs/promises';
 import { dirname, join, resolve } from 'path';
 import { promisify } from 'util';
 
@@ -34,6 +34,13 @@ const LOCAL_ENV_FILES_TO_SYNC = [
   '.env.test',
   '.env.development.local',
 ];
+const YECT_LOCAL_TEST_DB_URL = 'postgresql://yect:yect@localhost:54329/yect_dev';
+const DB_ENV_KEYS = new Set([
+  'DATABASE_URL',
+  'DATABASE_URL_DIRECT',
+  'DATABASE_URL_TEST',
+  'DATABASE_URL_TEST_DIRECT',
+]);
 
 /**
  * Run a git sub-command in the given working directory.
@@ -439,7 +446,11 @@ async function syncLocalEnvFilesIntoWorktree(
 
     const destPath = join(worktreePath, filename);
     try {
-      await cp(sourcePath, destPath, { force: true });
+      if (filename === '.env.local' && shouldUseYectLocalTestDb(projectPath)) {
+        await writeFile(destPath, buildYectTaskEnvFile(readFileSync(sourcePath, 'utf-8')));
+      } else {
+        await cp(sourcePath, destPath, { force: true });
+      }
       copied.push(filename);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -454,6 +465,43 @@ async function syncLocalEnvFilesIntoWorktree(
       `[WorktreeManager] Synced local env file(s) into task worktree: ${copied.join(', ')}`,
     );
   }
+}
+
+function shouldUseYectLocalTestDb(projectPath: string): boolean {
+  try {
+    const packageJson = JSON.parse(readFileSync(join(projectPath, 'package.json'), 'utf-8')) as {
+      name?: string;
+      scripts?: Record<string, string>;
+    };
+    return packageJson.name === 'yect'
+      && packageJson.scripts?.['dev:db:up'] === 'node scripts/dev-db-up.mjs';
+  } catch {
+    return false;
+  }
+}
+
+function buildYectTaskEnvFile(source: string): string {
+  const preservedLines = source
+    .split(/\r?\n/)
+    .filter((line) => {
+      const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+      return !match || !DB_ENV_KEYS.has(match[1]);
+    });
+
+  while (preservedLines.length > 0 && preservedLines[preservedLines.length - 1] === '') {
+    preservedLines.pop();
+  }
+
+  return [
+    ...preservedLines,
+    '',
+    '# Added by Aperant for isolated Yect task worktrees.',
+    `DATABASE_URL=${YECT_LOCAL_TEST_DB_URL}`,
+    `DATABASE_URL_DIRECT=${YECT_LOCAL_TEST_DB_URL}`,
+    `DATABASE_URL_TEST=${YECT_LOCAL_TEST_DB_URL}`,
+    `DATABASE_URL_TEST_DIRECT=${YECT_LOCAL_TEST_DB_URL}`,
+    '',
+  ].join('\n');
 }
 
 function countPlanSubtasks(planPath: string): number {

@@ -448,7 +448,31 @@ function buildSuccessfulQaRecoveryVerificationNote(result: SessionResult): strin
     );
   }
 
+  for (let i = bashResults.length - 1; i >= 0; i--) {
+    const toolResult = bashResults[i];
+    const command = typeof toolResult.args?.command === 'string'
+      ? toolResult.args.command
+      : '';
+    const output = toolResult.result;
+    if (!/\b(test|vitest|playwright)\b/i.test(command)) continue;
+    if (isFailedBashOutput(output)) continue;
+    if (/\bfailed\b/i.test(output)) continue;
+    if (!hasPassingTestEvidence(output)) continue;
+
+    return (
+      `Auto-completed QA recovery after successful test verification.\n` +
+      `Command: ${command}\n` +
+      `Result: ${compactForPlan(output, 1_200)}`
+    );
+  }
+
   return null;
+}
+
+function hasPassingTestEvidence(output: string): boolean {
+  return /\b\d+\s+passed\b/i.test(output)
+    || /Test Files\s+\d+\s+passed/i.test(output)
+    || /Tests\s+\d+\s+passed/i.test(output);
 }
 
 function buildSuccessfulBaseSyncRecoveryVerificationNote(result: SessionResult): string | null {

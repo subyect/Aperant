@@ -153,4 +153,47 @@ describe('createOrGetWorktree local env sync', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('writes a test-safe local DB override for Yect task worktrees', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'worktree-yect-env-'));
+    const projectDir = join(root, 'project');
+
+    try {
+      git(root, ['init', '-b', 'main', projectDir]);
+      git(projectDir, ['config', 'user.email', 'test@example.com']);
+      git(projectDir, ['config', 'user.name', 'Test User']);
+
+      await writeFile(join(projectDir, 'package.json'), JSON.stringify({
+        name: 'yect',
+        scripts: {
+          'dev:db:up': 'node scripts/dev-db-up.mjs',
+        },
+      }, null, 2));
+      await writeFile(join(projectDir, '.env.local'), [
+        'DATABASE_URL=postgresql://prod:secret@ep-prod-pooler.example/neondb',
+        'DATABASE_URL_DIRECT=postgresql://prod:secret@ep-prod.example/neondb',
+        'PIPEBOARD_API_KEY=keep-me',
+        '',
+      ].join('\n'));
+      git(projectDir, ['add', 'package.json']);
+      git(projectDir, ['commit', '-m', 'initial']);
+
+      const result = await createOrGetWorktree(
+        projectDir,
+        '003-yect-env',
+        'main',
+        true,
+        false,
+      );
+
+      const env = readFileSync(join(result.worktreePath, '.env.local'), 'utf8');
+      expect(env).toContain('PIPEBOARD_API_KEY=keep-me');
+      expect(env).not.toContain('ep-prod');
+      expect(env).toContain('DATABASE_URL=postgresql://yect:yect@localhost:54329/yect_dev');
+      expect(env).toContain('DATABASE_URL_DIRECT=postgresql://yect:yect@localhost:54329/yect_dev');
+      expect(env).toContain('DATABASE_URL_TEST=postgresql://yect:yect@localhost:54329/yect_dev');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
