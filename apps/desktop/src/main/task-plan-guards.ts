@@ -141,13 +141,29 @@ export function applyTaskEventRuntimeState(plan: MutablePlan | null | undefined,
   if (eventType === 'ALL_SUBTASKS_DONE' || eventType === 'QA_STARTED') return applyRuntimePhaseState(plan, 'qa_review');
   if (eventType === 'QA_FAILED' || eventType === 'QA_FIXING_STARTED') return applyRuntimePhaseState(plan, 'qa_fixing');
   if (eventType === 'QA_PASSED') {
-    const guard = doneStatusHasIncompleteSubtasks(plan);
-    if (guard.incomplete) {
+    const guard = checkSubtasksCompletion(plan);
+    if (!guard.allCompleted) {
       const changed = applyRuntimePhaseState(plan, 'coding');
       plan.recoveryNote = `Blocked terminal event QA_PASSED: ${guard.completedCount}/${guard.totalCount} subtasks complete.`;
       return changed || true;
     }
-    return applyRuntimePhaseState(plan, 'complete');
+
+    let changed = false;
+    if (!isQASignoffApproved(plan.qa_signoff)) {
+      plan.qa_signoff = createApprovedQASignoffFromReport('QA_PASSED');
+      changed = true;
+    }
+    if (plan.recoveryNote === `Blocked terminal event QA_PASSED: ${guard.completedCount}/${guard.totalCount} subtasks complete.`) {
+      delete plan.recoveryNote;
+      changed = true;
+    }
+
+    changed = applyRuntimePhaseState(plan, 'complete') || changed;
+    if (plan.reviewReason !== 'completed') {
+      plan.reviewReason = 'completed';
+      changed = true;
+    }
+    return changed;
   }
   if (eventType === 'PLANNING_FAILED' || eventType === 'CODING_FAILED' || eventType === 'QA_MAX_ITERATIONS' || eventType === 'QA_AGENT_ERROR') {
     return applyRuntimePhaseState(plan, 'failed');

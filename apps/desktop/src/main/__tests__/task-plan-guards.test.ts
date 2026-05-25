@@ -92,6 +92,30 @@ describe('runtime completion guards', () => {
     expect(plan.recoveryNote).toBe('Blocked terminal event QA_PASSED: 1/2 subtasks complete.');
   });
 
+  it('turns QA_PASSED with completed subtasks into approved human review even if qa_signoff is missing', () => {
+    const plan = planWithSubtasks([
+      { id: '1.1', status: 'completed' },
+      { id: '1.2', status: 'completed' },
+    ], {
+      status: 'ai_review',
+      xstateState: 'qa_review',
+      executionPhase: 'qa_review',
+      recoveryNote: 'Blocked terminal event QA_PASSED: 2/2 subtasks complete.',
+    });
+
+    expect(applyTaskEventRuntimeState(plan, 'QA_PASSED')).toBe(true);
+
+    expect(plan.status).toBe('human_review');
+    expect(plan.xstateState).toBe('human_review');
+    expect(plan.executionPhase).toBe('complete');
+    expect(plan.reviewReason).toBe('completed');
+    expect(plan.qa_signoff).toEqual(expect.objectContaining({
+      status: 'approved',
+      source: 'QA_PASSED',
+    }));
+    expect(plan.recoveryNote).toBeUndefined();
+  });
+
   it('treats stopped human review with pending subtasks as incomplete settled work', () => {
     expect(isIncompleteSettledPlan(planWithSubtasks([
       { id: '1.1', status: 'completed' },
