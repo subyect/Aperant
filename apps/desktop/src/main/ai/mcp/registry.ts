@@ -36,17 +36,25 @@ const CONTEXT7_SERVER: McpServerConfig = {
  * Conditionally enabled when project has Linear integration active.
  * Requires LINEAR_API_KEY environment variable.
  */
-const LINEAR_SERVER: McpServerConfig = {
-  id: 'linear',
-  name: 'Linear',
-  description: 'Project management integration for issues and tasks',
-  enabledByDefault: false,
-  transport: {
-    type: 'stdio',
-    command: 'npx',
-    args: ['-y', '@linear/mcp-server'],
-  },
-};
+function createLinearServer(apiKey?: string): McpServerConfig {
+  return {
+    id: 'linear',
+    name: 'Linear',
+    description: 'Project management integration for issues and tasks',
+    enabledByDefault: false,
+    transport: {
+      type: 'stdio',
+      command: 'npx',
+      args: [
+        '-y',
+        'mcp-remote',
+        'https://mcp.linear.app/mcp',
+        ...(apiKey ? ['--header', 'Authorization: Bearer ${LINEAR_API_KEY}'] : []),
+      ],
+      env: apiKey ? { LINEAR_API_KEY: apiKey } : undefined,
+    },
+  };
+}
 
 /**
  * Memory MCP server - knowledge graph memory.
@@ -99,25 +107,6 @@ const PUPPETEER_SERVER: McpServerConfig = {
   },
 };
 
-/**
- * Auto-Claude MCP server - custom build management tools.
- * Used by planner, coder, and QA agents for build progress tracking.
- */
-function createAutoClaudeServer(specDir: string): McpServerConfig {
-  return {
-    id: 'auto-claude',
-    name: 'Aperant',
-    description: 'Build management tools (progress tracking, session context)',
-    enabledByDefault: true,
-    transport: {
-      type: 'stdio',
-      command: 'node',
-      args: ['auto-claude-mcp-server.js'],
-      env: { SPEC_DIR: specDir },
-    },
-  };
-}
-
 // =============================================================================
 // Registry
 // =============================================================================
@@ -134,6 +123,78 @@ export interface McpRegistryOptions {
   env?: Record<string, string>;
   /** Custom MCP server definitions from project settings */
   customMcpServers?: McpServerConfig[];
+}
+
+function toStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const result: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === 'string') result[key] = raw;
+  }
+  return result;
+}
+
+function envToken(value: string): string {
+  const token = value
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase();
+  return token || 'CUSTOM';
+}
+
+function normalizeCustomMcpServer(raw: unknown): McpServerConfig | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const server = raw as Record<string, unknown>;
+  const id = typeof server.id === 'string' ? server.id : null;
+  if (!id) return null;
+
+  if (server.transport && typeof server.transport === 'object') {
+    return raw as McpServerConfig;
+  }
+
+  const name = typeof server.name === 'string' ? server.name : id;
+  const description = typeof server.description === 'string' ? server.description : undefined;
+  const enabledByDefault = typeof server.enabledByDefault === 'boolean' ? server.enabledByDefault : false;
+
+  if (server.type === 'command' && typeof server.command === 'string') {
+    return {
+      id,
+      name,
+      description,
+      enabledByDefault,
+      transport: {
+        type: 'stdio',
+        command: server.command,
+        args: Array.isArray(server.args) ? server.args.filter((arg): arg is string => typeof arg === 'string') : undefined,
+        env: toStringRecord(server.env),
+        cwd: typeof server.cwd === 'string' ? server.cwd : undefined,
+      },
+    };
+  }
+
+  if ((server.type === 'http' || server.type === 'streamable-http') && typeof server.url === 'string') {
+    const headerEnv: Record<string, string> = {};
+    const headerArgs = Object.entries(toStringRecord(server.headers) ?? {}).flatMap(([header, value]) => {
+      const envName = `MCP_${envToken(id)}_${envToken(header)}_HEADER`;
+      headerEnv[envName] = value;
+      return ['--header', `${header}: \${${envName}}`];
+    });
+
+    return {
+      id,
+      name,
+      description,
+      enabledByDefault,
+      transport: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', 'mcp-remote', server.url, ...headerArgs],
+        env: Object.keys(headerEnv).length > 0 ? headerEnv : undefined,
+      },
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -153,16 +214,8 @@ export function getMcpServerConfig(
 
     case 'linear': {
       if (!options.linearApiKey && !options.env?.LINEAR_API_KEY) return null;
-      const server = { ...LINEAR_SERVER };
-      // Pass LINEAR_API_KEY to the server process
       const apiKey = options.linearApiKey ?? options.env?.LINEAR_API_KEY;
-      if (apiKey && server.transport.type === 'stdio') {
-        server.transport = {
-          ...server.transport,
-          env: { ...server.transport.env, LINEAR_API_KEY: apiKey },
-        };
-      }
-      return server;
+      return createLinearServer(apiKey);
     }
 
     case 'memory': {
@@ -177,15 +230,18 @@ export function getMcpServerConfig(
     case 'puppeteer':
       return PUPPETEER_SERVER;
 
-	    case 'auto-claude': {
-	      const specDir = options.specDir ?? '';
-	      return createAutoClaudeServer(specDir);
-	    }
+    case 'auto-claude':
+      // Auto-Claude tools are registered as in-process AI tools. Keeping this
+      // server ID in agent configs preserves user-facing semantics, but there
+      // is no external MCP process to launch.
+      return null;
 
-	    default:
-	      return options.customMcpServers?.find((server) => server.id === serverId) ?? null;
-	  }
-	}
+    default: {
+      const customServer = options.customMcpServers?.find((server) => server.id === serverId);
+      return normalizeCustomMcpServer(customServer) ?? null;
+    }
+  }
+}
 
 /**
  * Resolve MCP server configurations for a list of server IDs.

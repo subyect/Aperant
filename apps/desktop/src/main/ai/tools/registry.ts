@@ -116,7 +116,7 @@ export class ToolRegistry {
     context: ToolContext,
   ): Record<string, AITool> {
     const config = getAgentConfig(agentType);
-    const allowedNames = new Set(config.tools);
+    const allowedNames = new Set([...config.tools, ...config.autoClaudeTools]);
     const result: Record<string, AITool> = {};
 
     for (const [name, definedTool] of Array.from(this.tools.entries())) {

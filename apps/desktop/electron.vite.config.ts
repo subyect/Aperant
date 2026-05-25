@@ -26,6 +26,36 @@ const embeddedKeys = {
   '__SERPER_API_KEY__': JSON.stringify(process.env.SERPER_API_KEY || ''),
 };
 
+const mainEntry = resolve(__dirname, 'src/main/index.ts');
+const agentWorkerEntry = resolve(__dirname, 'src/main/ai/agent/worker.ts');
+
+function cleanModuleId(id: string): string {
+  return id.split('?')[0];
+}
+
+function isImportedByEntry(
+  id: string,
+  entry: string,
+  getModuleInfo: (id: string) => { isEntry: boolean; facadeModuleId: string | null; importers: string[]; dynamicImporters: string[] } | null,
+  seen = new Set<string>(),
+): boolean {
+  const cleanId = cleanModuleId(id);
+  if (cleanId === entry) return true;
+  if (seen.has(id)) return false;
+  seen.add(id);
+
+  const info = getModuleInfo(id);
+  if (!info) return false;
+
+  if (info.isEntry) {
+    return info.facadeModuleId ? cleanModuleId(info.facadeModuleId) === entry : false;
+  }
+
+  return [...info.importers, ...info.dynamicImporters].some((importer) =>
+    isImportedByEntry(importer, entry, getModuleInfo, seen)
+  );
+}
+
 export default defineConfig({
   main: {
     define: { ...sentryDefines, ...embeddedKeys },
@@ -79,10 +109,24 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          index: resolve(__dirname, 'src/main/index.ts'),
+          index: mainEntry,
           // Worker thread entry point — must be a separate chunk so it can be
           // spawned via `new Worker(path)` from WorkerBridge
-          'ai/agent/worker': resolve(__dirname, 'src/main/ai/agent/worker.ts'),
+          'ai/agent/worker': agentWorkerEntry,
+        },
+        output: {
+          manualChunks(id, { getModuleInfo }) {
+            const cleanId = cleanModuleId(id);
+            if (cleanId === mainEntry || cleanId === agentWorkerEntry || id.includes('\0')) {
+              return undefined;
+            }
+
+            if (isImportedByEntry(id, agentWorkerEntry, getModuleInfo)) {
+              return 'ai-agent-worker-shared';
+            }
+
+            return undefined;
+          },
         },
         // Native modules that must remain external (loaded from disk, not bundled).
         // @libsql/client is loaded lazily via globalThis.require() and resolved

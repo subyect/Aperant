@@ -15,10 +15,46 @@ import * as fs from 'fs';
 import { promises as fsPromises } from 'fs';
 import { execFileSync, execFile } from 'child_process';
 import { promisify } from 'util';
-import { getSentryEnvForSubprocess } from './sentry';
 import { isWindows, isUnix, getPathDelimiter, getNpmCommand } from './platform';
 
 const execFileAsync = promisify(execFile);
+
+declare const __SENTRY_DSN__: string | undefined;
+declare const __SENTRY_TRACES_SAMPLE_RATE__: string | undefined;
+declare const __SENTRY_PROFILES_SAMPLE_RATE__: string | undefined;
+
+/**
+ * Build Sentry subprocess environment without importing sentry.ts.
+ *
+ * Agent workers also use this module for PATH augmentation. Importing sentry.ts
+ * pulls in Electron main-process APIs, which cannot be statically imported by
+ * ELECTRON_RUN_AS_NODE child workers.
+ */
+function getSentryEnvForSubprocessSafe(): Record<string, string> {
+  const dsn = (typeof __SENTRY_DSN__ !== 'undefined' ? __SENTRY_DSN__ : '')
+    || process.env.SENTRY_DSN
+    || '';
+
+  if (!dsn) return {};
+
+  const tracesSampleRate = (typeof __SENTRY_TRACES_SAMPLE_RATE__ !== 'undefined'
+    ? __SENTRY_TRACES_SAMPLE_RATE__
+    : '')
+    || process.env.SENTRY_TRACES_SAMPLE_RATE
+    || '0.1';
+
+  const profilesSampleRate = (typeof __SENTRY_PROFILES_SAMPLE_RATE__ !== 'undefined'
+    ? __SENTRY_PROFILES_SAMPLE_RATE__
+    : '')
+    || process.env.SENTRY_PROFILES_SAMPLE_RATE
+    || '0.1';
+
+  return {
+    SENTRY_DSN: dsn,
+    SENTRY_TRACES_SAMPLE_RATE: tracesSampleRate,
+    SENTRY_PROFILES_SAMPLE_RATE: profilesSampleRate,
+  };
+}
 
 /**
  * Windows npm global fallback path
@@ -278,7 +314,7 @@ export function getAugmentedEnv(additionalPaths?: string[]): Record<string, stri
 
   // Add Sentry environment variables for Python subprocesses
   // These are embedded at build time and need to be passed explicitly
-  const sentryEnv = getSentryEnvForSubprocess();
+  const sentryEnv = getSentryEnvForSubprocessSafe();
   Object.assign(env, sentryEnv);
 
   return env;
@@ -454,7 +490,7 @@ export async function getAugmentedEnvAsync(additionalPaths?: string[]): Promise<
 
   // Add Sentry environment variables for Python subprocesses
   // These are embedded at build time and need to be passed explicitly
-  const sentryEnv = getSentryEnvForSubprocess();
+  const sentryEnv = getSentryEnvForSubprocessSafe();
   Object.assign(env, sentryEnv);
 
   return env;

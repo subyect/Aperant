@@ -52,6 +52,9 @@ describe('getMcpServerConfig', () => {
       expect(config?.transport.type).toBe('stdio');
       if (config?.transport.type === 'stdio') {
         expect(config.transport.env?.LINEAR_API_KEY).toBe('lin_inject');
+        expect(config.transport.command).toBe('npx');
+        expect(config.transport.args).toContain('mcp-remote');
+        expect(config.transport.args).toContain('https://mcp.linear.app/mcp');
       }
     });
   });
@@ -105,25 +108,9 @@ describe('getMcpServerConfig', () => {
   });
 
   describe('auto-claude', () => {
-    it('returns auto-claude config with empty specDir as default', () => {
+    it('returns null because auto-claude tools are registered in-process', () => {
       const config = getMcpServerConfig('auto-claude', {});
-      expect(config).not.toBeNull();
-      expect(config?.id).toBe('auto-claude');
-    });
-
-    it('injects SPEC_DIR into transport env', () => {
-      const config = getMcpServerConfig('auto-claude', { specDir: '/project/.auto-claude/specs/001-feature' });
-      expect(config?.transport.type).toBe('stdio');
-      if (config?.transport.type === 'stdio') {
-        expect(config.transport.env?.SPEC_DIR).toBe('/project/.auto-claude/specs/001-feature');
-      }
-    });
-
-    it('uses node command', () => {
-      const config = getMcpServerConfig('auto-claude', {});
-      if (config?.transport.type === 'stdio') {
-        expect(config.transport.command).toBe('node');
-      }
+      expect(config).toBeNull();
     });
   });
 
@@ -174,12 +161,48 @@ describe('resolveMcpServers', () => {
     expect(configs[0].id).toBe('memory');
   });
 
-  it('passes specDir through to auto-claude config', () => {
-    const specDir = '/my-project/.auto-claude/specs/042-auth';
-    const configs = resolveMcpServers(['auto-claude'], { specDir });
+  it('skips auto-claude because its tools are registered in-process', () => {
+    const configs = resolveMcpServers(['auto-claude'], { specDir: '/my-project/.auto-claude/specs/042-auth' });
+    expect(configs).toEqual([]);
+  });
+
+  it('normalizes custom command servers from UI config', () => {
+    const configs = resolveMcpServers(['custom-memory'], {
+      customMcpServers: [{
+        id: 'custom-memory',
+        name: 'Custom Memory',
+        type: 'command',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-memory'],
+        env: { MEMORY_FILE_PATH: '/tmp/memory.jsonl' },
+      } as never],
+    });
+
     expect(configs).toHaveLength(1);
     if (configs[0].transport.type === 'stdio') {
-      expect(configs[0].transport.env?.SPEC_DIR).toBe(specDir);
+      expect(configs[0].transport.command).toBe('npx');
+      expect(configs[0].transport.env?.MEMORY_FILE_PATH).toBe('/tmp/memory.jsonl');
+    }
+  });
+
+  it('normalizes custom HTTP servers from UI config through mcp-remote', () => {
+    const configs = resolveMcpServers(['neon'], {
+      customMcpServers: [{
+        id: 'neon',
+        name: 'Neon',
+        type: 'http',
+        url: 'https://mcp.neon.tech/mcp',
+        headers: { Authorization: 'Bearer token' },
+      } as never],
+    });
+
+    expect(configs).toHaveLength(1);
+    if (configs[0].transport.type === 'stdio') {
+      expect(configs[0].transport.command).toBe('npx');
+      expect(configs[0].transport.args).toContain('mcp-remote');
+      expect(configs[0].transport.args).toContain('https://mcp.neon.tech/mcp');
+      expect(configs[0].transport.args).toContain('Authorization: ${MCP_NEON_AUTHORIZATION_HEADER}');
+      expect(configs[0].transport.env?.MCP_NEON_AUTHORIZATION_HEADER).toBe('Bearer token');
     }
   });
 });
