@@ -390,14 +390,14 @@ function buildRetryReason(
   if (result.outcome === 'completed') {
     const finalMessage = getLastAssistantMessage(result);
     const persistedFailureContext = getPersistedVerifierFailureContext(subtask);
-    const verifierFailureContext = [finalMessage, persistedFailureContext].filter(Boolean).join('\n\n');
+    const verifierFailureContext = [persistedFailureContext, finalMessage].filter(Boolean).join('\n\n');
     if (verifierFailureContext && looksLikeRepoLocalVerifierFailureSummary(verifierFailureContext)) {
       return (
         `Bash command failed during the attempt or the assistant reported a repo-local verifier failure, ` +
         `but the subtask was not completed in implementation_plan.json (current status: ${currentStatus ?? 'missing'}).\n` +
         `Do not stop with another blocker summary. Fix the repo-local imports, package exports, failed assertions, generated artifacts, or test harness code needed by the required verifier, then rerun targeted verification before marking complete. ` +
         `Do not classify failures inside this repository or workspace packages as outside the current task scope.\n\n` +
-        `Reported failure summary:\n${compactForPlan(verifierFailureContext, 1_600)}`
+        `Reported failure summary:\n${compactForPlan(verifierFailureContext, 2_400)}`
       );
     }
     const falseCompletionWarning = finalMessage && looksLikeFalseCompletionClaim(finalMessage)
@@ -407,10 +407,19 @@ function buildRetryReason(
         `Do not repeat that claim. Treat the prior summary as untrusted until you verify the actual plan file and shell output.`
       )
       : '';
+    const noConcreteWorkWarning = finalMessage
+      && looksLikeFalseCompletionClaim(finalMessage)
+      && !hasConcreteCompletionEvidence(result)
+      ? (
+        `\n\nWARNING: The previous session did not produce a passing verifier tool result or any Edit/Write tool call. ` +
+        `Do not answer with another completion summary. First make the necessary repository edits or run a real targeted verifier, then re-open implementation_plan.json and update only this subtask to "completed" when the file readback proves it.`
+      )
+      : '';
     return (
       `Agent session ended without marking the subtask completed in implementation_plan.json (current status: ${currentStatus ?? 'missing'}). ` +
       `Retrying until the plan proves completion.` +
       falseCompletionWarning +
+      noConcreteWorkWarning +
       (finalMessage ? `\n\nLast assistant message:\n${compactForPlan(finalMessage, 1_200)}` : '')
     );
   }
@@ -456,6 +465,17 @@ function getLastAssistantMessage(result: SessionResult): string | null {
     if (content) return content;
   }
   return null;
+}
+
+function hasConcreteCompletionEvidence(result: SessionResult): boolean {
+  return findLatestPassingVerifier(result) !== null || hasWriteLikeToolResult(result);
+}
+
+function hasWriteLikeToolResult(result: SessionResult): boolean {
+  return (result.toolResults ?? []).some((toolResult) => {
+    const toolName = String(toolResult.toolName ?? '');
+    return /^(Edit|Write|MultiEdit|NotebookEdit)$/i.test(toolName);
+  });
 }
 
 function buildBashFailureRetryReason(result: SessionResult): string | null {
@@ -660,6 +680,14 @@ function formatBashFailureRetryReason(toolResult: NonNullable<SessionResult['too
     );
   }
 
+  if (output.includes('Security hook denied Bash')) {
+    return (
+      `Bash command was rejected by the security hook: \`${command}\`.\n` +
+      `Tool output:\n${outputSnippet}\n\n` +
+      `Do not treat this as successful verification. Remove the denied operation, use a permitted command, and prove the repository state with a real verifier before marking this subtask completed.`
+    );
+  }
+
   return (
     `Bash command failed during the attempt: \`${command}\`.\n` +
     `Tool output:\n${outputSnippet}\n\n` +
@@ -672,7 +700,8 @@ function isFailedBashOutput(output: string): boolean {
     || output.includes('Command produced no output for')
     || output.includes('Command is likely to run silently')
     || output.includes('Command timed out after')
-    || output.includes('Command aborted; process tree was terminated.');
+    || output.includes('Command aborted; process tree was terminated.')
+    || output.includes('Security hook denied Bash');
 }
 
 function compactForPlan(value: string, maxChars: number): string {
@@ -740,6 +769,8 @@ async function markSubtaskRetryRequired(
       for (const subtask of phase.subtasks) {
         const withLegacyId = subtask as PlanSubtask & {
           subtask_id?: string;
+          completed_at?: string;
+          completion_note?: string;
           last_error?: string;
           last_attempt_outcome?: string;
           last_attempt_at?: string;
@@ -751,6 +782,8 @@ async function markSubtaskRetryRequired(
           subtask.id = withLegacyId.subtask_id;
         }
         subtask.status = 'pending';
+        delete withLegacyId.completed_at;
+        delete withLegacyId.completion_note;
         withLegacyId.last_error = reason;
         withLegacyId.last_attempt_outcome = outcome;
         withLegacyId.last_attempt_at = new Date().toISOString();

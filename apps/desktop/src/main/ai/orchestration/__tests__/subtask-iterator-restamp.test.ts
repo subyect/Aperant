@@ -187,6 +187,7 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('WARNING');
     expect(subtask.last_error).toContain('claimed this subtask was completed');
     expect(subtask.last_error).toContain('untrusted');
+    expect(subtask.last_error).toContain('did not produce a passing verifier tool result or any Edit/Write tool call');
   });
 
   it('classifies repo-local blocker summaries as failed implementation attempts', async () => {
@@ -256,6 +257,7 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('repo-local verifier failure');
     expect(subtask.last_error).toContain('dist missing query modules');
     expect(subtask.last_error).toContain('@yect/layer1-engines');
+    expect(subtask.last_error).toContain('Reported failure summary:\nCurrent failure is different');
   });
 
   it('counts a subtask completed when the agent updates the plan', async () => {
@@ -291,7 +293,11 @@ describe('iterateSubtasks completion proof', () => {
       maxRetries: 1,
       autoContinueDelayMs: 0,
       runSubtaskSession: async () => {
-        const plan = planWithStatus('completed');
+        const plan = planWithStatus('completed') as ReturnType<typeof planWithStatus> & {
+          phases: Array<{ subtasks: Array<{ completion_note?: string; completed_at?: string }> }>;
+        };
+        plan.phases[0].subtasks[0].completion_note = 'Premature completion marker';
+        plan.phases[0].subtasks[0].completed_at = '2026-05-25T10:00:00.000Z';
         await writeFile(planPath, JSON.stringify(plan, null, 2));
         return sessionResult('completed', {
           toolResults: [
@@ -308,7 +314,7 @@ describe('iterateSubtasks completion proof', () => {
     });
 
     const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
-      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string; completion_note?: string; completed_at?: string }> }>;
     };
     const subtask = written.phases[0].subtasks[0];
 
@@ -318,6 +324,8 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('latest Bash verification failed');
     expect(subtask.last_error).toContain('pnpm --filter @yect/layer1-workers typecheck');
     expect(subtask.last_error).toContain('Exit code: 2');
+    expect(subtask.completion_note).toBeUndefined();
+    expect(subtask.completed_at).toBeUndefined();
   });
 
   it('retries instead of completing when the session hits max steps', async () => {
@@ -602,6 +610,57 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.status).toBe('completed');
     expect(subtask.completion_note).toContain('no unmerged files');
     expect(subtask.last_error).toBeUndefined();
+  });
+
+  it('does not auto-complete base sync recovery when Bash is denied by the security hook', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Base sync recovery',
+          subtasks: [
+            {
+              id: 'aperant-base-sync-conflict',
+              title: 'Resolve base sync conflict',
+              description: 'Resolve unmerged files and prove the index is clean of conflicts.',
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        toolResults: [
+          {
+            toolName: 'Bash',
+            args: {
+              command: 'rm -f ../../../../.git/worktrees/task/index.lock && git diff --name-only --diff-filter=U',
+            },
+            result: "Security hook denied Bash: rm target '../../../../.git/worktrees/task/index.lock' is not allowed for safety",
+            durationMs: 200,
+            isError: false,
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; completion_note?: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(0);
+    expect(result.stuckSubtasks).toEqual(['aperant-base-sync-conflict']);
+    expect(subtask.status).toBe('pending');
+    expect(subtask.completion_note).toBeUndefined();
+    expect(subtask.last_error).toContain('rejected by the security hook');
   });
 
   it('auto-completes a normal subtask when the latest verifier passes and the agent forgets the plan update', async () => {
