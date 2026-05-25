@@ -42,6 +42,7 @@ import { cleanupWorktree } from '../utils/worktree-cleanup';
 import { writeFileAtomicSync } from '../utils/atomic-file';
 import { safeParseJson } from '../utils/json-repair';
 import { checkSubtasksCompletion } from '../task-plan-guards';
+import { normalizeQaFailureEvidenceContent } from '../qa-feedback-utils';
 import { taskStateManager } from '../task-state-manager';
 import { cleanupStaleRateLimitPauseFile } from '../ai/orchestration/pause-handler';
 import {
@@ -927,7 +928,7 @@ export class AgentManager extends EventEmitter {
   ): void {
     const now = new Date().toISOString();
     const recoverySubtaskId = 'aperant-qa-report-failure';
-    const reportExcerpt = reportContent.trim().slice(0, 8000);
+    const reportExcerpt = normalizeQaFailureEvidenceContent(reportContent).slice(0, 8000);
     const recoveryDescription = [
       'Resolve the failed QA report and return this task to a passing review state.',
       '',

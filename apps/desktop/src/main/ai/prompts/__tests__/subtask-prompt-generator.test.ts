@@ -71,6 +71,64 @@ describe('generateSubtaskPrompt', () => {
     }
   });
 
+  it('unwraps nested QA fix requests before injecting recovery feedback', async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), 'subtask-prompt-nested-feedback-'));
+    const specDir = join(projectDir, '.auto-claude', 'specs', '001-test');
+
+    try {
+      await mkdir(specDir, { recursive: true });
+      await writeFile(
+        join(specDir, 'QA_FIX_REQUEST.md'),
+        [
+          '# QA Fix Request',
+          '',
+          'Status: REJECTED',
+          '',
+          '## Feedback',
+          '',
+          'Aperant QA failed this task.',
+          '',
+          '## Failed QA Report',
+          '',
+          '```markdown',
+          '# QA Fix Request',
+          '',
+          'Status: REJECTED',
+          '',
+          '## Feedback',
+          '',
+          'Aperant QA failed this task.',
+          '',
+          '## Failed QA Report',
+          '',
+          '```markdown',
+          'Status: FAILED',
+          '',
+          'Fix the local layer1-db query-helper module resolution failure.',
+          '```',
+          '```',
+          '',
+        ].join('\n'),
+      );
+
+      const prompt = await generateSubtaskPrompt({
+        projectDir,
+        specDir,
+        subtask: {
+          id: 'aperant-qa-report-failure',
+          description: 'Resolve failed QA report.',
+          phaseName: 'QA recovery',
+          status: 'pending',
+        },
+      });
+
+      expect(prompt).toContain('Fix the local layer1-db query-helper module resolution failure.');
+      expect(prompt).not.toContain('## Failed QA Report\n\n```markdown\n# QA Fix Request');
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it('tells retrying coders not to rerun a stalled verification command unchanged', async () => {
     const projectDir = await mkdtemp(join(tmpdir(), 'subtask-prompt-stalled-command-'));
     const specDir = join(projectDir, '.auto-claude', 'specs', '001-test');

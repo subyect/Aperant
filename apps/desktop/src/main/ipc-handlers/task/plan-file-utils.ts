@@ -29,6 +29,7 @@ import { safeParseJson } from '../../utils/json-repair';
 import { getToolPath } from '../../cli-tool-manager';
 import { getIsolatedGitEnv } from '../../utils/git-isolation';
 import { findTaskWorktree } from '../../worktree-paths';
+import { normalizeQaFailureEvidenceContent } from '../../qa-feedback-utils';
 import {
   applyRuntimePhaseState,
   applyTaskEventRuntimeState,
@@ -959,7 +960,7 @@ export function readQaReportVerdictSync(specDir: string): { status: 'approved' |
 export function readFailedQaEvidenceSync(specDir: string): { reportPath: string; content: string } | null {
   const verdict = readQaReportVerdictSync(specDir);
   if (verdict?.status === 'failed') {
-    return { reportPath: verdict.reportPath, content: verdict.content };
+    return { reportPath: verdict.reportPath, content: normalizeQaFailureEvidenceContent(verdict.content) };
   }
 
   try {
@@ -968,7 +969,7 @@ export function readFailedQaEvidenceSync(specDir: string): { reportPath: string;
     const hasRejectedStatus = /(?:^|\n)\s*(?:\*\*)?\s*Status\s*:\s*(REJECTED|FAILED|FAIL|ISSUES)\s*(?:\*\*)?/i.test(content);
     const hasFailedReport = /Failed QA Report|Aperant QA failed this task|QA failed/i.test(content);
     if (hasRejectedStatus || hasFailedReport) {
-      return { reportPath: fixRequestPath, content };
+      return { reportPath: fixRequestPath, content: normalizeQaFailureEvidenceContent(content) };
     }
   } catch {
     // No durable fix request; keep looking for generated escalation evidence.

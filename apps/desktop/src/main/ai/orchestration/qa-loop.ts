@@ -30,6 +30,7 @@ import type { AgentType } from '../config/agent-configs';
 import type { Phase } from '../config/types';
 import { QASignoffSchema, validateStructuredOutput } from '../schema';
 import { safeParseJson } from '../../utils/json-repair';
+import { normalizeQaFailureEvidenceContent } from '../../qa-feedback-utils';
 import type { SessionResult } from '../session/types';
 
 // =============================================================================
@@ -505,7 +506,7 @@ export class QALoop extends EventEmitter {
     for (const specDir of this.getSpecDirs()) {
       try {
         const content = await readFile(join(specDir, 'QA_FIX_REQUEST.md'), 'utf-8');
-        const trimmed = content.trim();
+        const trimmed = normalizeQaFailureEvidenceContent(content);
         if (trimmed) return trimmed;
       } catch {
         // Keep looking in the paired main/worktree spec dir.

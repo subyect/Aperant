@@ -434,6 +434,57 @@ describe('plan-file runtime guards', () => {
     expect(failure?.content).toContain('Status: REJECTED');
   });
 
+  it('unwraps recursively nested QA fix requests before reusing failure evidence', () => {
+    const failedReport = [
+      'Status: FAILED',
+      '',
+      'The route smoke still fails because @yect/layer1-db cannot resolve query-helpers.',
+    ].join('\n');
+    const nestedRequest = [
+      '# QA Fix Request',
+      '',
+      'Status: REJECTED',
+      '',
+      '## Feedback',
+      '',
+      'Aperant QA failed this task.',
+      '',
+      '## Failed QA Report',
+      '',
+      '```markdown',
+      failedReport,
+      '```',
+      '',
+      'Created at: 2026-05-25T17:00:00.000Z',
+      '',
+    ].join('\n');
+    writeFileSync(path.join(tempDir, 'QA_FIX_REQUEST.md'), [
+      '# QA Fix Request',
+      '',
+      'Status: REJECTED',
+      '',
+      '## Feedback',
+      '',
+      'Aperant QA failed this task.',
+      '',
+      '## Failed QA Report',
+      '',
+      '```markdown',
+      nestedRequest,
+      '```',
+      '',
+      'Created at: 2026-05-25T17:05:00.000Z',
+      '',
+    ].join('\n'));
+
+    const failure = readFailedQaEvidenceSync(tempDir);
+
+    expect(failure?.reportPath.endsWith('QA_FIX_REQUEST.md')).toBe(true);
+    expect(failure?.content).toBe(failedReport);
+    expect(failure?.content).not.toContain('## Failed QA Report');
+    expect(failure?.content).not.toContain('# QA Fix Request');
+  });
+
   it('still recovers approved QA signoff from passed reports', () => {
     writeFileSync(path.join(tempDir, 'qa_report.md'), '**Status: PASSED**\n');
 
