@@ -506,15 +506,26 @@ export class QALoop extends EventEmitter {
     for (const specDir of this.getSpecDirs()) {
       try {
         const fixRequestPath = join(specDir, 'QA_FIX_REQUEST.md');
-        normalizeQaFixRequestFileSync(fixRequestPath);
+        const fallbackFailureContent = await this.readFailedQaReportContent(specDir);
+        normalizeQaFixRequestFileSync(fixRequestPath, { fallbackFailureContent });
         const content = await readFile(fixRequestPath, 'utf-8');
-        const trimmed = normalizeQaFailureEvidenceContent(content);
+        const trimmed = normalizeQaFailureEvidenceContent(content, fallbackFailureContent);
         if (trimmed) return trimmed;
       } catch {
         // Keep looking in the paired main/worktree spec dir.
       }
     }
     return null;
+  }
+
+  private async readFailedQaReportContent(specDir: string): Promise<string | null> {
+    try {
+      const content = await readFile(join(specDir, 'qa_report.md'), 'utf-8');
+      const match = content.match(/(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?\s*(?:Status|Final Status|Result)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*(FAILED|FAIL|REJECTED|ISSUES|ESCALATED|MAX ITERATIONS REACHED)\s*(?:\*\*)?/i);
+      return match ? content : null;
+    } catch {
+      return null;
+    }
   }
 
   private async clearHumanFeedback(): Promise<void> {

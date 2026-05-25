@@ -133,6 +133,67 @@ describe('generateSubtaskPrompt', () => {
     }
   });
 
+  it('restores concrete QA report evidence when a stale fix request only has generic wrapper text', async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), 'subtask-prompt-generic-feedback-'));
+    const specDir = join(projectDir, '.auto-claude', 'specs', '001-test');
+
+    try {
+      await mkdir(specDir, { recursive: true });
+      await writeFile(
+        join(specDir, 'QA_FIX_REQUEST.md'),
+        [
+          '# QA Fix Request',
+          '',
+          'Status: REJECTED',
+          '',
+          '## Feedback',
+          '',
+          'Aperant QA failed this task. Fix the reported issues and keep working until QA passes.',
+          '',
+          '## Failed QA Report',
+          '',
+          '```markdown',
+          'Aperant QA failed this task. Fix the reported issues and keep working until QA passes.',
+          '```',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(specDir, 'qa_report.md'),
+        [
+          '# QA Report',
+          '',
+          'Status: FAILED',
+          '',
+          'The route smoke still fails because @yect/layer1-db cannot resolve query-helpers.',
+          '',
+          'Verification: pnpm --filter @yect/layer1-console test:e2e failed.',
+          '',
+        ].join('\n'),
+      );
+
+      const prompt = await generateSubtaskPrompt({
+        projectDir,
+        specDir,
+        subtask: {
+          id: 'aperant-qa-report-failure',
+          description: 'Resolve failed QA report.',
+          phaseName: 'QA recovery',
+          status: 'pending',
+        },
+      });
+
+      expect(prompt).toContain('@yect/layer1-db cannot resolve query-helpers');
+      expect(prompt).not.toContain('## Failed QA Report\n\n```markdown\nAperant QA failed this task. Fix');
+
+      const normalizedFile = await readFile(join(specDir, 'QA_FIX_REQUEST.md'), 'utf-8');
+      expect(normalizedFile).toContain('@yect/layer1-db cannot resolve query-helpers');
+      expect(normalizedFile.match(/^# QA Fix Request/gm)).toHaveLength(1);
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it('tells retrying coders not to rerun a stalled verification command unchanged', async () => {
     const projectDir = await mkdtemp(join(tmpdir(), 'subtask-prompt-stalled-command-'));
     const specDir = join(projectDir, '.auto-claude', 'specs', '001-test');

@@ -58,10 +58,21 @@ function readHumanFeedback(specDir: string): string | null {
   if (!existsSync(feedbackPath)) return null;
 
   try {
-    normalizeQaFixRequestFileSync(feedbackPath);
+    const fallbackFailureContent = readFailedQaReportContent(specDir);
+    normalizeQaFixRequestFileSync(feedbackPath, { fallbackFailureContent });
     const content = readFileSync(feedbackPath, 'utf-8').trim();
-    const normalized = normalizeQaFailureEvidenceContent(content);
+    const normalized = normalizeQaFailureEvidenceContent(content, fallbackFailureContent);
     return normalized || null;
+  } catch {
+    return null;
+  }
+}
+
+function readFailedQaReportContent(specDir: string): string | null {
+  try {
+    const content = readFileSync(join(specDir, 'qa_report.md'), 'utf-8');
+    const match = content.match(/(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?\s*(?:Status|Final Status|Result)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*(FAILED|FAIL|REJECTED|ISSUES|ESCALATED|MAX ITERATIONS REACHED)\s*(?:\*\*)?/i);
+    return match ? content : null;
   } catch {
     return null;
   }

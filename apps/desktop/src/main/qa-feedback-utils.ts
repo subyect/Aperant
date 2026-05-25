@@ -3,6 +3,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { writeFileAtomicSync } from './utils/atomic-file';
 
 const MAX_QA_FEEDBACK_UNWRAP_DEPTH = 12;
+const GENERIC_QA_FAILURE_TEXT =
+  'Aperant QA failed this task. Fix the reported issues and keep working until QA passes.';
+
+interface NormalizeQaFixRequestFileOptions {
+  createdAt?: string;
+  fallbackFailureContent?: string | null;
+}
 
 function extractFailedQaReportBlock(content: string): string | null {
   const heading = /^##\s+Failed QA Report\s*$/gim.exec(content);
@@ -71,12 +78,7 @@ function extractLastFailedStatusBlock(content: string): string | null {
   return last ? stripGeneratedFooter(last) : null;
 }
 
-/**
- * QA_FIX_REQUEST.md can be regenerated after each failed review. Older builds
- * wrapped the previous fix request inside the new one, producing huge recursive
- * prompts. Normalize that file back to the actionable failure text.
- */
-export function normalizeQaFailureEvidenceContent(content: string): string {
+function normalizeQaFailureEvidenceContentInternal(content: string): string {
   const unwrapped = unwrapNestedFailedQaReport(content);
   const failedStatusBlock = extractLastFailedStatusBlock(unwrapped);
   if (failedStatusBlock) return failedStatusBlock;
@@ -85,7 +87,31 @@ export function normalizeQaFailureEvidenceContent(content: string): string {
   return (feedback ?? unwrapped).trim();
 }
 
-export function buildQaFixRequestContent(failureContent: string, createdAt = new Date().toISOString()): string {
+function isGenericQaFailureEvidence(content: string): boolean {
+  const compact = content.trim().replace(/\s+/g, ' ');
+  return compact === GENERIC_QA_FAILURE_TEXT
+    || compact === 'Aperant QA failed this task.'
+    || compact === '(empty qa_report.md)';
+}
+
+/**
+ * QA_FIX_REQUEST.md can be regenerated after each failed review. Older builds
+ * wrapped the previous fix request inside the new one, producing huge recursive
+ * prompts. Normalize that file back to the actionable failure text.
+ */
+export function normalizeQaFailureEvidenceContent(content: string, fallbackFailureContent?: string | null): string {
+  const primary = normalizeQaFailureEvidenceContentInternal(content);
+  if (!isGenericQaFailureEvidence(primary) || !fallbackFailureContent) return primary;
+
+  const fallback = normalizeQaFailureEvidenceContentInternal(fallbackFailureContent);
+  return fallback && !isGenericQaFailureEvidence(fallback) ? fallback : primary;
+}
+
+export function buildQaFixRequestContent(
+  failureContent: string,
+  createdAt = new Date().toISOString(),
+  fallbackFailureContent?: string | null,
+): string {
   return [
     '# QA Fix Request',
     '',
@@ -98,7 +124,7 @@ export function buildQaFixRequestContent(failureContent: string, createdAt = new
     '## Failed QA Report',
     '',
     '```markdown',
-    normalizeQaFailureEvidenceContent(failureContent) || '(empty qa_report.md)',
+    normalizeQaFailureEvidenceContent(failureContent, fallbackFailureContent) || '(empty qa_report.md)',
     '```',
     '',
     `Created at: ${createdAt}`,
@@ -106,15 +132,28 @@ export function buildQaFixRequestContent(failureContent: string, createdAt = new
   ].join('\n');
 }
 
-export function normalizeQaFixRequestFileSync(filePath: string, createdAt = new Date().toISOString()): boolean {
+export function normalizeQaFixRequestFileSync(
+  filePath: string,
+  options: NormalizeQaFixRequestFileOptions = {},
+): boolean {
   if (!existsSync(filePath)) return false;
 
   const content = readFileSync(filePath, 'utf-8');
   const wrapperCount = (content.match(/^#\s+QA Fix Request\b/gim) ?? []).length;
   const failedReportCount = (content.match(/^##\s+Failed QA Report\s*$/gim) ?? []).length;
-  if (wrapperCount <= 1 && failedReportCount <= 1) return false;
+  const normalizedFailure = normalizeQaFailureEvidenceContent(content, options.fallbackFailureContent);
+  const needsFallbackEnrichment = Boolean(
+    options.fallbackFailureContent
+      && isGenericQaFailureEvidence(normalizeQaFailureEvidenceContentInternal(content))
+      && normalizedFailure
+      && !isGenericQaFailureEvidence(normalizedFailure),
+  );
+  if (wrapperCount <= 1 && failedReportCount <= 1 && !needsFallbackEnrichment) return false;
 
-  const normalized = buildQaFixRequestContent(content, createdAt);
+  const normalized = buildQaFixRequestContent(
+    normalizedFailure || content,
+    options.createdAt ?? new Date().toISOString(),
+  );
   if (normalized.trim() === content.trim()) return false;
 
   writeFileAtomicSync(filePath, normalized);
