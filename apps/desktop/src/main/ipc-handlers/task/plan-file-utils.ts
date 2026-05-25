@@ -209,6 +209,22 @@ export function mapStatusToPlanStatus(status: TaskStatus): string {
   }
 }
 
+function ensureCompletedReviewQASignoff(
+  plan: Record<string, unknown>,
+  status: TaskStatus,
+  reviewReason?: string,
+  source = 'human-review-completed',
+): boolean {
+  if (status !== 'human_review' || reviewReason !== 'completed') return false;
+  if (isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined)) return false;
+
+  const { allCompleted } = checkSubtasksCompletion(plan);
+  if (!allCompleted) return false;
+
+  plan.qa_signoff = createApprovedQASignoffFromReport(source);
+  return true;
+}
+
 /**
  * Persist task status to implementation_plan.json file.
  * This is thread-safe and prevents race conditions when multiple handlers update the same file.
@@ -417,6 +433,7 @@ export function persistPlanStatusAndReasonSync(
       console.log(`[plan-file-utils] Creating minimal plan for XState persistence: ${planPath}`);
     }
 
+    const synthesizedQASignoff = ensureCompletedReviewQASignoff(plan, status, reviewReason, 'status-completed-review');
     const activeGuard = statusRequiresCompletedSubtasks(status, reviewReason)
       ? doneStatusHasIncompleteSubtasks(plan)
       : { incomplete: false, completedCount: 0, totalCount: 0 };
@@ -446,6 +463,9 @@ export function persistPlanStatusAndReasonSync(
     }
     if (finalExecutionPhase) {
       plan.executionPhase = finalExecutionPhase;
+    }
+    if (synthesizedQASignoff && typeof plan.recoveryNote === 'string' && plan.recoveryNote.startsWith('Blocked terminal event QA_PASSED:')) {
+      delete plan.recoveryNote;
     }
     plan.updated_at = new Date().toISOString();
 

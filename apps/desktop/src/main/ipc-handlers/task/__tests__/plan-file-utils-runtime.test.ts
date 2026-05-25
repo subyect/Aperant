@@ -152,6 +152,46 @@ describe('plan-file runtime guards', () => {
     expect(plan.recoveryNote).toBeUndefined();
   });
 
+  it('synthesizes QA approval when XState persists completed human review after QA_PASSED', () => {
+    writeFileSync(planPath, JSON.stringify({
+      status: 'ai_review',
+      planStatus: 'review',
+      xstateState: 'qa_review',
+      executionPhase: 'qa_review',
+      recoveryNote: 'Blocked terminal event QA_PASSED: 2/2 subtasks complete.',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            { id: '1.1', status: 'completed' },
+            { id: '1.2', status: 'completed' },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    expect(persistPlanStatusAndReasonSync(
+      planPath,
+      'human_review',
+      'completed',
+      'project-1',
+      'human_review',
+      'complete',
+    )).toBe(true);
+
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+
+    expect(plan.status).toBe('human_review');
+    expect(plan.reviewReason).toBe('completed');
+    expect(plan.xstateState).toBe('human_review');
+    expect(plan.executionPhase).toBe('complete');
+    expect(plan.qa_signoff).toEqual(expect.objectContaining({
+      status: 'approved',
+      source: 'status-completed-review',
+    }));
+    expect(plan.recoveryNote).toBeUndefined();
+  });
+
   it('coerces complete phase updates with pending subtasks back to coding runtime state', () => {
     expect(persistPlanPhaseSync(planPath, 'complete', 'project-1')).toBe(true);
 
