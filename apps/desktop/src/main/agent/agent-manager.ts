@@ -44,6 +44,11 @@ import { safeParseJson } from '../utils/json-repair';
 import { checkSubtasksCompletion } from '../task-plan-guards';
 import { taskStateManager } from '../task-state-manager';
 import { cleanupStaleRateLimitPauseFile } from '../ai/orchestration/pause-handler';
+import {
+  BASE_SYNC_RECOVERY_NOTE,
+  BASE_SYNC_RECOVERY_SUBTASK_ID,
+  isBaseSyncConflictRecoveryCurrent,
+} from './base-sync-recovery';
 
 const DEFAULT_MAX_PARALLEL_TASKS = 3;
 const MAX_CONCURRENT_PLANNING_RECOVERIES = 1;
@@ -986,7 +991,7 @@ export class AgentManager extends EventEmitter {
   ): void {
     const now = new Date().toISOString();
     const normalizedFiles = conflictFiles.length > 0 ? conflictFiles : ['unknown conflicted paths'];
-    const recoverySubtaskId = 'aperant-base-sync-conflict';
+    const recoverySubtaskId = BASE_SYNC_RECOVERY_SUBTASK_ID;
     const recoveryDescription = [
       'Resolve the Git conflict markers created while updating this task worktree to the current base branch.',
       '',
@@ -1002,6 +1007,27 @@ export class AgentManager extends EventEmitter {
       try {
         const plan = safeParseJson<Record<string, any>>(readFileSync(planPath, 'utf-8'));
         if (!plan) continue;
+
+        const conflictDocPath = path.join(path.dirname(planPath), 'BASE_SYNC_CONFLICT.md');
+        if (isBaseSyncConflictRecoveryCurrent(plan, normalizedFiles, reason, recoveryDescription)) {
+          if (!existsSync(conflictDocPath)) {
+            writeFileAtomicSync(
+              conflictDocPath,
+              [
+                '# Base Branch Sync Conflict',
+                '',
+                `Aperant updated this task worktree against the base branch and found unresolved Git conflicts at ${now}.`,
+                '',
+                'Resolve these files before returning to QA:',
+                ...normalizedFiles.map((file) => `- ${file}`),
+                '',
+                'After resolving, run focused verification and update implementation_plan.json.',
+                '',
+              ].join('\n'),
+            );
+          }
+          continue;
+        }
 
         const phases = Array.isArray(plan.phases) ? plan.phases : [];
         let phase = phases.find((candidate: Record<string, any>) => candidate?.id === 'aperant-base-sync-recovery' || candidate?.type === 'base_sync_recovery');
@@ -1050,7 +1076,7 @@ export class AgentManager extends EventEmitter {
         plan.executionPhase = 'coding';
         delete plan.reviewReason;
         plan.updated_at = now;
-        plan.recoveryNote = 'Base branch sync conflict while updating task worktree; continuing implementation.';
+        plan.recoveryNote = BASE_SYNC_RECOVERY_NOTE;
         plan.base_sync_conflict = {
           files: normalizedFiles,
           reason,
@@ -1067,7 +1093,7 @@ export class AgentManager extends EventEmitter {
 
         writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
         writeFileAtomicSync(
-          path.join(path.dirname(planPath), 'BASE_SYNC_CONFLICT.md'),
+          conflictDocPath,
           [
             '# Base Branch Sync Conflict',
             '',
