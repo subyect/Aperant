@@ -37,6 +37,7 @@ import type {
   SessionEventCallback,
   TokenUsage,
   SessionMessage,
+  SessionToolResult,
 } from './types';
 import type { QueueResolvedAuth } from '../auth/types';
 
@@ -75,6 +76,8 @@ const CONVERGENCE_NUDGE_AGENT_TYPES = new Set<string>([
  *  after the stream closes. 10 seconds is generous — these should resolve instantly
  *  since the stream has already been fully consumed. */
 const POST_STREAM_TIMEOUT_MS = 10_000;
+const MAX_CAPTURED_TOOL_RESULTS = 20;
+const MAX_TOOL_RESULT_CHARS = 4_000;
 
 /** Inactivity timeout for the stream consumption loop.
  *  If no stream parts arrive within this period, the stream is aborted.
@@ -282,6 +285,7 @@ async function executeStream(
   const maxSteps = baseMaxSteps; // Keep for outcome detection
   const progressTracker = new ProgressTracker();
   const messages: SessionMessage[] = [...config.initialMessages];
+  const toolResults: SessionToolResult[] = [];
 
   // Context window guard: track prompt tokens per step
   const contextWindowLimit = config.contextWindowLimit ?? 0;
@@ -336,6 +340,18 @@ async function executeStream(
     }
     if (stepMemoryState && event.type === 'tool-result') {
       memoryContext?.proxy.onToolResult(event.toolName, event.result, 0);
+    }
+    if (event.type === 'tool-result') {
+      toolResults.push({
+        toolName: event.toolName,
+        args: event.args,
+        result: stringifyToolResult(event.result),
+        durationMs: event.durationMs,
+        isError: event.isError,
+      });
+      if (toolResults.length > MAX_CAPTURED_TOOL_RESULTS) {
+        toolResults.shift();
+      }
     }
     // Track prompt tokens for context window guard
     if (event.type === 'step-finish') {
@@ -516,7 +532,7 @@ async function executeStream(
       terminalStreamErrorController.signal.reason === TERMINAL_STREAM_ERROR_ABORT_REASON &&
       terminalStreamError
     ) {
-      return buildStreamErrorResult(terminalStreamError, summary, messages);
+      return buildStreamErrorResult(terminalStreamError, summary, messages, toolResults);
     }
 
     // Check if this was a stream inactivity timeout
@@ -534,6 +550,7 @@ async function executeStream(
           retryable: true,
         },
         messages,
+        toolResults,
         toolCallCount: summary.toolCallCount,
       };
     }
@@ -548,6 +565,7 @@ async function executeStream(
         stepsExecuted: summary.stepsExecuted,
         usage: summary.usage,
         messages,
+        toolResults,
         toolCallCount: summary.toolCallCount,
       };
     }
@@ -564,6 +582,7 @@ async function executeStream(
           retryable: false,
         },
         messages,
+        toolResults,
         toolCallCount: summary.toolCallCount,
       };
     }
@@ -577,7 +596,7 @@ async function executeStream(
   const summary = streamHandler.getSummary();
 
   if (terminalStreamError) {
-    return buildStreamErrorResult(terminalStreamError, summary, messages);
+    return buildStreamErrorResult(terminalStreamError, summary, messages, toolResults);
   }
 
   // Determine outcome
@@ -661,6 +680,7 @@ async function executeStream(
     stepsExecuted: summary.stepsExecuted,
     usage,
     messages,
+    toolResults,
     toolCallCount: summary.toolCallCount,
     ...(structuredOutput ? { structuredOutput } : {}),
   };
@@ -707,6 +727,7 @@ function buildStreamErrorResult(
   error: SessionError,
   summary: { stepsExecuted: number; usage: TokenUsage; toolCallCount: number },
   messages: SessionMessage[],
+  toolResults: SessionToolResult[] = [],
 ): Omit<SessionResult, 'durationMs'> {
   let outcome: SessionOutcome = 'error';
   if (error.code === ErrorCode.RATE_LIMITED || isRateLimitError(error.message)) {
@@ -721,8 +742,28 @@ function buildStreamErrorResult(
     usage: summary.usage,
     error,
     messages,
+    toolResults,
     toolCallCount: summary.toolCallCount,
   };
+}
+
+function stringifyToolResult(value: unknown): string {
+  let raw: string;
+  if (typeof value === 'string') {
+    raw = value;
+  } else {
+    try {
+      raw = JSON.stringify(value, null, 2) ?? String(value);
+    } catch {
+      raw = String(value);
+    }
+  }
+
+  if (raw.length <= MAX_TOOL_RESULT_CHARS) {
+    return raw;
+  }
+
+  return `${raw.slice(0, MAX_TOOL_RESULT_CHARS)}\n\n[Tool result truncated — ${raw.length} characters total]`;
 }
 
 /**

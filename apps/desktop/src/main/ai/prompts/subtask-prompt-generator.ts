@@ -278,6 +278,18 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
         `If it is not complete, finish the missing implementation before updating the plan.\n`
       );
     }
+    if (
+      subtask.lastError?.includes('Bash verification command stalled')
+      || subtask.lastError?.includes('Bash verification command timed out')
+      || subtask.lastError?.includes('Bash verification command was rejected')
+    ) {
+      sections.push(
+        `\nThe previous attempt lost time on a verification command that stalled or timed out. ` +
+        `Do NOT rerun that same command unchanged. Use a narrower command, add verbose/line output, ` +
+        `inspect logs, or verify the specific touched module with a faster targeted check. ` +
+        `Only mark the subtask completed after a passing check or concrete evidence that the stalled command is not the right verifier.\n`
+      );
+    }
     if (recoveryHints && recoveryHints.length > 0) {
       sections.push('**Previous attempt insights:**');
       for (const hint of recoveryHints) {

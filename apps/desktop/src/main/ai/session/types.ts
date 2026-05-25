@@ -91,6 +91,15 @@ export interface SessionMessage {
   content: string;
 }
 
+/** Recent tool result captured for orchestration diagnostics. */
+export interface SessionToolResult {
+  toolName: string;
+  args?: Record<string, unknown>;
+  result: string;
+  durationMs: number;
+  isError: boolean;
+}
+
 // =============================================================================
 // Session Result
 // =============================================================================
@@ -119,6 +128,8 @@ export interface SessionResult {
   error?: SessionError;
   /** The full message history at session end */
   messages: SessionMessage[];
+  /** Recent tool results, used by orchestrators to build concrete retry context */
+  toolResults?: SessionToolResult[];
   /** Duration in milliseconds */
   durationMs: number;
   /** Tool calls made during the session */
@@ -197,6 +208,7 @@ export interface ToolResultEvent {
   type: 'tool-result';
   toolName: string;
   toolCallId: string;
+  args?: Record<string, unknown>;
   result: unknown;
   durationMs: number;
   isError: boolean;

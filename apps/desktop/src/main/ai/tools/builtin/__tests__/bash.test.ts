@@ -140,6 +140,30 @@ describe('Bash Tool', () => {
     expect(result).toBe('(no output)');
   });
 
+  it('rejects likely silent Playwright wrapper commands with a verbose replacement', async () => {
+    const result = await bashTool.config.execute(
+      { command: 'cd packages/layer1-console && pnpm test:e2e -- --grep "console-routes"' },
+      baseContext,
+    );
+
+    expect(result).toContain('Command is likely to run silently');
+    expect(result).toContain('pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=line');
+    expect(result).toContain('Do not rerun the same command unchanged');
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it('allows verbose Playwright commands through the idle watchdog guard', async () => {
+    setupSpawn('running with line reporter\n', '', 0);
+
+    const result = await bashTool.config.execute(
+      { command: 'cd packages/layer1-console && pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=line' },
+      baseContext,
+    );
+
+    expect(result).toContain('running with line reporter');
+    expect(mockSpawn).toHaveBeenCalled();
+  });
+
   it('should truncate output exceeding MAX_OUTPUT_LENGTH', async () => {
     const longOutput = 'x'.repeat(31_000);
     setupSpawn(longOutput, '', 0);
@@ -236,7 +260,7 @@ describe('Bash Tool', () => {
     setupSpawn('output', '', 0);
 
     await bashTool.config.execute(
-      { command: 'pnpm test:e2e' },
+      { command: 'pnpm exec playwright test --reporter=line' },
       baseContext,
     );
 
@@ -303,7 +327,7 @@ describe('Bash Tool', () => {
 
     try {
       const resultPromise = bashTool.config.execute(
-        { command: 'pnpm test:e2e', timeout: 600_000 },
+        { command: 'long-running-command', timeout: 600_000 },
         baseContext,
       );
 

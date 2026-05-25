@@ -6,12 +6,16 @@ import { tmpdir } from 'node:os';
 import { iterateSubtasks, restampExecutionPhase } from '../subtask-iterator';
 import type { SessionResult } from '../../session/types';
 
-function sessionResult(outcome: SessionResult['outcome']): SessionResult {
+function sessionResult(
+  outcome: SessionResult['outcome'],
+  overrides: Partial<SessionResult> = {},
+): SessionResult {
   return {
     outcome,
     error: outcome === 'error' ? new Error('session failed') : undefined,
     totalSteps: 1,
     lastMessage: '',
+    ...overrides,
   } as unknown as SessionResult;
 }
 
@@ -176,6 +180,69 @@ describe('iterateSubtasks completion proof', () => {
     expect(result.stuckSubtasks).toEqual(['1.1']);
     expect(written.phases[0].subtasks[0].status).toBe('pending');
     expect(written.phases[0].subtasks[0].last_error).toContain('max step limit');
+  });
+
+  it('records concrete Bash idle-timeout context instead of generic retry text', async () => {
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+
+    await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        toolResults: [
+          {
+            toolName: 'Bash',
+            args: { command: 'pnpm exec playwright test tests/e2e/console-routes.spec.ts' },
+            result: 'Exit code: 124\nCommand produced no output for 180000ms and was terminated to keep the worker moving.',
+            durationMs: 180_000,
+            isError: false,
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('Bash verification command stalled');
+    expect(subtask.last_error).toContain('pnpm exec playwright test tests/e2e/console-routes.spec.ts');
+    expect(subtask.last_error).toContain('Do not rerun the same command unchanged');
+    expect(subtask.last_error).not.toContain('without marking the subtask completed');
+  });
+
+  it('records immediate Bash rejection context for likely silent verification commands', async () => {
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+
+    await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        toolResults: [
+          {
+            toolName: 'Bash',
+            args: { command: 'pnpm test:e2e -- --grep "console-routes"' },
+            result: `Error: Command is likely to run silently until Aperant's foreground idle watchdog kills it: pnpm test:e2e -- --grep "console-routes"\nUse a verbose or narrower Playwright invocation instead.`,
+            durationMs: 10,
+            isError: false,
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(subtask.last_error).toContain('Bash verification command was rejected');
+    expect(subtask.last_error).toContain('Use the suggested verbose or narrower verifier');
   });
 
   it('passes prior retry context into the next subtask session', async () => {

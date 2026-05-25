@@ -76,6 +76,29 @@ function terminateProcessTree(child: ChildProcess, signal: NodeJS.Signals): void
   terminateProcessGroupByPid(pid, signal);
 }
 
+function buildImmediateCommandGuidance(command: string): string | null {
+  const normalized = command.replace(/\s+/g, ' ').trim();
+  const runsPlaywrightWrapper = /\bpnpm\s+test:e2e\b/.test(normalized);
+  const alreadyVerbose = /--reporter(?:=|\s+)line\b/.test(normalized)
+    || /\bDEBUG=/.test(normalized)
+    || /\bPWDEBUG=/.test(normalized);
+
+  if (!runsPlaywrightWrapper || alreadyVerbose) {
+    return null;
+  }
+
+  const suggestedCommand = normalized.includes('console-routes')
+    ? 'cd packages/layer1-console && pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=line'
+    : 'pnpm exec playwright test --reporter=line';
+
+  return (
+    `Error: Command is likely to run silently until Aperant's foreground idle watchdog kills it: ${command}\n` +
+    `Use a verbose or narrower Playwright invocation instead, for example:\n` +
+    `${suggestedCommand}\n` +
+    `Do not rerun the same command unchanged.`
+  );
+}
+
 function executeCommand(
   command: string,
   cwd: string,
@@ -260,6 +283,11 @@ export const bashTool = Tool.define({
       // Fire-and-forget for background commands
       executeCommand(command, context.cwd, timeoutMs, context.abortSignal, false);
       return `Command started in background: ${command}`;
+    }
+
+    const immediateGuidance = buildImmediateCommandGuidance(command);
+    if (immediateGuidance) {
+      return immediateGuidance;
     }
 
     const { stdout, stderr, exitCode, timedOut, idleTimedOut, aborted } = await executeCommand(

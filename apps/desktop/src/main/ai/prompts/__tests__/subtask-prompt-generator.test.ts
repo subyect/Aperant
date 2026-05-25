@@ -69,6 +69,34 @@ describe('generateSubtaskPrompt', () => {
     }
   });
 
+  it('tells retrying coders not to rerun a stalled verification command unchanged', async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), 'subtask-prompt-stalled-command-'));
+    const specDir = join(projectDir, '.auto-claude', 'specs', '001-test');
+
+    try {
+      const prompt = await generateSubtaskPrompt({
+        projectDir,
+        specDir,
+        attemptCount: 1,
+        subtask: {
+          id: '4.2',
+          description: 'Verify route smoke coverage.',
+          phaseName: 'QA recovery',
+          status: 'pending',
+          lastError: 'Bash verification command stalled without output and was killed: `pnpm exec playwright test tests/e2e/console-routes.spec.ts`.',
+          lastAttemptOutcome: 'completed',
+        },
+      });
+
+      expect(prompt).toContain('Bash verification command stalled');
+      expect(prompt).toContain('Do NOT rerun that same command unchanged');
+      expect(prompt).toContain('add verbose/line output');
+      expect(prompt).toContain('faster targeted check');
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it('renders command verification stored in run fields', async () => {
     const projectDir = await mkdtemp(join(tmpdir(), 'subtask-prompt-run-verification-'));
     const specDir = join(projectDir, '.auto-claude', 'specs', '001-test');

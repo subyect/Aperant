@@ -339,6 +339,11 @@ function buildRetryReason(
   result: SessionResult,
   currentStatus: string | undefined,
 ): string {
+  const bashFailure = buildBashFailureRetryReason(result);
+  if (bashFailure) {
+    return bashFailure;
+  }
+
   if (result.outcome === 'completed') {
     return `Agent session ended without marking the subtask completed in implementation_plan.json (current status: ${currentStatus ?? 'missing'}). Retrying until the plan proves completion.`;
   }
@@ -349,6 +354,67 @@ function buildRetryReason(
     return 'Agent hit the context window before the subtask was marked completed. Retrying the subtask.';
   }
   return result.error?.message ?? `Agent session ended with outcome "${result.outcome}". Retrying the subtask.`;
+}
+
+function buildBashFailureRetryReason(result: SessionResult): string | null {
+  const bashResults = (result.toolResults ?? [])
+    .filter((toolResult) => toolResult.toolName === 'Bash');
+
+  for (let i = bashResults.length - 1; i >= 0; i--) {
+    const toolResult = bashResults[i];
+    const output = toolResult.result;
+    if (!isFailedBashOutput(output)) continue;
+
+    const command = typeof toolResult.args?.command === 'string'
+      ? toolResult.args.command
+      : '(command unavailable)';
+    const outputSnippet = compactForPlan(output, 1_600);
+
+    if (output.includes('Command produced no output for')) {
+      return (
+        `Bash verification command stalled without output and was killed: \`${command}\`.\n` +
+        `Tool output:\n${outputSnippet}\n\n` +
+        `Do not rerun the same command unchanged. Use a narrower or more verbose command, inspect the relevant logs, and fix the blocker before marking this subtask completed.`
+      );
+    }
+
+    if (output.includes('Command is likely to run silently')) {
+      return (
+        `Bash verification command was rejected because it is likely to stall without output: \`${command}\`.\n` +
+        `Tool output:\n${outputSnippet}\n\n` +
+        `Use the suggested verbose or narrower verifier instead of rerunning the same command unchanged.`
+      );
+    }
+
+    if (output.includes('Command timed out after')) {
+      return (
+        `Bash verification command timed out: \`${command}\`.\n` +
+        `Tool output:\n${outputSnippet}\n\n` +
+        `Do not mark this subtask completed until the timeout is explained or the verification is replaced with a targeted passing check.`
+      );
+    }
+
+    return (
+      `Bash command failed during the attempt: \`${command}\`.\n` +
+      `Tool output:\n${outputSnippet}\n\n` +
+      `Fix the failure or run a targeted passing verification before marking this subtask completed.`
+    );
+  }
+
+  return null;
+}
+
+function isFailedBashOutput(output: string): boolean {
+  return /Exit code:\s*[1-9]\d*/.test(output)
+    || output.includes('Command produced no output for')
+    || output.includes('Command is likely to run silently')
+    || output.includes('Command timed out after')
+    || output.includes('Command aborted; process tree was terminated.');
+}
+
+function compactForPlan(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}\n[truncated — ${value.length} characters total]`;
 }
 
 function isRateLimitedSessionResult(result: SessionResult): boolean {

@@ -68,6 +68,7 @@ export interface ToolErrorPart {
   type: 'tool-error';
   toolCallId: string;
   toolName: string;
+  input?: unknown;
   error: unknown;
 }
 
@@ -207,6 +208,7 @@ export function createStreamHandler(onEvent: SessionEventCallback) {
       type: 'tool-result',
       toolName: part.toolName,
       toolCallId: part.toolCallId,
+      args: (part.input as Record<string, unknown>) ?? {},
       result: part.output,
       durationMs,
       isError: false,
@@ -225,6 +227,7 @@ export function createStreamHandler(onEvent: SessionEventCallback) {
       type: 'tool-result',
       toolName: part.toolName,
       toolCallId: part.toolCallId,
+      args: (part.input as Record<string, unknown>) ?? {},
       result: errorMessage,
       durationMs,
       isError: true,
