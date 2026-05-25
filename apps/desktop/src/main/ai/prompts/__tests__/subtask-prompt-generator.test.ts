@@ -148,6 +148,8 @@ describe('generateSubtaskPrompt', () => {
       expect(prompt).toContain('Do NOT start by rerunning the same command');
       expect(prompt).toContain('TS2307');
       expect(prompt).toContain('treat it as in-scope repair');
+      expect(prompt).toContain('Do not declare required verifier failures "outside this subtask"');
+      expect(prompt).toContain('restore the repo-local contract needed for the verifier to pass');
       expect(prompt).toContain('APERANT RECOVERY SUBTASK');
       expect(prompt).toContain('The failure text is the implementation target');
       expect(prompt).toContain('fix those failures in this worktree immediately');

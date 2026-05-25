@@ -317,6 +317,8 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
         `\nThe previous attempt hit a real failing verification command. Do NOT start by rerunning the same command and stopping again. ` +
         `First inspect the failure output, map every repo-local file/module/test named in the error back to the current source tree, and make the required implementation, test, or docs changes. ` +
         `If the error is a local TypeScript/module resolution failure (for example TS2307, "Cannot find module", or "Does the file exist?"), treat it as in-scope repair unless you prove the referenced module is intentionally external. ` +
+        `Do not declare required verifier failures "outside this subtask" merely because they involve shared packages, generated dist, broad test imports, or multiple repo-local modules. ` +
+        `If the verifier is required for this subtask and it fails on repo-local code or workspace package resolution, restore the repo-local contract needed for the verifier to pass. ` +
         `After changing the code, run the narrowest targeted verifier that proves the fix, then update this exact subtask.\n`
       );
     }
