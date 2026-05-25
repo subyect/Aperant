@@ -150,6 +150,8 @@ describe('generateSubtaskPrompt', () => {
       expect(prompt).toContain('treat it as in-scope repair');
       expect(prompt).toContain('APERANT RECOVERY SUBTASK');
       expect(prompt).toContain('The failure text is the implementation target');
+      expect(prompt).toContain('fix those failures in this worktree immediately');
+      expect(prompt).toContain('do not end with "if you want, I can fix this"');
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }
