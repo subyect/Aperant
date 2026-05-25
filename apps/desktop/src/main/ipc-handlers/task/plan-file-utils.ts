@@ -29,7 +29,7 @@ import { safeParseJson } from '../../utils/json-repair';
 import { getToolPath } from '../../cli-tool-manager';
 import { getIsolatedGitEnv } from '../../utils/git-isolation';
 import { findTaskWorktree } from '../../worktree-paths';
-import { normalizeQaFailureEvidenceContent } from '../../qa-feedback-utils';
+import { normalizeQaFailureEvidenceContent, normalizeQaFixRequestFileSync } from '../../qa-feedback-utils';
 import {
   applyRuntimePhaseState,
   applyTaskEventRuntimeState,
@@ -965,6 +965,7 @@ export function readFailedQaEvidenceSync(specDir: string): { reportPath: string;
 
   try {
     const fixRequestPath = path.join(specDir, 'QA_FIX_REQUEST.md');
+    normalizeQaFixRequestFileSync(fixRequestPath);
     const content = readFileSync(fixRequestPath, 'utf-8');
     const hasRejectedStatus = /(?:^|\n)\s*(?:\*\*)?\s*Status\s*:\s*(REJECTED|FAILED|FAIL|ISSUES)\s*(?:\*\*)?/i.test(content);
     const hasFailedReport = /Failed QA Report|Aperant QA failed this task|QA failed/i.test(content);

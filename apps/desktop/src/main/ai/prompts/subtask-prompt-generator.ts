@@ -15,7 +15,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import { loadPrompt } from './prompt-loader';
-import { normalizeQaFailureEvidenceContent } from '../../qa-feedback-utils';
+import { normalizeQaFailureEvidenceContent, normalizeQaFixRequestFileSync } from '../../qa-feedback-utils';
 import type {
   PlannerPromptConfig,
   SubtaskPromptConfig,
@@ -58,6 +58,7 @@ function readHumanFeedback(specDir: string): string | null {
   if (!existsSync(feedbackPath)) return null;
 
   try {
+    normalizeQaFixRequestFileSync(feedbackPath);
     const content = readFileSync(feedbackPath, 'utf-8').trim();
     const normalized = normalizeQaFailureEvidenceContent(content);
     return normalized || null;

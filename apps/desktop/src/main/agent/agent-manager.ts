@@ -42,7 +42,7 @@ import { cleanupWorktree } from '../utils/worktree-cleanup';
 import { writeFileAtomicSync } from '../utils/atomic-file';
 import { safeParseJson } from '../utils/json-repair';
 import { checkSubtasksCompletion } from '../task-plan-guards';
-import { normalizeQaFailureEvidenceContent } from '../qa-feedback-utils';
+import { buildQaFixRequestContent, normalizeQaFailureEvidenceContent } from '../qa-feedback-utils';
 import { taskStateManager } from '../task-state-manager';
 import { cleanupStaleRateLimitPauseFile } from '../ai/orchestration/pause-handler';
 import {
@@ -1013,27 +1013,7 @@ export class AgentManager extends EventEmitter {
 
         const specDir = path.dirname(planPath);
         writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
-        writeFileAtomicSync(
-          path.join(specDir, 'QA_FIX_REQUEST.md'),
-          [
-            '# QA Fix Request',
-            '',
-            'Status: REJECTED',
-            '',
-            '## Feedback',
-            '',
-            'Aperant QA failed this task. Fix the reported issues and keep working until QA passes.',
-            '',
-            '## Failed QA Report',
-            '',
-            '```markdown',
-            reportExcerpt || '(empty qa_report.md)',
-            '```',
-            '',
-            `Created at: ${now}`,
-            '',
-          ].join('\n'),
-        );
+        writeFileAtomicSync(path.join(specDir, 'QA_FIX_REQUEST.md'), buildQaFixRequestContent(reportExcerpt, now));
         persisted = true;
       } catch (error) {
         console.warn(`[AgentManager] Failed to persist QA report recovery for ${task.specId}:`, error);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -124,6 +124,10 @@ describe('generateSubtaskPrompt', () => {
 
       expect(prompt).toContain('Fix the local layer1-db query-helper module resolution failure.');
       expect(prompt).not.toContain('## Failed QA Report\n\n```markdown\n# QA Fix Request');
+
+      const normalizedFile = await readFile(join(specDir, 'QA_FIX_REQUEST.md'), 'utf-8');
+      expect(normalizedFile.match(/^# QA Fix Request/gm)).toHaveLength(1);
+      expect(normalizedFile).toContain('Fix the local layer1-db query-helper module resolution failure.');
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }

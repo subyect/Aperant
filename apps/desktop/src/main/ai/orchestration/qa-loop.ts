@@ -30,7 +30,7 @@ import type { AgentType } from '../config/agent-configs';
 import type { Phase } from '../config/types';
 import { QASignoffSchema, validateStructuredOutput } from '../schema';
 import { safeParseJson } from '../../utils/json-repair';
-import { normalizeQaFailureEvidenceContent } from '../../qa-feedback-utils';
+import { normalizeQaFailureEvidenceContent, normalizeQaFixRequestFileSync } from '../../qa-feedback-utils';
 import type { SessionResult } from '../session/types';
 
 // =============================================================================
@@ -505,7 +505,9 @@ export class QALoop extends EventEmitter {
   private async readHumanFeedback(): Promise<string | null> {
     for (const specDir of this.getSpecDirs()) {
       try {
-        const content = await readFile(join(specDir, 'QA_FIX_REQUEST.md'), 'utf-8');
+        const fixRequestPath = join(specDir, 'QA_FIX_REQUEST.md');
+        normalizeQaFixRequestFileSync(fixRequestPath);
+        const content = await readFile(fixRequestPath, 'utf-8');
         const trimmed = normalizeQaFailureEvidenceContent(content);
         if (trimmed) return trimmed;
       } catch {

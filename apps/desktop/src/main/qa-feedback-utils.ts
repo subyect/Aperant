@@ -1,3 +1,7 @@
+import { existsSync, readFileSync } from 'node:fs';
+
+import { writeFileAtomicSync } from './utils/atomic-file';
+
 const MAX_QA_FEEDBACK_UNWRAP_DEPTH = 12;
 
 function extractFailedQaReportBlock(content: string): string | null {
@@ -79,4 +83,40 @@ export function normalizeQaFailureEvidenceContent(content: string): string {
 
   const feedback = extractFeedbackSection(unwrapped);
   return (feedback ?? unwrapped).trim();
+}
+
+export function buildQaFixRequestContent(failureContent: string, createdAt = new Date().toISOString()): string {
+  return [
+    '# QA Fix Request',
+    '',
+    'Status: REJECTED',
+    '',
+    '## Feedback',
+    '',
+    'Aperant QA failed this task. Fix the reported issues and keep working until QA passes.',
+    '',
+    '## Failed QA Report',
+    '',
+    '```markdown',
+    normalizeQaFailureEvidenceContent(failureContent) || '(empty qa_report.md)',
+    '```',
+    '',
+    `Created at: ${createdAt}`,
+    '',
+  ].join('\n');
+}
+
+export function normalizeQaFixRequestFileSync(filePath: string, createdAt = new Date().toISOString()): boolean {
+  if (!existsSync(filePath)) return false;
+
+  const content = readFileSync(filePath, 'utf-8');
+  const wrapperCount = (content.match(/^#\s+QA Fix Request\b/gim) ?? []).length;
+  const failedReportCount = (content.match(/^##\s+Failed QA Report\s*$/gim) ?? []).length;
+  if (wrapperCount <= 1 && failedReportCount <= 1) return false;
+
+  const normalized = buildQaFixRequestContent(content, createdAt);
+  if (normalized.trim() === content.trim()) return false;
+
+  writeFileAtomicSync(filePath, normalized);
+  return true;
 }

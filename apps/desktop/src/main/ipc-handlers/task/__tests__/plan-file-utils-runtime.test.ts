@@ -483,6 +483,11 @@ describe('plan-file runtime guards', () => {
     expect(failure?.content).toBe(failedReport);
     expect(failure?.content).not.toContain('## Failed QA Report');
     expect(failure?.content).not.toContain('# QA Fix Request');
+
+    const normalizedFile = readFileSync(path.join(tempDir, 'QA_FIX_REQUEST.md'), 'utf-8');
+    expect(normalizedFile.match(/^# QA Fix Request/gm)).toHaveLength(1);
+    expect(normalizedFile).toContain(failedReport);
+    expect(normalizedFile).not.toContain(nestedRequest);
   });
 
   it('still recovers approved QA signoff from passed reports', () => {
