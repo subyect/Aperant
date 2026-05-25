@@ -57,10 +57,11 @@ describe('plan-file runtime guards', () => {
   let readFailedQaEvidenceSync: typeof import('../plan-file-utils').readFailedQaEvidenceSync;
   let readApprovedQASignoffFromReportSync: typeof import('../plan-file-utils').readApprovedQASignoffFromReportSync;
   let recoverApprovedQASignoffForSpec: typeof import('../plan-file-utils').recoverApprovedQASignoffForSpec;
+  let ensureHumanFeedbackReworkSubtask: typeof import('../plan-file-utils').ensureHumanFeedbackReworkSubtask;
 
   beforeEach(async () => {
     vi.resetModules();
-    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync, readQaReportVerdictSync, readFailedQaEvidenceSync, readApprovedQASignoffFromReportSync, recoverApprovedQASignoffForSpec } = await import('../plan-file-utils'));
+    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync, readQaReportVerdictSync, readFailedQaEvidenceSync, readApprovedQASignoffFromReportSync, recoverApprovedQASignoffForSpec, ensureHumanFeedbackReworkSubtask } = await import('../plan-file-utils'));
     tempDir = mkdtempSync(path.join(tmpdir(), 'aperant-plan-'));
     planPath = path.join(tempDir, 'implementation_plan.json');
     writeFileSync(planPath, JSON.stringify(planWithSubtasks(), null, 2));
@@ -101,6 +102,34 @@ describe('plan-file runtime guards', () => {
     expect(plan.xstateState).toBe('coding');
     expect(plan.executionPhase).toBe('coding');
     expect(plan.recoveryNote).toBe('Blocked terminal phase complete: 1/2 subtasks complete.');
+  });
+
+  it('adds a pending human-feedback rework subtask when feedback arrives after QA', () => {
+    const plan = {
+      status: 'human_review',
+      planStatus: 'review',
+      phases: [
+        {
+          name: 'Implementation',
+          status: 'completed',
+          subtasks: [{ id: '1.1', title: 'Done', status: 'completed' }],
+        },
+      ],
+      qa_signoff: { status: 'approved', issues_found: [] },
+    };
+
+    expect(ensureHumanFeedbackReworkSubtask(plan, 'Use the server-side query; current output is wrong.')).toBe(true);
+
+    const reworkPhase = plan.phases.find((phase: any) => phase.id === 'aperant-human-feedback-rework') as any;
+    expect(reworkPhase).toBeTruthy();
+    expect(reworkPhase.status).toBe('in_progress');
+    expect(reworkPhase.subtasks).toHaveLength(1);
+    expect(reworkPhase.subtasks[0]).toMatchObject({
+      id: 'aperant-human-feedback-rework',
+      title: 'Address human review feedback',
+      status: 'pending',
+    });
+    expect(reworkPhase.subtasks[0].description).toContain('Use the server-side query');
   });
 
   it('does not let transient idle progress overwrite an active runtime phase', () => {

@@ -80,6 +80,7 @@ export function useTaskDetail({ task }: UseTaskDetailOptions) {
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [expandedPhases, setExpandedPhases] = useState<Set<TaskLogPhase>>(new Set());
   const [isLoadingPlan, setIsLoadingPlan] = useState(false);
+  const lastPlanReloadAttemptRef = useRef<string | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const logsContainerRef = useRef<HTMLDivElement>(null);
 
@@ -430,9 +431,9 @@ export function useTaskDetail({ task }: UseTaskDetailOptions) {
       return false;
     }
 
-    // Only reload if task is incomplete and subtasks are invalid
-    if (!isIncomplete) {
-      return true; // Not incomplete, no reload needed
+    const shouldReload = isIncomplete || isRunning || task.status === 'ai_review' || Boolean(hasActiveExecution);
+    if (!shouldReload) {
+      return true;
     }
 
     // Check if subtasks are valid
@@ -493,7 +494,28 @@ export function useTaskDetail({ task }: UseTaskDetailOptions) {
     } finally {
       setIsLoadingPlan(false);
     }
-  }, [currentProject, task, isIncomplete]);
+  }, [currentProject, task, isIncomplete, isRunning, hasActiveExecution]);
+
+  useEffect(() => {
+    const shouldReload = isIncomplete || isRunning || task.status === 'ai_review' || Boolean(hasActiveExecution);
+    if (!shouldReload || isLoadingPlan || validateTaskSubtasks(task)) return;
+
+    const reloadKey = `${task.id}:${task.status}:${task.subtasks?.length ?? 0}`;
+    if (lastPlanReloadAttemptRef.current === reloadKey) return;
+    lastPlanReloadAttemptRef.current = reloadKey;
+
+    void reloadPlanForIncompleteTask();
+  }, [
+    task,
+    task.id,
+    task.status,
+    task.subtasks?.length,
+    isIncomplete,
+    isRunning,
+    hasActiveExecution,
+    isLoadingPlan,
+    reloadPlanForIncompleteTask,
+  ]);
 
   return {
     // State

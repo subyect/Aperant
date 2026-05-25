@@ -1702,6 +1702,17 @@ export class AgentManager extends EventEmitter {
       env: getIsolatedGitEnv(),
     }).trim();
 
+    const pushResult = this.pushMergedBaseBranch(project, task, baseBranch);
+    if (!pushResult.success) {
+      this.persistMergePushFailure(project, task, commitSha, pushResult.message);
+      projectStore.invalidateTasksCache(project.id);
+      return {
+        success: false,
+        message: `Merged locally at ${commitSha}, but could not push ${baseBranch}: ${pushResult.message}`,
+        commitSha,
+      };
+    }
+
     const specDir = path.join(project.path, getSpecsDir(project.autoBuildPath), task.specId);
     const planPaths = [
       path.join(specDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN),
@@ -1724,6 +1735,65 @@ export class AgentManager extends EventEmitter {
 
     projectStore.invalidateTasksCache(project.id);
     return { success: true, message: 'Merged successfully', commitSha };
+  }
+
+  private pushMergedBaseBranch(project: Project, task: Task, baseBranch: string): { success: boolean; message: string } {
+    const shouldPush = project.settings?.pushNewBranches !== false && task.metadata?.pushNewBranches !== false;
+    if (!shouldPush) {
+      return { success: true, message: 'remote push disabled' };
+    }
+
+    try {
+      execFileSync(getToolPath('git'), ['remote', 'get-url', 'origin'], {
+        cwd: project.path,
+        encoding: 'utf-8',
+        env: getIsolatedGitEnv(),
+      });
+    } catch {
+      return { success: true, message: 'no origin remote configured' };
+    }
+
+    const targetBranch = baseBranch.replace(/^origin\//, '');
+    try {
+      execFileSync(getToolPath('git'), ['push', 'origin', `HEAD:${targetBranch}`], {
+        cwd: project.path,
+        encoding: 'utf-8',
+        env: getIsolatedGitEnv(),
+      });
+      return { success: true, message: `pushed origin/${targetBranch}` };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, message };
+    }
+  }
+
+  private persistMergePushFailure(project: Project, task: Task, commitSha: string, message: string): void {
+    const now = new Date().toISOString();
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = safeParseJson<Record<string, unknown>>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
+        plan.status = 'human_review';
+        plan.planStatus = 'review';
+        plan.reviewReason = 'errors';
+        plan.xstateState = 'human_review';
+        plan.executionPhase = 'complete';
+        plan.localMergeCommit = commitSha;
+        plan.mergePushError = message;
+        plan.updated_at = now;
+        plan.lastEvent = {
+          eventId: `merge-push-failed-${Date.now()}`,
+          sequence: 0,
+          type: 'MERGE_PUSH_FAILED',
+          timestamp: now,
+          data: { commitSha, message },
+        };
+        writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+      } catch (error) {
+        console.warn(`[AgentManager] Failed to persist merge push failure for ${task.specId}:`, error);
+      }
+    }
   }
 
   /**

@@ -46,6 +46,96 @@ import { XSTATE_ACTIVE_STATES, XSTATE_TO_PHASE } from '../../../shared/state-mac
 // Key: plan file path, Value: Promise chain for serializing operations
 const planLocks = new Map<string, Promise<void>>();
 
+export const HUMAN_FEEDBACK_REWORK_SUBTASK_ID = 'aperant-human-feedback-rework';
+
+export function ensureHumanFeedbackReworkSubtask(
+  plan: Record<string, any>,
+  feedback?: string,
+): boolean {
+  if (!plan) return false;
+
+  const now = new Date().toISOString();
+  const feedbackPreview = feedback?.trim()
+    ? feedback.trim().slice(0, 1500)
+    : 'No text feedback provided. Check QA_FIX_REQUEST.md and any feedback_images references.';
+
+  if (!Array.isArray(plan.phases)) {
+    plan.phases = [];
+  }
+
+  let phase = plan.phases.find((candidate: Record<string, any>) => {
+    return candidate?.id === 'aperant-human-feedback-rework'
+      || candidate?.type === 'human_feedback_rework';
+  });
+
+  if (!phase) {
+    phase = {
+      id: 'aperant-human-feedback-rework',
+      phase: plan.phases.length + 1,
+      name: 'Human review feedback',
+      type: 'human_feedback_rework',
+      status: 'in_progress',
+      subtasks: [],
+    };
+    plan.phases.push(phase);
+  }
+
+  if (!Array.isArray(phase.subtasks)) {
+    phase.subtasks = [];
+  }
+
+  const description = [
+    'Address the latest human review feedback recorded in QA_FIX_REQUEST.md.',
+    'Read QA_FIX_REQUEST.md first, inspect the current implementation, make the required code, docs, or test changes, and run focused verification before marking this subtask completed.',
+    `Latest feedback preview:\n${feedbackPreview}`,
+  ].join('\n\n');
+
+  let subtask = phase.subtasks.find((candidate: Record<string, any>) => {
+    return candidate?.id === HUMAN_FEEDBACK_REWORK_SUBTASK_ID;
+  });
+
+  if (!subtask) {
+    subtask = {
+      id: HUMAN_FEEDBACK_REWORK_SUBTASK_ID,
+      title: 'Address human review feedback',
+      description,
+      status: 'pending',
+      verification: {
+        type: 'manual',
+        instructions: 'Verify the feedback is addressed, then rerun QA.',
+      },
+      created_at: now,
+    };
+    phase.subtasks.push(subtask);
+  } else {
+    if (subtask.description !== description) {
+      subtask.description = description;
+    }
+    if (subtask.title !== 'Address human review feedback') {
+      subtask.title = 'Address human review feedback';
+    }
+    if (subtask.status !== 'pending') {
+      subtask.status = 'pending';
+    }
+    if (subtask.last_error !== undefined) {
+      delete subtask.last_error;
+    }
+    if (subtask.last_attempt_outcome !== undefined) {
+      delete subtask.last_attempt_outcome;
+    }
+  }
+
+  subtask.feedback_requested_at = now;
+  subtask.verification = {
+    type: 'manual',
+    instructions: 'Verify the feedback is addressed, then rerun QA.',
+  };
+  phase.status = 'in_progress';
+  plan.updated_at = now;
+
+  return true;
+}
+
 /**
  * Serialize operations on a specific plan file to prevent race conditions.
  * Each operation waits for the previous one to complete before starting.

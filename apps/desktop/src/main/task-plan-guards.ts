@@ -82,13 +82,16 @@ export function doneStatusHasIncompleteSubtasks(plan: MutablePlan | null | undef
   if (completedSubtasksHaveBlockingErrors(plan) && !planHasMergeCompletionEvidence(plan)) {
     return { incomplete: true, completedCount, totalCount };
   }
+  if (planHasMergeCompletionEvidence(plan)) {
+    return { incomplete: false, completedCount, totalCount };
+  }
   if (isQASignoffApproved(plan?.qa_signoff)) {
     return { incomplete: false, completedCount, totalCount };
   }
   if (planHasFailedTerminalEvent(plan)) {
     return { incomplete: true, completedCount, totalCount };
   }
-  return { incomplete: false, completedCount, totalCount };
+  return { incomplete: true, completedCount, totalCount };
 }
 
 export function applyRuntimePhaseState(plan: MutablePlan | null | undefined, phase?: string): boolean {

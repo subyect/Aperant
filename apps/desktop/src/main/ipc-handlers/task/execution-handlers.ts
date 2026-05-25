@@ -18,7 +18,8 @@ import {
   resetStuckSubtasks,
   hasPlanWithSubtasks,
   repairFalseCompletedSubtasksForSpec,
-  persistSpecQaReviewStateSync
+  persistSpecQaReviewStateSync,
+  ensureHumanFeedbackReworkSubtask
 } from './plan-file-utils';
 import { writeFileAtomicSync } from '../../utils/atomic-file';
 import { safeParseJson } from '../../utils/json-repair';
@@ -190,6 +191,7 @@ function markHumanFeedbackPendingInSpecDir(
   };
 
   if (resumeCoding) {
+    ensureHumanFeedbackReworkSubtask(plan, feedback);
     plan.status = 'in_progress';
     plan.planStatus = 'in_progress';
     plan.xstateState = 'coding';
@@ -593,8 +595,7 @@ export function registerTaskExecutionHandlers(
         const completion = readPlanCompletionForSpecDir(effectiveFeedbackSpecDir);
         const resumeCodingForFeedback = Boolean(
           completion &&
-          completion.totalCount > 0 &&
-          !completion.allCompleted
+          completion.totalCount > 0
         );
 
         for (const targetSpecDir of feedbackSpecDirs) {

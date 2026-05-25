@@ -795,8 +795,24 @@ export class ProjectStore {
           phase.status = 'completed';
         }
       }
-      console.warn(`[ProjectStore] Preserving completed task ${taskName}: all subtasks are complete but QA signoff has not been recovered yet.`);
-      return { status: finalStatus, reviewReason: finalReviewReason };
+      correctedPlan.status = 'ai_review';
+      correctedPlan.planStatus = 'review';
+      correctedPlan.xstateState = 'qa_review';
+      correctedPlan.executionPhase = 'qa_review';
+      correctedPlan.recoveryNote = `Recovered stale terminal status for ${taskName}: all subtasks are complete but QA or merge evidence is missing; rerunning QA.`;
+      delete correctedPlan.reviewReason;
+      delete correctedPlan.final_acceptance;
+      correctedPlan.updated_at = new Date().toISOString();
+
+      try {
+        writeFileAtomicSync(planPath, JSON.stringify(correctedPlan, null, 2));
+        Object.assign(plan, correctedPlan);
+        console.warn(`[ProjectStore] Corrected unverifiable terminal status for ${taskName}; rerunning QA.`);
+        return { status: 'ai_review', reviewReason: undefined };
+      } catch (writeError) {
+        console.error(`[ProjectStore] Failed to persist QA recovery status for ${taskName}:`, writeError);
+        return { status: finalStatus, reviewReason: finalReviewReason };
+      }
     }
 
     correctedPlan.status = 'in_progress';

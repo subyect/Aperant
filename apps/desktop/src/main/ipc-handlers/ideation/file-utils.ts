@@ -68,9 +68,35 @@ function normalizeIdeationComparable(value: unknown): string {
     .replace(/\s+/g, ' ');
 }
 
+function addComparableTitle(target: Set<string>, value: unknown): void {
+  const normalized = normalizeIdeationComparable(value);
+  if (normalized) target.add(normalized);
+}
+
+function titleFromSpecId(specId: string): string {
+  return specId
+    .replace(/^\d+[-_]/, '')
+    .replace(/[-_]+/g, ' ')
+    .trim();
+}
+
+function tokenSimilarity(a: string, b: string): number {
+  const aTokens = new Set(a.split(' ').filter(Boolean));
+  const bTokens = new Set(b.split(' ').filter(Boolean));
+  if (aTokens.size === 0 || bTokens.size === 0) return 0;
+
+  let overlap = 0;
+  for (const token of aTokens) {
+    if (bTokens.has(token)) overlap++;
+  }
+
+  return overlap / Math.max(aTokens.size, bTokens.size);
+}
+
 function collectIdeationTaskContext(projectPath: string): { titleKeys: Set<string>; tasks: Array<{ title: string; titleKey: string; status: string }> } {
   const specsDir = path.join(projectPath, AUTO_BUILD_PATHS.SPECS_DIR);
   const tasks: Array<{ title: string; titleKey: string; status: string }> = [];
+  const titleKeys = new Set<string>();
   if (!existsSync(specsDir)) return { titleKeys: new Set(), tasks };
 
   let entries: Array<{ name: string; isDirectory(): boolean }>;
@@ -86,26 +112,37 @@ function collectIdeationTaskContext(projectPath: string): { titleKeys: Set<strin
     const specDir = path.join(specsDir, specId);
     let title = specId;
     let status = 'unknown';
+    const aliases = new Set<string>();
+    addComparableTitle(aliases, specId);
+    addComparableTitle(aliases, titleFromSpecId(specId));
     try {
       const planPath = path.join(specDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
       if (existsSync(planPath)) {
         const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as Record<string, unknown>;
         title = String(plan.feature || plan.title || title);
         status = String(plan.status || plan.planStatus || status);
+        addComparableTitle(aliases, plan.feature);
+        addComparableTitle(aliases, plan.title);
+        addComparableTitle(aliases, plan.description);
       } else {
         const specPath = path.join(specDir, AUTO_BUILD_PATHS.SPEC_FILE);
         const content = existsSync(specPath) ? readFileSync(specPath, 'utf-8') : '';
         const match = content.match(/^#\s+(?:Quick Spec:|Specification:)?\s*(.+)$/m);
         if (match?.[1]) title = match[1].trim();
+        addComparableTitle(aliases, match?.[1]);
       }
     } catch {
       // Keep best-effort fallback title.
     }
+    addComparableTitle(aliases, title);
     const titleKey = normalizeIdeationComparable(title);
-    if (titleKey) tasks.push({ title, titleKey, status });
+    if (titleKey) {
+      tasks.push({ title, titleKey, status });
+      for (const alias of aliases) titleKeys.add(alias);
+    }
   }
 
-  return { titleKeys: new Set(tasks.map((task) => task.titleKey)), tasks };
+  return { titleKeys, tasks };
 }
 
 export function filterIdeationIdeasAgainstExistingTasks(projectPath: string, ideas: RawIdea[]): {
@@ -120,6 +157,7 @@ export function filterIdeationIdeasAgainstExistingTasks(projectPath: string, ide
     const duplicate = titleKey && (
       taskContext.titleKeys.has(titleKey)
       || taskContext.tasks.some((task) => titleKey.length > 30 && task.titleKey.length > 30 && (titleKey.includes(task.titleKey) || task.titleKey.includes(titleKey)))
+      || Array.from(taskContext.titleKeys).some((taskTitleKey) => titleKey.length > 30 && taskTitleKey.length > 30 && tokenSimilarity(titleKey, taskTitleKey) >= 0.82)
     );
     if (duplicate) removed.push(idea);
     else filtered.push(idea);

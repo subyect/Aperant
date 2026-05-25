@@ -119,6 +119,7 @@ interface PlanSubtask {
 const RECOVERY_SUBTASK_PRIORITY = [
   'aperant-base-sync-conflict',
   'aperant-qa-report-failure',
+  'aperant-human-feedback-rework',
 ];
 
 // =============================================================================

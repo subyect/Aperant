@@ -52,6 +52,15 @@ describe('doneStatusHasIncompleteSubtasks', () => {
 
     expect(result).toEqual({ incomplete: false, completedCount: 1, totalCount: 1 });
   });
+
+  it('blocks terminal done when all subtasks are complete but QA and merge evidence are missing', () => {
+    const result = doneStatusHasIncompleteSubtasks(planWithSubtasks([
+      { id: '1.1', status: 'completed' },
+      { id: '1.2', status: 'completed' },
+    ]));
+
+    expect(result).toEqual({ incomplete: true, completedCount: 2, totalCount: 2 });
+  });
 });
 
 describe('statusRequiresCompletedSubtasks', () => {
