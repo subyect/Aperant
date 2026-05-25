@@ -43,6 +43,7 @@ import { writeFileAtomicSync } from '../utils/atomic-file';
 import { safeParseJson } from '../utils/json-repair';
 import { checkSubtasksCompletion } from '../task-plan-guards';
 import { taskStateManager } from '../task-state-manager';
+import { cleanupStaleRateLimitPauseFile } from '../ai/orchestration/pause-handler';
 
 const DEFAULT_MAX_PARALLEL_TASKS = 3;
 const MAX_CONCURRENT_PLANNING_RECOVERIES = 1;
@@ -345,6 +346,7 @@ export class AgentManager extends EventEmitter {
 
       let totalScanned = 0;
       let totalReset = 0;
+      let totalStalePausesRemoved = 0;
 
       // Scan each project for stuck subtasks
       for (const project of projects) {
@@ -376,6 +378,11 @@ export class AgentManager extends EventEmitter {
 
             totalScanned++;
 
+            if (cleanupStaleRateLimitPauseFile(path.dirname(planPath))) {
+              totalStalePausesRemoved++;
+              console.log(`[AgentManager] Startup recovery: Removed stale rate-limit pause in ${specDirName}`);
+            }
+
             // Reset stuck subtasks (pass project.id to invalidate tasks cache)
             const { success, resetCount } = await resetStuckSubtasks(planPath, project.id);
 
@@ -391,6 +398,8 @@ export class AgentManager extends EventEmitter {
 
       if (totalReset > 0) {
         console.log(`[AgentManager] Startup recovery complete: Reset ${totalReset} stuck subtask(s) across ${totalScanned} task(s)`);
+      } else if (totalStalePausesRemoved > 0) {
+        console.log(`[AgentManager] Startup recovery complete: Removed ${totalStalePausesRemoved} stale rate-limit pause file(s) across ${totalScanned} task(s)`);
       } else {
         console.log(`[AgentManager] Startup recovery complete: No stuck subtasks found (scanned ${totalScanned} task(s))`);
       }
@@ -1329,6 +1338,7 @@ export class AgentManager extends EventEmitter {
     let worktreePath: string | null = null;
     let worktreeSpecDir = specDir;
     const useWorktree = options.useWorktree !== false; // Default to true (matching Python backend)
+    cleanupStaleRateLimitPauseFile(specDir);
     if (useWorktree) {
       try {
         const baseBranch = options.baseBranch ?? project?.settings?.mainBranch ?? 'main';
@@ -1343,6 +1353,7 @@ export class AgentManager extends EventEmitter {
         worktreePath = result.worktreePath;
         // Spec dir in the worktree (spec files were copied by createOrGetWorktree)
         worktreeSpecDir = path.join(worktreePath, specsBaseDir, specId);
+        cleanupStaleRateLimitPauseFile(worktreeSpecDir);
         const syncCheck = await syncWorktreeWithBaseBranch(projectPath, worktreePath, baseBranch);
         if (syncCheck.conflicted && project && task) {
           const conflictFiles = syncCheck.conflictFiles ?? [];

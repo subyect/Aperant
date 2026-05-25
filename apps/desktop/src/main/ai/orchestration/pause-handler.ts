@@ -158,6 +158,44 @@ export function removePauseFile(specDir: string, fileName: string): void {
   try { if (existsSync(filePath)) unlinkSync(filePath); } catch { /* ignore */ }
 }
 
+/**
+ * Remove a stale rate-limit pause file left behind by a killed/restarted worker.
+ *
+ * Active workers remove the file after waiting or after a user resumes. If the
+ * app exits during that wait, the sentinel can otherwise survive forever.
+ */
+export function cleanupStaleRateLimitPauseFile(specDir: string, nowMs = Date.now()): boolean {
+  const pauseFile = join(specDir, RATE_LIMIT_PAUSE_FILE);
+  if (!existsSync(pauseFile)) return false;
+
+  const data = readPauseFile(specDir, RATE_LIMIT_PAUSE_FILE);
+  if (!data) {
+    removePauseFile(specDir, RATE_LIMIT_PAUSE_FILE);
+    return true;
+  }
+
+  const resetTimestamp = typeof data.resetTimestamp === 'string'
+    ? Date.parse(data.resetTimestamp)
+    : Number.NaN;
+  if (Number.isFinite(resetTimestamp)) {
+    if (resetTimestamp <= nowMs) {
+      removePauseFile(specDir, RATE_LIMIT_PAUSE_FILE);
+      return true;
+    }
+    return false;
+  }
+
+  const pausedAt = typeof data.pausedAt === 'string'
+    ? Date.parse(data.pausedAt)
+    : Number.NaN;
+  if (!Number.isFinite(pausedAt) || nowMs - pausedAt >= MAX_RATE_LIMIT_WAIT_MS) {
+    removePauseFile(specDir, RATE_LIMIT_PAUSE_FILE);
+    return true;
+  }
+
+  return false;
+}
+
 // =============================================================================
 // Wait functions
 // =============================================================================
