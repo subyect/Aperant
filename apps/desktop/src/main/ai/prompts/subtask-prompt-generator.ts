@@ -64,6 +64,24 @@ function readHumanFeedback(specDir: string): string | null {
   }
 }
 
+const YECT_CONSOLE_ROUTE_SMOKE_COMMAND =
+  'DEBUG=pw:webserver LAYER1_CONSOLE_E2E_PORT=$((3200 + $$ % 1000)) LAYER1_CONSOLE_DATA_MODE=fixture LAYER1_CONSOLE_AUTH_DISABLED=true pnpm --filter @yect/layer1-console exec playwright test tests/e2e/console-routes.spec.ts --project=desktop --reporter=list --workers=1 --timeout=30000';
+
+function needsYectConsoleRouteSmokeGuidance(
+  subtask: SubtaskPromptInfo,
+  humanFeedback: string | null,
+): boolean {
+  const haystack = [
+    subtask.description,
+    subtask.lastError,
+    typeof subtask.verification?.run === 'string' ? subtask.verification.run : '',
+    typeof subtask.verification?.command === 'string' ? subtask.verification.command : '',
+    humanFeedback,
+  ].filter(Boolean).join('\n');
+
+  return /console-routes(?:\.spec\.ts)?|pnpm\s+test:e2e/i.test(haystack);
+}
+
 /**
  * Generate the worktree isolation warning section for prompts.
  * Mirrors generate_worktree_isolation_warning() from Python.
@@ -300,6 +318,16 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
   }
 
   const humanFeedback = readHumanFeedback(specDir);
+  if (needsYectConsoleRouteSmokeGuidance(subtask, humanFeedback)) {
+    sections.push(
+      `\n## APERANT-SAFE ROUTE SMOKE VERIFICATION\n\n` +
+      `For Yect layer1-console console-routes checks, do NOT use \`pnpm test:e2e\` wrappers, \`--reporter=line\`, or the default port 3124. ` +
+      `Those forms have caused silent watchdog loops and stale dev-server collisions.\n\n` +
+      `Use this verifier instead:\n` +
+      `\`\`\`bash\n${YECT_CONSOLE_ROUTE_SMOKE_COMMAND}\n\`\`\`\n` +
+      `If this verifier fails or times out, inspect the emitted \`pw:webserver\` output and record the concrete blocker in build-progress.txt before changing strategy.\n`
+    );
+  }
   if (humanFeedback) {
     sections.push(
       `\n## HUMAN REVIEW FEEDBACK\n\n` +

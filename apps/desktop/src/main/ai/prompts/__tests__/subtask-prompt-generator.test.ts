@@ -97,6 +97,34 @@ describe('generateSubtaskPrompt', () => {
     }
   });
 
+  it('promotes the safe Yect console route-smoke verifier when retry context mentions console-routes', async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), 'subtask-prompt-route-smoke-'));
+    const specDir = join(projectDir, '.auto-claude', 'specs', '001-test');
+
+    try {
+      const prompt = await generateSubtaskPrompt({
+        projectDir,
+        specDir,
+        attemptCount: 1,
+        subtask: {
+          id: 'aperant-qa-report-failure',
+          description: 'Resolve failed QA report.',
+          phaseName: 'QA recovery',
+          status: 'pending',
+          lastError: 'Bash verification command was rejected: `pnpm test:e2e -- --grep "console-routes"`.',
+          lastAttemptOutcome: 'completed',
+        },
+      });
+
+      expect(prompt).toContain('APERANT-SAFE ROUTE SMOKE VERIFICATION');
+      expect(prompt).toContain('do NOT use `pnpm test:e2e` wrappers');
+      expect(prompt).toContain('LAYER1_CONSOLE_E2E_PORT=$((3200 + $$ % 1000))');
+      expect(prompt).toContain('pnpm --filter @yect/layer1-console exec playwright test tests/e2e/console-routes.spec.ts');
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it('renders command verification stored in run fields', async () => {
     const projectDir = await mkdtemp(join(tmpdir(), 'subtask-prompt-run-verification-'));
     const specDir = join(projectDir, '.auto-claude', 'specs', '001-test');
