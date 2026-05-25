@@ -270,8 +270,11 @@ export class QALoop extends EventEmitter {
           return this.outcome(false, iteration, Date.now() - startTime, 'cancelled');
         }
 
-        // Read QA signoff from implementation_plan.json
-        const signoff = await this.readQASignoff();
+        // Read QA signoff from implementation_plan.json. Some reviewers write
+        // qa_report.md correctly but forget the JSON marker; recover that file
+        // verdict before treating the iteration as an agent error.
+        const signoff = await this.readQASignoff()
+          ?? await this.recoverQASignoffFromReport(iteration);
         const status = this.resolveQAStatus(signoff);
         const issues = signoff?.issues_found ?? [];
         const iterationDuration = Date.now() - iterationStart;
@@ -411,6 +414,48 @@ export class QALoop extends EventEmitter {
     if (status === 'rejected' || status === 'failed' || status === 'issues') return 'rejected';
     if (status === 'fixes_applied') return 'fixes_applied';
     return 'unknown';
+  }
+
+  private async recoverQASignoffFromReport(iteration: number): Promise<QASignoff | null> {
+    const reportPath = join(this.config.specDir, 'qa_report.md');
+    let report = '';
+    try {
+      report = await readFile(reportPath, 'utf-8');
+    } catch {
+      return null;
+    }
+
+    const match = report.match(/(?:^|\n)\s*(?:\*\*)?\s*Status\s*:\s*(PASSED|PASS|APPROVED|FAILED|FAIL|REJECTED|ISSUES)\s*(?:\*\*)?/i);
+    if (!match) return null;
+
+    const rawStatus = match[1].toLowerCase();
+    const approved = rawStatus === 'passed' || rawStatus === 'pass' || rawStatus === 'approved';
+    const signoff: QASignoff = {
+      status: approved ? 'approved' : 'rejected',
+      qa_session: iteration,
+      issues_found: approved
+        ? []
+        : [{
+          title: 'qa_report.md reported failure',
+          description: report.slice(0, 2000),
+        }],
+    };
+
+    try {
+      const planPath = join(this.config.specDir, 'implementation_plan.json');
+      const raw = await readFile(planPath, 'utf-8');
+      const plan = safeParseJson<Record<string, unknown>>(raw);
+      if (plan) {
+        plan.qa_signoff = signoff;
+        plan.updated_at = new Date().toISOString();
+        await writeFile(planPath, JSON.stringify(plan, null, 2), 'utf-8');
+      }
+    } catch {
+      // Returning the recovered signoff still lets this QA iteration proceed.
+    }
+
+    this.emitTyped('log', `Recovered QA signoff from qa_report.md (${signoff.status})`);
+    return signoff;
   }
 
   /**

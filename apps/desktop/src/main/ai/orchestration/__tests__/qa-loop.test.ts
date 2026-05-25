@@ -288,6 +288,39 @@ describe('QALoop', () => {
     expect(outcome.reason).toBe('consecutive_errors');
   });
 
+  it('recovers approval from qa_report.md when reviewer omits qa_signoff', async () => {
+    let planReadCount = 0;
+
+    mockReadFile.mockImplementation((filePath: string) => {
+      if (filePath.endsWith('implementation_plan.json')) {
+        planReadCount++;
+        return Promise.resolve(completedPlan());
+      }
+      if (filePath.endsWith('qa_report.md')) {
+        return Promise.resolve('# QA Report\n\n**Status: PASSED**\n');
+      }
+      return Promise.reject(new Error('ENOENT'));
+    });
+
+    const config = makeConfig({ maxIterations: 5 });
+    const loop = new QALoop(config);
+    const outcome = await loop.run();
+
+    expect(outcome.approved).toBe(true);
+    expect(outcome.totalIterations).toBe(1);
+    expect(planReadCount).toBeGreaterThan(1);
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      path.join(SPEC_DIR, 'implementation_plan.json'),
+      expect.stringContaining('"qa_signoff"'),
+      'utf-8',
+    );
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      path.join(SPEC_DIR, 'implementation_plan.json'),
+      expect.stringContaining('"status": "approved"'),
+      'utf-8',
+    );
+  });
+
   // -------------------------------------------------------------------------
   // Recurring issue detection
   // -------------------------------------------------------------------------
