@@ -16,7 +16,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'fs';
 import { cp, rm } from 'fs/promises';
 import { dirname, join, resolve } from 'path';
 import { promisify } from 'util';
@@ -28,6 +28,12 @@ import { getSpecsDir } from '../../../shared/constants';
 // ---------------------------------------------------------------------------
 
 const execFileAsync = promisify(execFile);
+const LOCAL_ENV_FILES_TO_SYNC = [
+  '.env.local',
+  '.env',
+  '.env.test',
+  '.env.development.local',
+];
 
 /**
  * Run a git sub-command in the given working directory.
@@ -127,6 +133,7 @@ export async function createOrGetWorktree(
       );
       await syncWorktreeWithBaseBranch(projectPath, worktreePath, baseBranch);
       await syncSpecDirectoryIntoWorktree(projectPath, worktreePath, specId, autoBuildPath);
+      await syncLocalEnvFilesIntoWorktree(projectPath, worktreePath);
       return { worktreePath: resolve(worktreePath), branch: branchName };
     }
 
@@ -268,6 +275,7 @@ export async function createOrGetWorktree(
   }
 
   await syncSpecDirectoryIntoWorktree(projectPath, worktreePath, specId, autoBuildPath);
+  await syncLocalEnvFilesIntoWorktree(projectPath, worktreePath);
 
   return { worktreePath: resolve(worktreePath), branch: branchName };
 }
@@ -419,6 +427,35 @@ async function syncSpecDirectoryIntoWorktree(
   }
 }
 
+async function syncLocalEnvFilesIntoWorktree(
+  projectPath: string,
+  worktreePath: string,
+): Promise<void> {
+  const copied: string[] = [];
+
+  for (const filename of LOCAL_ENV_FILES_TO_SYNC) {
+    const sourcePath = join(projectPath, filename);
+    if (!existsSync(sourcePath)) continue;
+
+    const destPath = join(worktreePath, filename);
+    try {
+      await cp(sourcePath, destPath, { force: true });
+      copied.push(filename);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[WorktreeManager] Warning: Could not sync ${filename} into task worktree: ${message}`,
+      );
+    }
+  }
+
+  if (copied.length > 0) {
+    console.warn(
+      `[WorktreeManager] Synced local env file(s) into task worktree: ${copied.join(', ')}`,
+    );
+  }
+}
+
 function countPlanSubtasks(planPath: string): number {
   try {
     const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as { phases?: Array<{ subtasks?: unknown[]; chunks?: unknown[] }> };
@@ -458,12 +495,20 @@ async function isWorktreeRegistered(
   if (!output) return false;
 
   // Each entry starts with "worktree <absolute-path>"
-  const normalizedTarget = resolve(worktreePath);
+  const normalizedTarget = normalizeWorktreeListPath(worktreePath);
   return output
     .split(/\r?\n/)
     .some((line) => {
       if (!line.startsWith('worktree ')) return false;
       const listed = line.slice('worktree '.length).trim();
-      return resolve(listed) === normalizedTarget;
+      return normalizeWorktreeListPath(listed) === normalizedTarget;
     });
+}
+
+function normalizeWorktreeListPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
 }

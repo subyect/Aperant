@@ -404,6 +404,107 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toBeUndefined();
   });
 
+  it('auto-completes base sync recovery when git reports no unmerged files', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Base sync recovery',
+          subtasks: [
+            {
+              id: 'aperant-base-sync-conflict',
+              title: 'Resolve base sync conflict',
+              description: 'Resolve unmerged files and prove the index is clean of conflicts.',
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        toolResults: [
+          {
+            toolName: 'Bash',
+            args: {
+              command: 'git status --short && git diff --name-only --diff-filter=U',
+            },
+            result: ' M packages/layer1-console/README.md\n?? .auto-claude/\nExit code: 0',
+            durationMs: 200,
+            isError: false,
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; completion_note?: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(1);
+    expect(result.stuckSubtasks).toEqual([]);
+    expect(subtask.status).toBe('completed');
+    expect(subtask.completion_note).toContain('no unmerged files');
+    expect(subtask.last_error).toBeUndefined();
+  });
+
+  it('keeps base sync recovery pending when git still reports an unmerged file', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Base sync recovery',
+          subtasks: [
+            {
+              id: 'aperant-base-sync-conflict',
+              title: 'Resolve base sync conflict',
+              description: 'Resolve unmerged files and prove the index is clean of conflicts.',
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        toolResults: [
+          {
+            toolName: 'Bash',
+            args: {
+              command: 'git diff --name-only --diff-filter=U',
+            },
+            result: 'packages/layer1-console/README.md\nExit code: 0',
+            durationMs: 200,
+            isError: false,
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(0);
+    expect(result.stuckSubtasks).toEqual(['aperant-base-sync-conflict']);
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('without marking the subtask completed');
+  });
+
   it('passes prior retry context into the next subtask session', async () => {
     const plan = planWithStatus('pending') as ReturnType<typeof planWithStatus> & {
       phases: Array<{

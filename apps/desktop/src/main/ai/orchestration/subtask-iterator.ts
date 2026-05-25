@@ -295,6 +295,14 @@ export async function iterateSubtasks(
       }
     }
 
+    if (!subtaskCompleted && subtask.id === 'aperant-base-sync-conflict') {
+      const verificationNote = buildSuccessfulBaseSyncRecoveryVerificationNote(result);
+      if (verificationNote) {
+        await markSubtaskCompletedByVerification(config.specDir, subtask.id, verificationNote);
+        subtaskCompleted = true;
+      }
+    }
+
     if (!subtaskCompleted && !retryReasonWritten) {
       const reason = buildRetryReason(result, completionState.status);
       await markSubtaskRetryRequired(config.specDir, subtask.id, reason, result.outcome);
@@ -441,6 +449,69 @@ function buildSuccessfulQaRecoveryVerificationNote(result: SessionResult): strin
   }
 
   return null;
+}
+
+function buildSuccessfulBaseSyncRecoveryVerificationNote(result: SessionResult): string | null {
+  const bashResults = (result.toolResults ?? [])
+    .filter((toolResult) => toolResult.toolName === 'Bash');
+
+  for (let i = bashResults.length - 1; i >= 0; i--) {
+    const toolResult = bashResults[i];
+    const command = typeof toolResult.args?.command === 'string'
+      ? toolResult.args.command
+      : '';
+    const output = toolResult.result;
+
+    if (!/git\s+diff\s+--name-only\s+--diff-filter=U/.test(command)) continue;
+    if (isFailedBashOutput(output)) continue;
+    if (hasUnmergedFileEvidence(output)) continue;
+
+    return (
+      `Auto-completed base sync recovery after git reported no unmerged files.\n` +
+      `Command: ${command}\n` +
+      `Result: ${compactForPlan(output, 1_200)}`
+    );
+  }
+
+  return null;
+}
+
+function hasUnmergedFileEvidence(output: string): boolean {
+  const normalized = output.replace(/\r\n/g, '\n');
+  if (/^UU\s+\S+/m.test(normalized)) return true;
+  if (/^AA\s+\S+/m.test(normalized)) return true;
+  if (/^DD\s+\S+/m.test(normalized)) return true;
+  if (/^AU\s+\S+/m.test(normalized)) return true;
+  if (/^UA\s+\S+/m.test(normalized)) return true;
+  if (/^DU\s+\S+/m.test(normalized)) return true;
+  if (/^UD\s+\S+/m.test(normalized)) return true;
+  if (/^U\s+\S+/m.test(normalized)) return true;
+  if (/^CONFLICT\b/m.test(normalized)) return true;
+  if (/^<<<<<<<\s/m.test(normalized)) return true;
+  if (/^=======$/m.test(normalized)) return true;
+  if (/^>>>>>>>\s/m.test(normalized)) return true;
+
+  return normalized
+    .split('\n')
+    .some((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || isKnownEmptyConflictCheckLine(trimmed)) return false;
+      if (/^[ MADRC?!]{2}\s+\S+/.test(line)) return false;
+      return /^[\w./-]+\.[\w.-]+$/.test(trimmed) || trimmed.includes('/');
+    });
+}
+
+function isKnownEmptyConflictCheckLine(line: string): boolean {
+  return line === 'Exit code: 0'
+    || line.startsWith('STDOUT:')
+    || line.startsWith('STDERR:')
+    || line.startsWith('$ ')
+    || line.startsWith('PWD=')
+    || line.startsWith('/Users/')
+    || line.includes('git diff --name-only --diff-filter=U')
+    || /no unmerged files/i.test(line)
+    || /no conflicts/i.test(line)
+    || /nothing to commit/i.test(line);
 }
 
 function formatBashFailureRetryReason(toolResult: NonNullable<SessionResult['toolResults']>[number]): string {
