@@ -17,7 +17,7 @@ import type {
   TaskPriority
 } from '../../../shared/types';
 import { projectStore } from '../../project-store';
-import { readIdeationFile, writeIdeationFile, updateIdeationTimestamp } from './file-utils';
+import { findIdeationDuplicateAgainstExistingTasks, readIdeationFile, writeIdeationFile, updateIdeationTimestamp } from './file-utils';
 import type { RawIdea } from './types';
 import { withSpecNumberLock } from '../../utils/spec-number-lock';
 
@@ -232,6 +232,14 @@ export async function convertIdeaToTask(
         return {
           success: false,
           error: `Idea has already been converted to task: ${idea.linked_task_id}`
+        };
+      }
+
+      const duplicateTask = findIdeationDuplicateAgainstExistingTasks(project.path, idea);
+      if (duplicateTask) {
+        return {
+          success: false,
+          error: `Idea duplicates existing task ${duplicateTask.specId}: ${duplicateTask.title}`
         };
       }
 

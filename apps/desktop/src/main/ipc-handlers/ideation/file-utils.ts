@@ -80,9 +80,50 @@ function titleFromSpecId(specId: string): string {
     .trim();
 }
 
+const TASK_SIMILARITY_STOP_TOKENS = new Set([
+  'a',
+  'an',
+  'and',
+  'explicit',
+  'for',
+  'in',
+  'into',
+  'module',
+  'modules',
+  'of',
+  'on',
+  'stage',
+  'stages',
+  'the',
+  'to',
+  'with',
+]);
+
+const TASK_TOKEN_ALIASES: Record<string, string> = {
+  decomposed: 'split',
+  decomposing: 'split',
+  decompose: 'split',
+  lifecyc: 'lifecycle',
+  lifecycles: 'lifecycle',
+  splitted: 'split',
+  splitting: 'split',
+  thrott: 'throttle',
+  throttled: 'throttle',
+  throttling: 'throttle',
+  workers: 'worker',
+};
+
+function comparableTokens(value: string): Set<string> {
+  const tokens = normalizeIdeationComparable(value)
+    .split(' ')
+    .filter((token) => token && !TASK_SIMILARITY_STOP_TOKENS.has(token))
+    .map((token) => TASK_TOKEN_ALIASES[token] ?? token);
+  return new Set(tokens);
+}
+
 function tokenSimilarity(a: string, b: string): number {
-  const aTokens = new Set(a.split(' ').filter(Boolean));
-  const bTokens = new Set(b.split(' ').filter(Boolean));
+  const aTokens = comparableTokens(a);
+  const bTokens = comparableTokens(b);
   if (aTokens.size === 0 || bTokens.size === 0) return 0;
 
   let overlap = 0;
@@ -90,12 +131,20 @@ function tokenSimilarity(a: string, b: string): number {
     if (bTokens.has(token)) overlap++;
   }
 
-  return overlap / Math.max(aTokens.size, bTokens.size);
+  const broadSimilarity = overlap / Math.max(aTokens.size, bTokens.size);
+  const containmentSimilarity = overlap / Math.min(aTokens.size, bTokens.size);
+  if (overlap >= 5 && containmentSimilarity >= 0.8) {
+    return Math.max(broadSimilarity, containmentSimilarity);
+  }
+  return broadSimilarity;
 }
 
-function collectIdeationTaskContext(projectPath: string): { titleKeys: Set<string>; tasks: Array<{ title: string; titleKey: string; status: string }> } {
+function collectIdeationTaskContext(projectPath: string): {
+  titleKeys: Set<string>;
+  tasks: Array<{ specId: string; title: string; titleKey: string; status: string; aliases: Set<string> }>;
+} {
   const specsDir = path.join(projectPath, AUTO_BUILD_PATHS.SPECS_DIR);
-  const tasks: Array<{ title: string; titleKey: string; status: string }> = [];
+  const tasks: Array<{ specId: string; title: string; titleKey: string; status: string; aliases: Set<string> }> = [];
   const titleKeys = new Set<string>();
   if (!existsSync(specsDir)) return { titleKeys: new Set(), tasks };
 
@@ -137,7 +186,7 @@ function collectIdeationTaskContext(projectPath: string): { titleKeys: Set<strin
     addComparableTitle(aliases, title);
     const titleKey = normalizeIdeationComparable(title);
     if (titleKey) {
-      tasks.push({ title, titleKey, status });
+      tasks.push({ specId, title, titleKey, status, aliases });
       for (const alias of aliases) titleKeys.add(alias);
     }
   }
@@ -145,20 +194,37 @@ function collectIdeationTaskContext(projectPath: string): { titleKeys: Set<strin
   return { titleKeys, tasks };
 }
 
+export function findIdeationDuplicateAgainstExistingTasks(projectPath: string, idea: RawIdea): {
+  specId: string;
+  title: string;
+  status: string;
+} | null {
+  const taskContext = collectIdeationTaskContext(projectPath);
+  const titleKey = normalizeIdeationComparable(idea?.title);
+  if (!titleKey) return null;
+
+  if (taskContext.titleKeys.has(titleKey)) {
+    return taskContext.tasks.find((task) => task.aliases.has(titleKey)) ?? null;
+  }
+
+  const containingMatch = taskContext.tasks.find(
+    (task) => titleKey.length > 30
+      && task.titleKey.length > 30
+      && (titleKey.includes(task.titleKey) || task.titleKey.includes(titleKey)),
+  );
+  if (containingMatch) return containingMatch;
+
+  return taskContext.tasks.find((task) => tokenSimilarity(titleKey, task.titleKey) >= 0.82) ?? null;
+}
+
 export function filterIdeationIdeasAgainstExistingTasks(projectPath: string, ideas: RawIdea[]): {
   filtered: RawIdea[];
   removed: RawIdea[];
 } {
-  const taskContext = collectIdeationTaskContext(projectPath);
   const filtered: RawIdea[] = [];
   const removed: RawIdea[] = [];
   for (const idea of Array.isArray(ideas) ? ideas : []) {
-    const titleKey = normalizeIdeationComparable(idea?.title);
-    const duplicate = titleKey && (
-      taskContext.titleKeys.has(titleKey)
-      || taskContext.tasks.some((task) => titleKey.length > 30 && task.titleKey.length > 30 && (titleKey.includes(task.titleKey) || task.titleKey.includes(titleKey)))
-      || Array.from(taskContext.titleKeys).some((taskTitleKey) => titleKey.length > 30 && taskTitleKey.length > 30 && tokenSimilarity(titleKey, taskTitleKey) >= 0.82)
-    );
+    const duplicate = findIdeationDuplicateAgainstExistingTasks(projectPath, idea);
     if (duplicate) removed.push(idea);
     else filtered.push(idea);
   }
