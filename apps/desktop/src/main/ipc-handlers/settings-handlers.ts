@@ -117,16 +117,25 @@ function ensureCodexSubscriptionSettings(settings: AppSettings): boolean {
   const settingsRecord = settings as AppSettings & Record<string, unknown>;
   settings.providerAccounts = result.accounts;
 
+  const buildCodexFirstPriorityOrder = (existingPriority: string[] = []) => {
+    const providerAccountIds = new Set(result.accounts.map(account => account.id));
+    return [
+      result.accountId!,
+      ...existingPriority.filter(id => id !== result.accountId && providerAccountIds.has(id)),
+      ...result.accounts.map(account => account.id).filter(id => id !== result.accountId && !existingPriority.includes(id)),
+    ];
+  };
+
   const existingPriority = settings.globalPriorityOrder ?? [];
-  const providerAccountIds = new Set(result.accounts.map(account => account.id));
-  const nextPriorityOrder = [
-    result.accountId,
-    ...existingPriority.filter(id => id !== result.accountId && providerAccountIds.has(id)),
-    ...result.accounts.map(account => account.id).filter(id => id !== result.accountId && !existingPriority.includes(id)),
-  ];
+  const existingCrossProviderPriority = settings.crossProviderPriorityOrder ?? existingPriority;
+  const nextPriorityOrder = buildCodexFirstPriorityOrder(existingPriority);
+  const nextCrossProviderPriorityOrder = buildCodexFirstPriorityOrder(existingCrossProviderPriority);
   if (JSON.stringify(existingPriority) !== JSON.stringify(nextPriorityOrder)) {
     settings.globalPriorityOrder = nextPriorityOrder;
-    settings.crossProviderPriorityOrder = nextPriorityOrder;
+    changed = true;
+  }
+  if (JSON.stringify(existingCrossProviderPriority) !== JSON.stringify(nextCrossProviderPriorityOrder)) {
+    settings.crossProviderPriorityOrder = nextCrossProviderPriorityOrder;
     changed = true;
   }
 
@@ -1043,16 +1052,11 @@ export function registerSettingsHandlers(
   function readProviderAccounts(): ProviderAccount[] {
     const settings = readSettingsFile();
     if (!settings) return [];
-    const result = ensureCodexOAuthAccount(settings.providerAccounts as ProviderAccount[] | undefined);
-    if (result.added) {
-      settings.providerAccounts = result.accounts;
-      settings.globalPriorityOrder = [
-        result.accountId!,
-        ...((settings.globalPriorityOrder as string[] | undefined) ?? []).filter(id => id !== result.accountId),
-      ];
+    const appSettings = settings as unknown as AppSettings;
+    if (ensureCodexSubscriptionSettings(appSettings)) {
       writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), 'utf-8');
     }
-    return result.accounts;
+    return (appSettings.providerAccounts as ProviderAccount[] | undefined) ?? [];
   }
 
   /** Write providerAccounts array back to settings.json (merges with existing settings) */

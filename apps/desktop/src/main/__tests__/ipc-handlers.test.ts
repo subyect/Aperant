@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "events";
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync } from "fs";
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 
@@ -181,6 +181,7 @@ describe("IPC Handlers", { timeout: 30000 }, () => {
     cleanupTestDirs();
     setupTestProject();
     mkdirSync(path.join(TEST_DIR, "userData", "store"), { recursive: true });
+    process.env.APERANT_USER_DATA_DIR = path.join(TEST_DIR, "userData");
 
     // Get mocked ipcMain
     const electron = await import("electron");
@@ -525,6 +526,67 @@ describe("IPC Handlers", { timeout: 30000 }, () => {
       expect(result).toHaveProperty("success", true);
       const data = (result as { data: { theme: string } }).data;
       expect(data).toHaveProperty("theme", "dark");
+    });
+
+    it("should put OpenAI subscription first in global and cross-provider queues", async () => {
+      const userDataDir = path.join(TEST_DIR, "userData");
+      const settingsPath = path.join(userDataDir, "settings.json");
+      const openaiAccount = {
+        id: "openai-subscription",
+        provider: "openai",
+        name: "OpenAI",
+        authType: "oauth",
+        billingModel: "subscription",
+      };
+      const anthropicAccount = {
+        id: "anthropic-subscription",
+        provider: "anthropic",
+        name: "Anthropic",
+        authType: "oauth",
+        billingModel: "subscription",
+      };
+      writeFileSync(path.join(userDataDir, "codex-auth.json"), JSON.stringify({
+        access_token: "access-token",
+        refresh_token: "refresh-token",
+        expires_at: Date.now() + 3_600_000,
+      }));
+      writeFileSync(settingsPath, JSON.stringify({
+        defaultModel: "sonnet",
+        globalDefaultModel: "sonnet",
+        model: "sonnet",
+        providerAccounts: [openaiAccount, anthropicAccount],
+        globalPriorityOrder: [openaiAccount.id, anthropicAccount.id],
+        crossProviderPriorityOrder: [anthropicAccount.id, openaiAccount.id],
+      }, null, 2));
+
+      const { setupIpcHandlers } = await import("../ipc-handlers");
+      setupIpcHandlers(
+        mockAgentManager as never,
+        mockTerminalManager as never,
+        () => mockMainWindow as never
+      );
+
+      const result = await ipcMain.invokeHandler("settings:get", {});
+
+      expect(result).toHaveProperty("success", true);
+      const data = (result as {
+        data: {
+          defaultModel: string;
+          globalDefaultModel: string;
+          model: string;
+          globalPriorityOrder: string[];
+          crossProviderPriorityOrder: string[];
+        };
+      }).data;
+      expect(data.defaultModel).toBe("gpt-5.3-codex");
+      expect(data.globalDefaultModel).toBe("gpt-5.3-codex");
+      expect(data.model).toBe("gpt-5.3-codex");
+      expect(data.globalPriorityOrder[0]).toBe(openaiAccount.id);
+      expect(data.crossProviderPriorityOrder[0]).toBe(openaiAccount.id);
+
+      const persisted = JSON.parse(readFileSync(settingsPath, "utf-8")) as typeof data;
+      expect(persisted.globalPriorityOrder[0]).toBe(openaiAccount.id);
+      expect(persisted.crossProviderPriorityOrder[0]).toBe(openaiAccount.id);
     });
   });
 
