@@ -81,16 +81,19 @@ function buildImmediateCommandGuidance(command: string): string | null {
   const runsPlaywrightWrapper = /\bpnpm\s+test:e2e\b/.test(normalized);
   const runsLikelySilentPlaywrightLine = /\bpnpm\s+(?:exec\s+)?playwright\s+test\b/.test(normalized)
     && /--reporter(?:=|\s+)line\b/.test(normalized);
+  const runsLikelySilentRouteSmoke = /\bpnpm\s+(?:exec\s+)?playwright\s+test\b/.test(normalized)
+    && /\bconsole-routes\.spec\.ts\b/.test(normalized)
+    && !/\bDEBUG=/.test(normalized);
   const alreadyVerbose = /--reporter(?:=|\s+)(list|github|json)\b/.test(normalized)
     || /\bDEBUG=/.test(normalized)
     || /\bPWDEBUG=/.test(normalized);
 
-  if ((!runsPlaywrightWrapper && !runsLikelySilentPlaywrightLine) || alreadyVerbose) {
+  if ((!runsPlaywrightWrapper && !runsLikelySilentPlaywrightLine && !runsLikelySilentRouteSmoke) || (alreadyVerbose && !runsLikelySilentRouteSmoke)) {
     return null;
   }
 
   const suggestedCommand = normalized.includes('console-routes')
-    ? 'cd packages/layer1-console && pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=list --workers=1'
+    ? 'cd packages/layer1-console && DEBUG=pw:webserver pnpm exec playwright test tests/e2e/console-routes.spec.ts --reporter=list --workers=1'
     : 'pnpm exec playwright test --reporter=list --workers=1';
 
   return (
