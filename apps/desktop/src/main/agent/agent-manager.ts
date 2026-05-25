@@ -476,7 +476,10 @@ export class AgentManager extends EventEmitter {
       for (const task of tasks) {
         if (!this.isRecoverableTaskStatus(task.status)) continue;
         const conflictFiles = this.getTaskWorktreeConflictFiles(project, task);
-        if (conflictFiles.length === 0) continue;
+        if (conflictFiles.length === 0) {
+          this.clearResolvedBaseSyncConflictForTask(project, task);
+          continue;
+        }
         this.persistBaseSyncConflictForCoding(project, task, conflictFiles, 'worktree_has_unmerged_conflicts');
       }
       tasks = projectStore.getTasks(project.id)
@@ -532,6 +535,64 @@ export class AgentManager extends EventEmitter {
       return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     } catch {
       return [];
+    }
+  }
+
+  private clearResolvedBaseSyncConflictForTask(project: Project, task: Task): void {
+    let persisted = false;
+
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = safeParseJson<Record<string, any>>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
+
+        let changed = false;
+        if (plan.base_sync_conflict !== undefined) {
+          delete plan.base_sync_conflict;
+          changed = true;
+        }
+        if (plan.recoveryNote === BASE_SYNC_RECOVERY_NOTE || (
+          typeof plan.recoveryNote === 'string'
+          && /^Base branch sync conflict\b/.test(plan.recoveryNote)
+        )) {
+          delete plan.recoveryNote;
+          changed = true;
+        }
+
+        if (Array.isArray(plan.phases)) {
+          for (const phase of plan.phases as Array<{ subtasks?: Array<Record<string, any>> }>) {
+            if (!Array.isArray(phase.subtasks)) continue;
+            for (const subtask of phase.subtasks) {
+              if (subtask.id !== BASE_SYNC_RECOVERY_SUBTASK_ID || subtask.status === 'completed') continue;
+              subtask.status = 'completed';
+              subtask.completed_at = new Date().toISOString();
+              subtask.completion_note = 'Auto-completed base sync recovery after Git reported no unmerged files during workflow recovery.';
+              delete subtask.last_error;
+              delete subtask.last_attempt_outcome;
+              delete subtask.last_attempt_at;
+              changed = true;
+            }
+          }
+        }
+
+        try {
+          rmSync(path.join(path.dirname(planPath), 'BASE_SYNC_CONFLICT.md'), { force: true });
+        } catch {
+          // Best effort cleanup for stale resolved conflict artifacts.
+        }
+
+        if (!changed) continue;
+        plan.updated_at = new Date().toISOString();
+        writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+        persisted = true;
+      } catch (error) {
+        console.warn(`[AgentManager] Failed to clear resolved base sync conflict for ${task.specId}:`, error);
+      }
+    }
+
+    if (persisted) {
+      projectStore.invalidateTasksCache(project.id);
     }
   }
 

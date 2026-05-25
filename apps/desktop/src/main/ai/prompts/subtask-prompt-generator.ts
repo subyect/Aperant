@@ -365,8 +365,9 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
       `Read QA_FIX_REQUEST.md, qa_report.md, implementation_plan.json, and the current git diff before acting. ` +
       `Do not complete this subtask after only reading files or rerunning the same failing command. ` +
       `If verification exposes repo-local failures such as unresolved imports, failed assertions, TypeScript errors, stale generated files, or missing workspace packages, fix those failures in this worktree immediately. ` +
+      `Package-resolution, typecheck, test-harness, and generated-dist failures inside this repository are in scope for this recovery subtask even when the original subtask was narrower. ` +
       `Do not ask whether to proceed and do not end with "if you want, I can fix this"; you are already authorized to fix reachable repo-local blockers. ` +
-      `Complete it only after the reported blocker is fixed or a concrete externally-owned blocker is recorded in build-progress.txt.\n`
+      `Complete it only after the reported blocker is fixed or a concrete externally-owned blocker is recorded in build-progress.txt; externally-owned means credentials, network, or a remote service, not local repository code.\n`
     );
   }
 
@@ -461,7 +462,7 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
     `- If the work is already implemented, run targeted verification and record the evidence in build-progress.txt before marking complete\n` +
     `- Do not end your response until you have either updated this subtask status to "completed" or documented a concrete blocker in build-progress.txt\n` +
     `- Never ask whether to proceed to the next step; execute the current subtask to completion\n` +
-    `- If verification fails, FIX IT before marking complete\n` +
+    `- If verification fails, fix repository-local blockers before marking complete; do not call local imports, package exports, type errors, or test failures out of scope\n` +
     `- If you encounter a blocker, document it in build-progress.txt\n`
   );
 

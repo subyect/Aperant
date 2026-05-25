@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import path from 'path';
 
@@ -804,6 +805,79 @@ describe('ProjectStore', () => {
       expect(existsSync(path.join(specDir, 'QA_FIX_REQUEST.md'))).toBe(false);
       expect(existsSync(path.join(specDir, 'QA_ESCALATION.md'))).toBe(false);
       expect(existsSync(path.join(specDir, 'BASE_SYNC_CONFLICT.md'))).toBe(false);
+    });
+
+    it('clears resolved base-sync conflict metadata from active worktree tasks', async () => {
+      const specId = '011-resolved-worktree-conflict';
+      const specRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');
+      const worktreeRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId);
+      const worktreeSpecRoot = path.join(worktreeRoot, '.auto-claude', 'specs');
+      const worktreeSpecDir = path.join(worktreeSpecRoot, specId);
+      mkdirSync(worktreeSpecDir, { recursive: true });
+
+      execFileSync('git', ['init'], { cwd: worktreeRoot, stdio: 'ignore' });
+
+      writeSpec(specRoot, specId, makePlan({
+        feature: 'Resolved Worktree Conflict',
+        status: 'queue',
+        subtaskStatuses: ['pending'],
+        updatedAt: '2024-01-03T00:00:00Z',
+      }));
+
+      const worktreePlan = {
+        ...makePlan({
+          feature: 'Resolved Worktree Conflict',
+          status: 'in_progress',
+          subtaskStatuses: ['pending'],
+          updatedAt: '2024-01-04T00:00:00Z',
+        }),
+        planStatus: 'in_progress',
+        xstateState: 'coding',
+        executionPhase: 'coding',
+        recoveryNote: 'Base branch sync conflict while updating task worktree; continuing implementation.',
+        base_sync_conflict: {
+          files: ['packages/example.ts'],
+          reason: 'worktree_has_unmerged_conflicts',
+          updated_at: '2026-05-25T09:58:40.552Z',
+        },
+        phases: [
+          {
+            phase: 1,
+            name: 'Base branch sync recovery',
+            type: 'base_sync_recovery',
+            subtasks: [
+              {
+                id: 'aperant-base-sync-conflict',
+                title: 'Resolve base branch sync conflicts',
+                description: 'Resolve conflict markers.',
+                status: 'pending',
+                last_error: 'Resolve unresolved files.',
+              },
+            ],
+          },
+        ],
+      };
+      writeSpec(worktreeSpecRoot, specId, worktreePlan);
+      writeFileSync(path.join(worktreeSpecDir, 'BASE_SYNC_CONFLICT.md'), '# Base Branch Sync Conflict\n');
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const task = tasks.find((candidate) => candidate.specId === specId);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(worktreeSpecDir, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(task?.location).toBe('worktree');
+      expect(task?.subtasks[0].status).toBe('completed');
+      expect(persistedPlan.base_sync_conflict).toBeUndefined();
+      expect(persistedPlan.recoveryNote).toBeUndefined();
+      expect(persistedPlan.phases[0].subtasks[0].status).toBe('completed');
+      expect(persistedPlan.phases[0].subtasks[0].last_error).toBeUndefined();
+      expect(existsSync(path.join(worktreeSpecDir, 'BASE_SYNC_CONFLICT.md'))).toBe(false);
     });
 
     it('should prefer original task description from requirements.json over plan description', async () => {

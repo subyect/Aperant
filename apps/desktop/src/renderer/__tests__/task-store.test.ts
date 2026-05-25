@@ -257,6 +257,55 @@ describe('Task Store', () => {
       expect(useTaskStore.getState().tasks[0].subtasks[0].status).toBe('completed');
     });
 
+    it('uses description as the display title when plan subtasks omit title', () => {
+      useTaskStore.setState({
+        tasks: [createTestTask({ id: 'task-1', subtasks: [] })]
+      });
+
+      const plan = createTestPlan({
+        phases: [
+          {
+            phase: 1,
+            name: 'Phase 1',
+            type: 'implementation',
+            subtasks: [
+              { id: 'c1', description: 'Description-only subtask', status: 'pending' } as any,
+            ]
+          }
+        ]
+      });
+
+      useTaskStore.getState().updateTaskFromPlan('task-1', plan);
+
+      expect(useTaskStore.getState().tasks[0].subtasks[0].title).toBe('Description-only subtask');
+      expect(useTaskStore.getState().tasks[0].subtasks[0].description).toBe('Description-only subtask');
+    });
+
+    it('extracts legacy chunks when a plan phase has no subtasks field', () => {
+      useTaskStore.setState({
+        tasks: [createTestTask({ id: 'task-1', subtasks: [] })]
+      });
+
+      const plan = createTestPlan({
+        phases: [
+          {
+            phase: 1,
+            name: 'Phase 1',
+            type: 'implementation',
+            chunks: [
+              { id: 'c1', title: 'Chunk 1', description: 'Implement chunk 1', status: 'completed' },
+            ],
+          } as any,
+        ],
+      });
+
+      useTaskStore.getState().updateTaskFromPlan('task-1', plan);
+
+      expect(useTaskStore.getState().tasks[0].subtasks).toHaveLength(1);
+      expect(useTaskStore.getState().tasks[0].subtasks[0].title).toBe('Chunk 1');
+      expect(useTaskStore.getState().tasks[0].subtasks[0].status).toBe('completed');
+    });
+
     it('should extract subtasks from multiple phases', () => {
       useTaskStore.setState({
         tasks: [createTestTask({ id: 'task-1' })]

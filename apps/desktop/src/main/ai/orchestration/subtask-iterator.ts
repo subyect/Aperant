@@ -193,7 +193,7 @@ export async function iterateSubtasks(
     // usually recoverable provider/plan-marker failures, not implementation
     // dead ends.
     const maxAttemptsForSubtask = shouldKeepRetryingSubtask(subtask)
-      ? config.maxRetries * 3
+      ? config.maxRetries * 12
       : config.maxRetries;
     if (currentAttempt > maxAttemptsForSubtask) {
       stuckSubtasks.push(subtask.id);
@@ -387,7 +387,8 @@ function buildRetryReason(
       return (
         `Bash command failed during the attempt or the assistant reported a repo-local verifier failure, ` +
         `but the subtask was not completed in implementation_plan.json (current status: ${currentStatus ?? 'missing'}).\n` +
-        `Do not stop with another blocker summary. Fix the repo-local imports, package exports, failed assertions, or test harness code needed by the required verifier, then rerun targeted verification before marking complete.\n\n` +
+        `Do not stop with another blocker summary. Fix the repo-local imports, package exports, failed assertions, generated artifacts, or test harness code needed by the required verifier, then rerun targeted verification before marking complete. ` +
+        `Do not classify failures inside this repository or workspace packages as outside the current task scope.\n\n` +
         `Reported failure summary:\n${compactForPlan(verifierFailureContext, 1_600)}`
       );
     }
@@ -647,6 +648,8 @@ function shouldKeepRetryingSubtask(subtask: PlanSubtask): boolean {
       || subtask.last_error?.includes('Bash verification command stalled')
       || subtask.last_error?.includes('Bash verification command timed out')
       || subtask.last_error?.includes('Bash verification command was rejected')
+      || subtask.last_error?.includes('repo-local verifier failure')
+      || subtask.last_error?.includes('Do not stop with another blocker summary')
     )
   ) {
     return true;

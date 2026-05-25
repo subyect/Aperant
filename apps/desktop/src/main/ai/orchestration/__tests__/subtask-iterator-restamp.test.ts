@@ -447,7 +447,7 @@ describe('iterateSubtasks completion proof', () => {
       },
     });
 
-    expect(attempts).toBe(3);
+    expect(attempts).toBe(12);
     expect(result.stuckSubtasks).toEqual(['aperant-qa-report-failure']);
   });
 

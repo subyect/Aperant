@@ -1,5 +1,6 @@
 import { app } from 'electron';
 import { readFileSync, existsSync, mkdirSync, readdirSync, rmSync, Dirent } from 'fs';
+import { execFileSync } from 'child_process';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import type { Project, ProjectSettings, Task, TaskStatus, TaskMetadata, ImplementationPlan, ReviewReason, PlanSubtask, KanbanPreferences, ExecutionPhase } from '../shared/types';
@@ -14,11 +15,14 @@ import {
 } from '../shared/constants';
 import { getAutoBuildPath, isInitialized } from './project-initializer';
 import { getTaskWorktreeDir } from './worktree-paths';
+import { getToolPath } from './cli-tool-manager';
 import { findAllSpecPaths } from './utils/spec-path-helpers';
 import { ensureAbsolutePath } from './utils/path-helpers';
 import { writeFileAtomicSync } from './utils/atomic-file';
 import { updateRoadmapFeatureOutcome, revertRoadmapFeatureOutcome } from './utils/roadmap-utils';
 import { safeParseJson } from './utils/json-repair';
+import { getIsolatedGitEnv } from './utils/git-isolation';
+import { BASE_SYNC_RECOVERY_NOTE, BASE_SYNC_RECOVERY_SUBTASK_ID } from './agent/base-sync-recovery';
 import {
   applyRuntimePhaseState,
   checkSubtasksCompletion,
@@ -546,7 +550,7 @@ export class ProjectStore {
    */
   private loadTasksFromSpecsDir(
     specsDir: string,
-    _basePath: string,
+    basePath: string,
     location: 'main' | 'worktree',
     projectId: string,
     _specsBaseDir: string
@@ -580,6 +584,13 @@ export class ProjectStore {
             const parsed = safeParseJson<ImplementationPlan>(content);
             if (parsed) {
               plan = parsed;
+              this.clearResolvedBaseSyncConflictIfNeeded(
+                plan as unknown as Record<string, unknown>,
+                planPath,
+                dir.name,
+                location,
+                basePath
+              );
             } else {
               // safeParseJson returned null — JSON is unrepairable
               hasJsonError = true;
@@ -657,8 +668,9 @@ export class ProjectStore {
         const subtasks = plan?.phases?.flatMap((phase) => {
           const items = phase.subtasks || (phase as { chunks?: PlanSubtask[] }).chunks || [];
           return items.map((subtask) => {
-            const title = subtask.title;
-            const description = subtask.description;
+            const subtaskWithFallbacks = subtask as PlanSubtask & { name?: string };
+            const title = subtask.title || subtask.description || subtaskWithFallbacks.name || subtask.id;
+            const description = subtask.description || subtask.title || subtaskWithFallbacks.name || '';
             return {
               id: subtask.id,
               title,
@@ -744,6 +756,84 @@ export class ProjectStore {
     }
 
     return tasks;
+  }
+
+  private clearResolvedBaseSyncConflictIfNeeded(
+    plan: Record<string, unknown>,
+    planPath: string,
+    taskName: string,
+    location: 'main' | 'worktree',
+    worktreePath: string
+  ): void {
+    if (location !== 'worktree' || plan.base_sync_conflict === undefined) return;
+    if (this.worktreeHasUnmergedFiles(worktreePath)) return;
+
+    let changed = false;
+    delete plan.base_sync_conflict;
+    changed = true;
+
+    if (plan.recoveryNote === BASE_SYNC_RECOVERY_NOTE || (
+      typeof plan.recoveryNote === 'string'
+      && /^Base branch sync conflict\b/.test(plan.recoveryNote)
+    )) {
+      delete plan.recoveryNote;
+    }
+
+    if (this.completeBaseSyncRecoverySubtask(plan)) {
+      changed = true;
+    }
+
+    try {
+      rmSync(path.join(path.dirname(planPath), 'BASE_SYNC_CONFLICT.md'), { force: true });
+    } catch {
+      // Best effort cleanup for stale resolved conflict artifacts.
+    }
+
+    if (!changed) return;
+
+    plan.updated_at = new Date().toISOString();
+    try {
+      writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+      console.warn(`[ProjectStore] Cleared resolved base-sync conflict metadata for ${taskName}.`);
+    } catch (writeError) {
+      console.error(`[ProjectStore] Failed to clear resolved base-sync metadata for ${taskName}:`, writeError);
+    }
+  }
+
+  private worktreeHasUnmergedFiles(worktreePath: string): boolean {
+    try {
+      const output = execFileSync(getToolPath('git'), ['diff', '--name-only', '--diff-filter=U'], {
+        cwd: worktreePath,
+        encoding: 'utf-8',
+        env: getIsolatedGitEnv(),
+      }).trim();
+      return output.length > 0;
+    } catch {
+      // If Git cannot answer, preserve the recovery metadata instead of hiding a possible conflict.
+      return true;
+    }
+  }
+
+  private completeBaseSyncRecoverySubtask(plan: Record<string, unknown>): boolean {
+    if (!Array.isArray(plan.phases)) return false;
+    let changed = false;
+
+    for (const phase of plan.phases as Array<{ subtasks?: Array<Record<string, unknown>> }>) {
+      if (!Array.isArray(phase.subtasks)) continue;
+      for (const subtask of phase.subtasks) {
+        if (subtask.id !== BASE_SYNC_RECOVERY_SUBTASK_ID) continue;
+        if (subtask.status === 'completed') continue;
+        subtask.status = 'completed';
+        subtask.completed_at = new Date().toISOString();
+        subtask.completion_note = 'Auto-completed base sync recovery after Git reported no unmerged files on task load.';
+        delete subtask.last_error;
+        delete subtask.last_attempt_outcome;
+        delete subtask.last_attempt_at;
+        changed = true;
+      }
+    }
+
+    return changed;
   }
 
   /**

@@ -142,14 +142,15 @@ function validatePlanData(plan: ImplementationPlan): boolean {
   // Validate each phase has subtasks array
   for (let i = 0; i < plan.phases.length; i++) {
     const phase = plan.phases[i];
-    if (!phase || !phase.subtasks || !Array.isArray(phase.subtasks)) {
+    const phaseItems = getPhaseSubtasks(phase);
+    if (!phase || !phaseItems) {
       console.warn(`[validatePlanData] Invalid phase ${i}: missing or invalid subtasks array`);
       return false;
     }
 
     // Validate each subtask has at minimum a description
-    for (let j = 0; j < phase.subtasks.length; j++) {
-      const subtask = phase.subtasks[j];
+    for (let j = 0; j < phaseItems.length; j++) {
+      const subtask = phaseItems[j];
       if (!subtask || typeof subtask !== 'object') {
         console.warn(`[validatePlanData] Invalid subtask at phase ${i}, index ${j}: not an object`);
         return false;
@@ -166,6 +167,13 @@ function validatePlanData(plan: ImplementationPlan): boolean {
   }
 
   return true;
+}
+
+function getPhaseSubtasks(phase: ImplementationPlan['phases'][number]): ImplementationPlan['phases'][number]['subtasks'] | undefined {
+  const phaseWithChunks = phase as ImplementationPlan['phases'][number] & { chunks?: ImplementationPlan['phases'][number]['subtasks'] };
+  if (Array.isArray(phase.subtasks)) return phase.subtasks;
+  if (Array.isArray(phaseWithChunks.chunks)) return phaseWithChunks.chunks;
+  return undefined;
 }
 
 // localStorage key prefix for task order persistence
@@ -368,14 +376,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       return {
         tasks: updateTaskAtIndex(state.tasks, index, (t) => {
           const subtasks: Subtask[] = plan.phases.flatMap((phase) =>
-            phase.subtasks.map((subtask) => {
+            (getPhaseSubtasks(phase) ?? []).map((subtask) => {
               // Ensure all required fields have valid values to prevent UI issues
               // Use crypto.randomUUID() for stronger randomness when available
               const id = subtask.id || (typeof crypto !== 'undefined' && crypto.randomUUID
                 ? crypto.randomUUID()
                 : `subtask-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
-              const title = subtask.title;
-              const description = subtask.description;
+              const subtaskWithFallbacks = subtask as typeof subtask & { name?: string };
+              const title = subtask.title || subtask.description || subtaskWithFallbacks.name || id;
+              const description = subtask.description || subtask.title || subtaskWithFallbacks.name || '';
               const status = (subtask.status as SubtaskStatus) || 'pending';
 
               return {
