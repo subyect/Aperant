@@ -161,6 +161,44 @@ describe('iterateSubtasks completion proof', () => {
     expect(written.phases[0].subtasks[0].status).toBe('completed');
   });
 
+  it('rejects a completed subtask when the latest Bash verification failed', async () => {
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => {
+        const plan = planWithStatus('completed');
+        await writeFile(planPath, JSON.stringify(plan, null, 2));
+        return sessionResult('completed', {
+          toolResults: [
+            {
+              toolName: 'Bash',
+              args: { command: 'pnpm --filter @yect/layer1-workers typecheck' },
+              result: 'Exit code: 2\nsrc/lib/loop.ts(1,29): error TS2307: Cannot find module.',
+              durationMs: 5_000,
+              isError: false,
+            },
+          ],
+        });
+      },
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(0);
+    expect(result.stuckSubtasks).toEqual(['1.1']);
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('latest Bash verification failed');
+    expect(subtask.last_error).toContain('pnpm --filter @yect/layer1-workers typecheck');
+    expect(subtask.last_error).toContain('Exit code: 2');
+  });
+
   it('retries instead of completing when the session hits max steps', async () => {
     await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
 

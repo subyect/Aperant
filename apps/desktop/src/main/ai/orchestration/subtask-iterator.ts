@@ -269,9 +269,25 @@ export async function iterateSubtasks(
     }
 
     const completionState = await readSubtaskCompletionState(config.specDir, subtask.id);
-    const subtaskCompleted = completionState.status === 'completed';
+    let subtaskCompleted = completionState.status === 'completed';
+    let retryReasonWritten = false;
 
-    if (!subtaskCompleted) {
+    if (subtaskCompleted) {
+      const latestBashFailure = buildLatestBashFailureRetryReason(result);
+      if (latestBashFailure) {
+        subtaskCompleted = false;
+        await markSubtaskRetryRequired(
+          config.specDir,
+          subtask.id,
+          `Subtask was marked completed, but the latest Bash verification failed.\n\n${latestBashFailure}`,
+          result.outcome,
+          true,
+        );
+        retryReasonWritten = true;
+      }
+    }
+
+    if (!subtaskCompleted && !retryReasonWritten) {
       const reason = buildRetryReason(result, completionState.status);
       await markSubtaskRetryRequired(config.specDir, subtask.id, reason, result.outcome);
     }
@@ -362,46 +378,57 @@ function buildBashFailureRetryReason(result: SessionResult): string | null {
 
   for (let i = bashResults.length - 1; i >= 0; i--) {
     const toolResult = bashResults[i];
-    const output = toolResult.result;
-    if (!isFailedBashOutput(output)) continue;
-
-    const command = typeof toolResult.args?.command === 'string'
-      ? toolResult.args.command
-      : '(command unavailable)';
-    const outputSnippet = compactForPlan(output, 1_600);
-
-    if (output.includes('Command produced no output for')) {
-      return (
-        `Bash verification command stalled without output and was killed: \`${command}\`.\n` +
-        `Tool output:\n${outputSnippet}\n\n` +
-        `Do not rerun the same command unchanged. Use a narrower or more verbose command, inspect the relevant logs, and fix the blocker before marking this subtask completed.`
-      );
-    }
-
-    if (output.includes('Command is likely to run silently')) {
-      return (
-        `Bash verification command was rejected because it is likely to stall without output: \`${command}\`.\n` +
-        `Tool output:\n${outputSnippet}\n\n` +
-        `Use the suggested verbose or narrower verifier instead of rerunning the same command unchanged.`
-      );
-    }
-
-    if (output.includes('Command timed out after')) {
-      return (
-        `Bash verification command timed out: \`${command}\`.\n` +
-        `Tool output:\n${outputSnippet}\n\n` +
-        `Do not mark this subtask completed until the timeout is explained or the verification is replaced with a targeted passing check.`
-      );
-    }
-
-    return (
-      `Bash command failed during the attempt: \`${command}\`.\n` +
-      `Tool output:\n${outputSnippet}\n\n` +
-      `Fix the failure or run a targeted passing verification before marking this subtask completed.`
-    );
+    if (!isFailedBashOutput(toolResult.result)) continue;
+    return formatBashFailureRetryReason(toolResult);
   }
 
   return null;
+}
+
+function buildLatestBashFailureRetryReason(result: SessionResult): string | null {
+  const bashResults = (result.toolResults ?? [])
+    .filter((toolResult) => toolResult.toolName === 'Bash');
+  const latest = bashResults[bashResults.length - 1];
+  if (!latest || !isFailedBashOutput(latest.result)) return null;
+  return formatBashFailureRetryReason(latest);
+}
+
+function formatBashFailureRetryReason(toolResult: NonNullable<SessionResult['toolResults']>[number]): string {
+  const output = toolResult.result;
+  const command = typeof toolResult.args?.command === 'string'
+    ? toolResult.args.command
+    : '(command unavailable)';
+  const outputSnippet = compactForPlan(output, 1_600);
+
+  if (output.includes('Command produced no output for')) {
+    return (
+      `Bash verification command stalled without output and was killed: \`${command}\`.\n` +
+      `Tool output:\n${outputSnippet}\n\n` +
+      `Do not rerun the same command unchanged. Use a narrower or more verbose command, inspect the relevant logs, and fix the blocker before marking this subtask completed.`
+    );
+  }
+
+  if (output.includes('Command is likely to run silently')) {
+    return (
+      `Bash verification command was rejected because it is likely to stall without output: \`${command}\`.\n` +
+      `Tool output:\n${outputSnippet}\n\n` +
+      `Use the suggested verbose or narrower verifier instead of rerunning the same command unchanged.`
+    );
+  }
+
+  if (output.includes('Command timed out after')) {
+    return (
+      `Bash verification command timed out: \`${command}\`.\n` +
+      `Tool output:\n${outputSnippet}\n\n` +
+      `Do not mark this subtask completed until the timeout is explained or the verification is replaced with a targeted passing check.`
+    );
+  }
+
+  return (
+    `Bash command failed during the attempt: \`${command}\`.\n` +
+    `Tool output:\n${outputSnippet}\n\n` +
+    `Fix the failure or run a targeted passing verification before marking this subtask completed.`
+  );
 }
 
 function isFailedBashOutput(output: string): boolean {
@@ -449,6 +476,7 @@ async function markSubtaskRetryRequired(
   subtaskId: string,
   reason: string,
   outcome: SessionResult['outcome'],
+  resetCompleted = false,
 ): Promise<void> {
   const planPath = join(specDir, 'implementation_plan.json');
   try {
@@ -466,7 +494,7 @@ async function markSubtaskRetryRequired(
           last_attempt_at?: string;
         };
         const id = subtask.id ?? withLegacyId.subtask_id;
-        if (id !== subtaskId || subtask.status === 'completed') continue;
+        if (id !== subtaskId || (subtask.status === 'completed' && !resetCompleted)) continue;
 
         if (!subtask.id && withLegacyId.subtask_id) {
           subtask.id = withLegacyId.subtask_id;
