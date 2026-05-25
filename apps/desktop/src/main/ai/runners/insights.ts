@@ -267,6 +267,7 @@ export async function runInsightsQuery(
 
   const toolCalls: ToolCallInfo[] = [];
   let responseText = '';
+  let terminalStreamError: string | null = null;
 
   // Detect Codex models — they require instructions via providerOptions, not system
   const isCodexInsights = shouldUseOpenAIInstructions(client);
@@ -309,14 +310,17 @@ export async function runInsightsQuery(
         }
         case 'error': {
           const errorMsg = part.error instanceof Error ? part.error.message : String(part.error);
+          terminalStreamError = errorMsg;
           onStream?.({ type: 'error', error: errorMsg });
-          break;
+          throw new Error(errorMsg);
         }
       }
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    onStream?.({ type: 'error', error: errorMsg });
+    if (errorMsg !== terminalStreamError) {
+      onStream?.({ type: 'error', error: errorMsg });
+    }
     throw error;
   }
 

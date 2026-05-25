@@ -24,6 +24,7 @@ import {
 import type { FeatureModelConfig, FeatureThinkingConfig } from '../../shared/types/settings';
 import type { BuiltinProvider } from '../../shared/types/provider-account';
 import type { ProviderAccount } from '../../shared/types/provider-account';
+import { ensureCodexOAuthAccount } from '../ai/auth/codex-account';
 
 type FeatureKey = keyof FeatureModelConfig;
 
@@ -39,9 +40,10 @@ interface FeatureSettings {
  */
 function resolveActiveProvider(settings: Record<string, unknown>): BuiltinProvider | undefined {
   const priorityOrder = settings.globalPriorityOrder as string[] | undefined;
-  const accounts = settings.providerAccounts as ProviderAccount[] | undefined;
+  const accounts = getEffectiveProviderAccounts(settings);
 
-  if (!priorityOrder?.length || !accounts?.length) return undefined;
+  if (!accounts?.length) return undefined;
+  if (!priorityOrder?.length) return accounts[0]?.provider as BuiltinProvider | undefined;
 
   // Walk priority order, find the first account that matches
   for (const accountId of priorityOrder) {
@@ -57,7 +59,7 @@ function resolveActiveProvider(settings: Record<string, unknown>): BuiltinProvid
 
 function resolveActiveAccount(settings: Record<string, unknown>): ProviderAccount | undefined {
   const priorityOrder = settings.globalPriorityOrder as string[] | undefined;
-  const accounts = settings.providerAccounts as ProviderAccount[] | undefined;
+  const accounts = getEffectiveProviderAccounts(settings);
 
   if (!accounts?.length) return undefined;
   if (priorityOrder?.length) {
@@ -72,6 +74,12 @@ function resolveActiveAccount(settings: Record<string, unknown>): ProviderAccoun
 function isSubscriptionOnlyOpenAIAccount(account: ProviderAccount | undefined): boolean {
   return account?.provider === 'openai'
     && (account.authType === 'oauth' || account.billingModel === 'subscription');
+}
+
+function getEffectiveProviderAccounts(settings: Record<string, unknown>): ProviderAccount[] | undefined {
+  const accounts = settings.providerAccounts as ProviderAccount[] | undefined;
+  const result = ensureCodexOAuthAccount(accounts);
+  return result.accounts.length > 0 ? result.accounts : undefined;
 }
 
 function isSupportedFeatureModelForAccount(model: string, provider: BuiltinProvider, account?: ProviderAccount): boolean {

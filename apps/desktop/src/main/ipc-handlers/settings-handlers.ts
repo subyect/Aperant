@@ -17,6 +17,7 @@ import {
   normalizeOpenAISubscriptionModel,
   sanitizeThinkingLevel,
   VALID_THINKING_LEVELS,
+  OPENAI_CODEX_DEFAULT_MODEL,
 } from '../../shared/constants';
 import { setAppLanguage } from '../app-language';
 import type {
@@ -34,6 +35,7 @@ import type { APIProfile } from '../../shared/types/profile';
 import type { ClaudeProfile } from '../../shared/types/agent';
 import { loadProfilesFile } from '../utils/profile-manager';
 import { loadProfileStore } from '../claude-profile/profile-storage';
+import { ensureCodexOAuthAccount } from '../ai/auth/codex-account';
 
 const settingsPath = getSettingsPath();
 
@@ -102,6 +104,55 @@ function normalizeOpenAISubscriptionSettings(settings: AppSettings): boolean {
         changed = true;
       }
     }
+  }
+
+  return changed;
+}
+
+function ensureCodexSubscriptionSettings(settings: AppSettings): boolean {
+  const result = ensureCodexOAuthAccount(settings.providerAccounts);
+  if (!result.accountId) return false;
+
+  let changed = result.added;
+  const settingsRecord = settings as AppSettings & Record<string, unknown>;
+  settings.providerAccounts = result.accounts;
+
+  const existingPriority = settings.globalPriorityOrder ?? [];
+  const providerAccountIds = new Set(result.accounts.map(account => account.id));
+  const nextPriorityOrder = [
+    result.accountId,
+    ...existingPriority.filter(id => id !== result.accountId && providerAccountIds.has(id)),
+    ...result.accounts.map(account => account.id).filter(id => id !== result.accountId && !existingPriority.includes(id)),
+  ];
+  if (JSON.stringify(existingPriority) !== JSON.stringify(nextPriorityOrder)) {
+    settings.globalPriorityOrder = nextPriorityOrder;
+    settings.crossProviderPriorityOrder = nextPriorityOrder;
+    changed = true;
+  }
+
+  if (settings.defaultModel !== OPENAI_CODEX_DEFAULT_MODEL) {
+    settings.defaultModel = OPENAI_CODEX_DEFAULT_MODEL;
+    changed = true;
+  }
+  if (settingsRecord.globalDefaultModel !== OPENAI_CODEX_DEFAULT_MODEL) {
+    settingsRecord.globalDefaultModel = OPENAI_CODEX_DEFAULT_MODEL;
+    changed = true;
+  }
+  if (settingsRecord.model !== OPENAI_CODEX_DEFAULT_MODEL) {
+    settingsRecord.model = OPENAI_CODEX_DEFAULT_MODEL;
+    changed = true;
+  }
+
+  settings.providerAgentConfig = settings.providerAgentConfig ?? {};
+  if (!settings.providerAgentConfig.openai) {
+    settings.providerAgentConfig.openai = {
+      selectedAgentProfile: settings.selectedAgentProfile,
+      customPhaseModels: settings.customPhaseModels,
+      customPhaseThinking: settings.customPhaseThinking,
+      featureModels: settings.featureModels,
+      featureThinking: settings.featureThinking,
+    };
+    changed = true;
   }
 
   return changed;
@@ -449,6 +500,11 @@ export function registerSettingsHandlers(
       const providerAccountsMigration = await migrateToProviderAccounts(settings);
       if (providerAccountsMigration.changed) {
         Object.assign(settings, providerAccountsMigration.settings);
+        needsSave = true;
+      }
+
+      if (ensureCodexSubscriptionSettings(settings)) {
+        console.warn('[SETTINGS_GET] Restored OpenAI Codex subscription account from stored OAuth tokens');
         needsSave = true;
       }
 
@@ -987,7 +1043,16 @@ export function registerSettingsHandlers(
   function readProviderAccounts(): ProviderAccount[] {
     const settings = readSettingsFile();
     if (!settings) return [];
-    return (settings.providerAccounts as ProviderAccount[] | undefined) ?? [];
+    const result = ensureCodexOAuthAccount(settings.providerAccounts as ProviderAccount[] | undefined);
+    if (result.added) {
+      settings.providerAccounts = result.accounts;
+      settings.globalPriorityOrder = [
+        result.accountId!,
+        ...((settings.globalPriorityOrder as string[] | undefined) ?? []).filter(id => id !== result.accountId),
+      ];
+      writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), 'utf-8');
+    }
+    return result.accounts;
   }
 
   /** Write providerAccounts array back to settings.json (merges with existing settings) */

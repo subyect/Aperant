@@ -77,6 +77,7 @@ import type { AppSettings, AuthFailureInfo } from '../shared/types';
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const newUserData = app.getPath('userData');
+  process.env.APERANT_USER_DATA_DIR = newUserData;
   const oldUserData = join(dirname(newUserData), 'auto-claude-ui');
   if (existsSync(oldUserData) && !existsSync(join(newUserData, '.migrated'))) {
     try {

@@ -34,6 +34,7 @@ import {
 } from '../../../shared/constants/models';
 import { scoreProviderAccount } from '../../claude-profile/profile-scorer';
 import type { ClaudeAutoSwitchSettings } from '../../../shared/types/agent';
+import { ensureCodexOAuthAccount } from './codex-account';
 
 // ============================================
 // Z.AI Endpoint Routing
@@ -476,16 +477,20 @@ export function buildDefaultQueueConfig(
 
   // Read providerAccounts
   const accountsRaw = _getSettingsValue('providerAccounts');
-  if (!accountsRaw) return undefined;
 
   let accounts: ProviderAccount[];
   try {
-    accounts = typeof accountsRaw === 'string' ? JSON.parse(accountsRaw) : (accountsRaw as ProviderAccount[]);
+    accounts = accountsRaw
+      ? (typeof accountsRaw === 'string' ? JSON.parse(accountsRaw) : (accountsRaw as ProviderAccount[]))
+      : [];
   } catch {
     return undefined;
   }
 
-  if (!Array.isArray(accounts) || accounts.length === 0) return undefined;
+  if (!Array.isArray(accounts)) return undefined;
+  const codexResult = ensureCodexOAuthAccount(accounts);
+  accounts = codexResult.accounts;
+  if (accounts.length === 0) return undefined;
 
   // Read priority order
   const priorityRaw = _getSettingsValue('globalPriorityOrder');
@@ -496,6 +501,9 @@ export function buildDefaultQueueConfig(
     } catch {
       // Use accounts in their natural order
     }
+  }
+  if (codexResult.accountId && !priorityOrder.includes(codexResult.accountId)) {
+    priorityOrder = [codexResult.accountId, ...priorityOrder];
   }
 
   // Sort accounts by priority order (accounts not in the list go to the end)

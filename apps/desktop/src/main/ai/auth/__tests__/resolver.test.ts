@@ -7,6 +7,9 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Mock token-refresh before importing resolver
 // Path resolution from src/main/ai/auth/__tests__/:
@@ -68,10 +71,28 @@ const mockReactiveTokenRefresh = vi.mocked(reactiveTokenRefresh);
 const mockScoreProviderAccount = vi.mocked(scoreProviderAccount);
 const mockResolveModelEquivalent = vi.mocked(resolveModelEquivalent);
 const _mockDetectProviderFromModel = vi.mocked(detectProviderFromModel);
+const tempDirs: string[] = [];
 
 // Helper: reset the module-level settings accessor between tests
 function clearSettingsAccessor() {
   registerSettingsAccessor(() => undefined);
+}
+
+function cleanupTempDirs(): void {
+  while (tempDirs.length > 0) {
+    rmSync(tempDirs.pop()!, { recursive: true, force: true });
+  }
+}
+
+function createCodexUserDataDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'aperant-codex-resolver-'));
+  tempDirs.push(dir);
+  writeFileSync(join(dir, 'codex-auth.json'), JSON.stringify({
+    access_token: 'access-token',
+    refresh_token: 'refresh-token',
+    expires_at: Date.now() + 60_000,
+  }));
+  return dir;
 }
 
 beforeEach(() => {
@@ -82,6 +103,8 @@ beforeEach(() => {
   delete process.env.OPENAI_API_KEY;
   delete process.env.ANTHROPIC_BASE_URL;
   delete process.env.OPENAI_BASE_URL;
+  delete process.env.APERANT_USER_DATA_DIR;
+  cleanupTempDirs();
 });
 
 afterEach(() => {
@@ -89,6 +112,8 @@ afterEach(() => {
   delete process.env.OPENAI_API_KEY;
   delete process.env.ANTHROPIC_BASE_URL;
   delete process.env.OPENAI_BASE_URL;
+  delete process.env.APERANT_USER_DATA_DIR;
+  cleanupTempDirs();
 });
 
 // =============================================================================
@@ -533,6 +558,24 @@ describe('buildDefaultQueueConfig', () => {
 
     const result = buildDefaultQueueConfig('sonnet');
     expect(result).toBeUndefined();
+  });
+
+  it('synthesizes the OpenAI Codex subscription account from stored OAuth tokens', () => {
+    process.env.APERANT_USER_DATA_DIR = createCodexUserDataDir();
+    registerSettingsAccessor((key) => {
+      if (key === 'providerAccounts') return JSON.stringify([]);
+      return undefined;
+    });
+
+    const result = buildDefaultQueueConfig('sonnet');
+
+    expect(result).not.toBeUndefined();
+    expect(result?.queue[0]).toMatchObject({
+      id: 'openai-codex-subscription',
+      provider: 'openai',
+      authType: 'oauth',
+      billingModel: 'subscription',
+    });
   });
 
   it('returns accounts in natural order when no priority order is set', () => {
