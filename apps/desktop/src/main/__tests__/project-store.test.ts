@@ -683,6 +683,46 @@ describe('ProjectStore', () => {
       expect(persistedPlan.recoveryNote).toBeUndefined();
     });
 
+    it('clears stale feedback artifacts from resolved completed tasks on load', async () => {
+      const specId = '010-resolved-feedback';
+      const specRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');
+      const specDir = path.join(specRoot, specId);
+      const plan = {
+        ...makePlan({
+          feature: 'Resolved Feedback',
+          status: 'done',
+          subtaskStatuses: ['completed', 'completed'],
+          updatedAt: '2024-01-03T00:00:00Z',
+        }),
+        planStatus: 'completed',
+        xstateState: 'done',
+        executionPhase: 'complete',
+        recoveryNote: 'QA report failed; continuing coding with QA findings as mandatory recovery work.',
+        human_feedback_pending: { requested_at: '2026-05-23T19:40:25.571Z' },
+        qa_signoff: { status: 'approved', issues_found: [] },
+        mergeCommit: 'abc1234',
+      };
+      writeSpec(specRoot, specId, plan);
+      writeFileSync(path.join(specDir, 'QA_FIX_REQUEST.md'), 'Status: REJECTED\n');
+      writeFileSync(path.join(specDir, 'QA_ESCALATION.md'), '# QA Escalation - Human Intervention Required\n');
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(specDir, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(tasks.find((task) => task.specId === specId)?.status).toBe('done');
+      expect(persistedPlan.recoveryNote).toBeUndefined();
+      expect(persistedPlan.human_feedback_pending).toBeUndefined();
+      expect(existsSync(path.join(specDir, 'QA_FIX_REQUEST.md'))).toBe(false);
+      expect(existsSync(path.join(specDir, 'QA_ESCALATION.md'))).toBe(false);
+    });
+
     it('should prefer original task description from requirements.json over plan description', async () => {
       const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '007-description-priority');
       mkdirSync(specsDir, { recursive: true });

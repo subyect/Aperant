@@ -308,6 +308,17 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
         `Only mark the subtask completed after a passing check or concrete evidence that the stalled command is not the right verifier.\n`
       );
     }
+    if (
+      subtask.lastError?.includes('Bash command failed during the attempt')
+      || subtask.lastError?.includes('latest Bash verification failed')
+    ) {
+      sections.push(
+        `\nThe previous attempt hit a real failing verification command. Do NOT start by rerunning the same command and stopping again. ` +
+        `First inspect the failure output, map every repo-local file/module/test named in the error back to the current source tree, and make the required implementation, test, or docs changes. ` +
+        `If the error is a local TypeScript/module resolution failure (for example TS2307, "Cannot find module", or "Does the file exist?"), treat it as in-scope repair unless you prove the referenced module is intentionally external. ` +
+        `After changing the code, run the narrowest targeted verifier that proves the fix, then update this exact subtask.\n`
+      );
+    }
     if (recoveryHints && recoveryHints.length > 0) {
       sections.push('**Previous attempt insights:**');
       for (const hint of recoveryHints) {
@@ -334,6 +345,15 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
       `The user rejected a previous result. Treat this feedback as mandatory context while completing the current subtask. ` +
       `Do not ignore it just because QA has not run yet.\n\n` +
       `${humanFeedback}\n`
+    );
+  }
+  if (isAperantRecoverySubtask(subtask.id)) {
+    sections.push(
+      `\n## APERANT RECOVERY SUBTASK\n\n` +
+      `This subtask exists because the workflow already failed once. The failure text is the implementation target, not a reason to stop. ` +
+      `Read QA_FIX_REQUEST.md, qa_report.md, implementation_plan.json, and the current git diff before acting. ` +
+      `Do not complete this subtask after only reading files or rerunning the same failing command. ` +
+      `Complete it only after the reported blocker is fixed or a concrete, repo-backed blocker is recorded in build-progress.txt.\n`
     );
   }
 
@@ -452,6 +472,12 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
   }
 
   return sections.join('\n');
+}
+
+function isAperantRecoverySubtask(subtaskId: string): boolean {
+  return subtaskId === 'aperant-qa-report-failure'
+    || subtaskId === 'aperant-base-sync-conflict'
+    || subtaskId === 'aperant-human-feedback-rework';
 }
 
 // =============================================================================

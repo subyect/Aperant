@@ -125,6 +125,35 @@ describe('generateSubtaskPrompt', () => {
     }
   });
 
+  it('treats failed repo-local verification as implementation work for recovery subtasks', async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), 'subtask-prompt-failed-verifier-'));
+    const specDir = join(projectDir, '.auto-claude', 'specs', '001-test');
+
+    try {
+      const prompt = await generateSubtaskPrompt({
+        projectDir,
+        specDir,
+        attemptCount: 1,
+        subtask: {
+          id: 'aperant-qa-report-failure',
+          description: 'Resolve failed QA report.',
+          phaseName: 'QA recovery',
+          status: 'pending',
+          lastError: 'Bash command failed during the attempt: `pnpm --filter @yect/layer1-db build`.\nsrc/queries/index.ts(8,15): error TS2307: Cannot find module ./query-helpers.js',
+          lastAttemptOutcome: 'completed',
+        },
+      });
+
+      expect(prompt).toContain('Do NOT start by rerunning the same command');
+      expect(prompt).toContain('TS2307');
+      expect(prompt).toContain('treat it as in-scope repair');
+      expect(prompt).toContain('APERANT RECOVERY SUBTASK');
+      expect(prompt).toContain('The failure text is the implementation target');
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it('renders command verification stored in run fields', async () => {
     const projectDir = await mkdtemp(join(tmpdir(), 'subtask-prompt-run-verification-'));
     const specDir = join(projectDir, '.auto-claude', 'specs', '001-test');

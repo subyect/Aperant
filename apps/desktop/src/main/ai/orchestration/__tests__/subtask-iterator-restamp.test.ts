@@ -283,6 +283,53 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('Use the suggested verbose or narrower verifier');
   });
 
+  it('gives QA recovery subtasks extra attempts after failed verification commands', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'QA recovery',
+          subtasks: [
+            {
+              id: 'aperant-qa-report-failure',
+              title: 'Resolve failed QA report',
+              description: 'Fix the failed QA report.',
+              status: 'pending',
+              last_error: 'Bash command failed during the attempt: `pnpm --filter @yect/layer1-db build`.',
+              last_attempt_outcome: 'completed',
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    let attempts = 0;
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => {
+        attempts++;
+        return sessionResult('completed', {
+          toolResults: [
+            {
+              toolName: 'Bash',
+              args: { command: 'pnpm --filter @yect/layer1-db build' },
+              result: 'Exit code: 2\nsrc/queries/index.ts(8,15): error TS2307: Cannot find module ./query-helpers.js',
+              durationMs: 5_000,
+              isError: false,
+            },
+          ],
+        });
+      },
+    });
+
+    expect(attempts).toBe(3);
+    expect(result.stuckSubtasks).toEqual(['aperant-qa-report-failure']);
+  });
+
   it('auto-completes QA recovery when route smoke verification passes but the agent forgets to mark the plan', async () => {
     const plan = {
       feature: 'test',

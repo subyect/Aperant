@@ -50,6 +50,7 @@ import type { SessionResult } from '../../session/types';
 // ---------------------------------------------------------------------------
 
 const SPEC_DIR = '/project/.auto-claude/specs/001-feature';
+const SOURCE_SPEC_DIR = '/source/.auto-claude/specs/001-feature';
 const PROJECT_DIR = '/project';
 
 function completedPlan(qaStatus?: 'approved' | 'rejected' | 'unknown') {
@@ -465,6 +466,45 @@ describe('QALoop', () => {
     expect(mockUnlink).toHaveBeenCalledWith(path.join(SPEC_DIR, 'QA_FIX_REQUEST.md'));
     // Overall outcome should still reflect the QA result
     expect(outcome.approved).toBe(true);
+  });
+
+  it('clears human feedback from both worktree and source specs after approval', async () => {
+    const planWithPending = JSON.stringify({
+      phases: [
+        { subtasks: [{ status: 'completed' }, { status: 'completed' }] },
+      ],
+      qa_signoff: { status: 'approved', issues_found: [] },
+      human_feedback_pending: { requested_at: '2026-05-23T19:40:25.571Z' },
+    });
+
+    mockReadFile.mockImplementation((path: string) => {
+      if (path === `${SPEC_DIR}/QA_FIX_REQUEST.md`) return Promise.resolve('Fix this please');
+      if (path.endsWith('implementation_plan.json')) return Promise.resolve(planWithPending);
+      return Promise.reject(new Error('ENOENT'));
+    });
+
+    const runSession = vi.fn().mockResolvedValue(makeSessionResult('completed'));
+    const config = makeConfig({
+      sourceSpecDir: SOURCE_SPEC_DIR,
+      runSession,
+      maxIterations: 5,
+    });
+    const loop = new QALoop(config);
+    const outcome = await loop.run();
+
+    expect(outcome.approved).toBe(true);
+    expect(mockUnlink).toHaveBeenCalledWith(path.join(SPEC_DIR, 'QA_FIX_REQUEST.md'));
+    expect(mockUnlink).toHaveBeenCalledWith(path.join(SOURCE_SPEC_DIR, 'QA_FIX_REQUEST.md'));
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      path.join(SPEC_DIR, 'implementation_plan.json'),
+      expect.not.stringContaining('human_feedback_pending'),
+      'utf-8',
+    );
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      path.join(SOURCE_SPEC_DIR, 'implementation_plan.json'),
+      expect.not.stringContaining('human_feedback_pending'),
+      'utf-8',
+    );
   });
 
   it('does not approve stale QA signoff when the human-feedback fixer fails', async () => {

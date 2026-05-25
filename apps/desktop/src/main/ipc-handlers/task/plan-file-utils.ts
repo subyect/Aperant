@@ -18,7 +18,7 @@
  */
 
 import path from 'path';
-import { existsSync, readFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, rmSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { AUTO_BUILD_PATHS, getSpecsDir } from '../../../shared/constants';
 import type { TaskStatus, Project, Task } from '../../../shared/types';
@@ -230,6 +230,32 @@ function clearBlockedTerminalRecoveryNote(plan: Record<string, unknown>): boolea
   if (!/^Blocked terminal (event|phase|status)\b/.test(plan.recoveryNote)) return false;
   delete plan.recoveryNote;
   return true;
+}
+
+function clearResolvedRecoveryState(plan: Record<string, unknown>): void {
+  delete plan.human_feedback_pending;
+
+  if (typeof plan.recoveryNote !== 'string') return;
+  if (
+    /^Blocked terminal (event|phase|status)\b/.test(plan.recoveryNote)
+    || /^QA report failed\b/.test(plan.recoveryNote)
+    || /^Base branch sync conflict\b/.test(plan.recoveryNote)
+    || /^Terminal failure blocked\b/.test(plan.recoveryNote)
+    || /^Reset to queue by backend stability reset\b/.test(plan.recoveryNote)
+    || /^Recovered (stale terminal status|from stale done status)\b/.test(plan.recoveryNote)
+  ) {
+    delete plan.recoveryNote;
+  }
+}
+
+function clearResolvedFeedbackArtifacts(specDir: string): void {
+  for (const fileName of ['QA_FIX_REQUEST.md', 'QA_ESCALATION.md']) {
+    try {
+      rmSync(path.join(specDir, fileName), { force: true });
+    } catch {
+      // Best effort cleanup; stale metadata must not block approval persistence.
+    }
+  }
 }
 
 /**
@@ -1016,8 +1042,10 @@ export function persistApprovedQASignoffToPlansSync(
       plan.xstateState = 'human_review';
       plan.executionPhase = 'complete';
       plan.lastEvent = { type: 'QA_PASSED', timestamp: now, source };
+      clearResolvedRecoveryState(plan);
       plan.updated_at = now;
       writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+      clearResolvedFeedbackArtifacts(path.dirname(planPath));
       persisted = true;
     } catch (error) {
       console.warn(`[plan-file-utils] Could not persist QA approval recovery to ${planPath}:`, error);
@@ -1177,6 +1205,10 @@ export function updatePlanAfterAppMerge(planPath: string, status: TaskStatus, pl
         }
       }
       clearBlockedTerminalRecoveryNote(plan);
+      if (status === 'done') {
+        clearResolvedRecoveryState(plan);
+        clearResolvedFeedbackArtifacts(path.dirname(planPath));
+      }
     }
     plan.mergedAt = new Date().toISOString();
     if (commitSha) plan.mergeCommit = commitSha;

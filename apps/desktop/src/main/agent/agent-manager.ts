@@ -1523,6 +1523,7 @@ export class AgentManager extends EventEmitter {
       maxSteps: 200,
       specDir: effectiveSpecDir,
       projectDir: effectiveProjectDir,
+      sourceSpecDir: worktreePath ? specDir : undefined,
       provider: resolved.provider,
       modelId: resolved.modelId,
       apiKey: resolved.auth?.apiKey,

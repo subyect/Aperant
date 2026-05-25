@@ -813,6 +813,7 @@ async function runQALoop(
 
   const qaLoop = new QALoop({
     specDir: session.specDir,
+    sourceSpecDir: session.sourceSpecDir,
     projectDir: session.projectDir,
     abortSignal: abortController.signal,
 

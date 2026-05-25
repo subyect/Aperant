@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -404,8 +404,12 @@ describe('plan-file runtime guards', () => {
 
     const plan = planWithSubtasks();
     plan.phases[0].subtasks[1].status = 'completed';
+    (plan as any).human_feedback_pending = { requested_at: '2026-05-23T19:40:25.571Z' };
+    (plan as any).recoveryNote = 'QA report failed; continuing coding with QA findings as mandatory recovery work.';
     writeFileSync(path.join(specDir, 'implementation_plan.json'), JSON.stringify(plan, null, 2));
     writeFileSync(path.join(specDir, 'qa_report.md'), 'Status: PASSED\n');
+    writeFileSync(path.join(specDir, 'QA_FIX_REQUEST.md'), 'Status: REJECTED\n');
+    writeFileSync(path.join(specDir, 'QA_ESCALATION.md'), '# QA Escalation - Human Intervention Required\n');
 
     expect(recoverApprovedQASignoffForSpec({
       id: 'project-1',
@@ -419,5 +423,9 @@ describe('plan-file runtime guards', () => {
     expect(recovered.status).toBe('human_review');
     expect(recovered.qa_signoff.status).toBe('approved');
     expect(recovered.lastEvent.type).toBe('QA_PASSED');
+    expect(recovered.human_feedback_pending).toBeUndefined();
+    expect(recovered.recoveryNote).toBeUndefined();
+    expect(existsSync(path.join(specDir, 'QA_FIX_REQUEST.md'))).toBe(false);
+    expect(existsSync(path.join(specDir, 'QA_ESCALATION.md'))).toBe(false);
   });
 });

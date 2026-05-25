@@ -1,5 +1,5 @@
 import { app } from 'electron';
-import { readFileSync, existsSync, mkdirSync, readdirSync, Dirent } from 'fs';
+import { readFileSync, existsSync, mkdirSync, readdirSync, rmSync, Dirent } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import type { Project, ProjectSettings, Task, TaskStatus, TaskMetadata, ImplementationPlan, ReviewReason, PlanSubtask, KanbanPreferences, ExecutionPhase } from '../shared/types';
@@ -796,6 +796,13 @@ export class ProjectStore {
           console.error(`[ProjectStore] Failed to clear stale terminal recovery note for ${taskName}:`, writeError);
         }
       }
+      if (
+        finalStatus === 'done'
+        || finalStatus === 'pr_created'
+        || isQASignoffApproved((plan as unknown as { qa_signoff?: Record<string, unknown> }).qa_signoff)
+      ) {
+        this.clearResolvedTaskMetadata(plan as unknown as Record<string, unknown>, planPath, taskName);
+      }
       return { status: finalStatus, reviewReason: finalReviewReason };
     }
 
@@ -848,6 +855,51 @@ export class ProjectStore {
     } catch (writeError) {
       console.error(`[ProjectStore] Failed to persist incomplete terminal correction for ${taskName}:`, writeError);
       return { status: finalStatus, reviewReason: finalReviewReason };
+    }
+  }
+
+  private clearResolvedTaskMetadata(
+    plan: Record<string, unknown>,
+    planPath: string,
+    taskName: string
+  ): void {
+    let changed = false;
+    if (plan.human_feedback_pending !== undefined) {
+      delete plan.human_feedback_pending;
+      changed = true;
+    }
+
+    if (
+      typeof plan.recoveryNote === 'string'
+      && (
+        /^Blocked terminal (event|phase|status)\b/.test(plan.recoveryNote)
+        || /^QA report failed\b/.test(plan.recoveryNote)
+        || /^Base branch sync conflict\b/.test(plan.recoveryNote)
+        || /^Terminal failure blocked\b/.test(plan.recoveryNote)
+        || /^Reset to queue by backend stability reset\b/.test(plan.recoveryNote)
+        || /^Recovered (stale terminal status|from stale done status)\b/.test(plan.recoveryNote)
+      )
+    ) {
+      delete plan.recoveryNote;
+      changed = true;
+    }
+
+    for (const fileName of ['QA_FIX_REQUEST.md', 'QA_ESCALATION.md']) {
+      try {
+        rmSync(path.join(path.dirname(planPath), fileName), { force: true });
+      } catch {
+        // Best effort cleanup for stale resolved-task artifacts.
+      }
+    }
+
+    if (!changed) return;
+
+    plan.updated_at = new Date().toISOString();
+    try {
+      writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+      console.warn(`[ProjectStore] Cleared stale resolved-task metadata for ${taskName}.`);
+    } catch (writeError) {
+      console.error(`[ProjectStore] Failed to clear stale resolved-task metadata for ${taskName}:`, writeError);
     }
   }
 

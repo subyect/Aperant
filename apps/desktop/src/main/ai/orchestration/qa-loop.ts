@@ -74,6 +74,8 @@ export interface QAIterationRecord {
 export interface QALoopConfig {
   /** Spec directory path */
   specDir: string;
+  /** Main project spec directory when QA runs in an isolated worktree */
+  sourceSpecDir?: string;
   /** Project root directory */
   projectDir: string;
   /** CLI model override */
@@ -488,68 +490,89 @@ export class QALoop extends EventEmitter {
    * Check if human feedback file exists.
    */
   private async hasHumanFeedback(): Promise<boolean> {
-    try {
-      await readFile(join(this.config.specDir, 'QA_FIX_REQUEST.md'), 'utf-8');
-      return true;
-    } catch {
-      return false;
+    for (const specDir of this.getSpecDirs()) {
+      try {
+        await readFile(join(specDir, 'QA_FIX_REQUEST.md'), 'utf-8');
+        return true;
+      } catch {
+        // Keep looking in the paired main/worktree spec dir.
+      }
     }
+    return false;
   }
 
   private async readHumanFeedback(): Promise<string | null> {
-    try {
-      const content = await readFile(join(this.config.specDir, 'QA_FIX_REQUEST.md'), 'utf-8');
-      return content.trim() || null;
-    } catch {
-      return null;
+    for (const specDir of this.getSpecDirs()) {
+      try {
+        const content = await readFile(join(specDir, 'QA_FIX_REQUEST.md'), 'utf-8');
+        const trimmed = content.trim();
+        if (trimmed) return trimmed;
+      } catch {
+        // Keep looking in the paired main/worktree spec dir.
+      }
     }
+    return null;
   }
 
   private async clearHumanFeedback(): Promise<void> {
-    try {
-      await unlink(join(this.config.specDir, 'QA_FIX_REQUEST.md'));
-    } catch {
-      // No feedback to clear or removal failed; non-fatal after approval.
+    for (const specDir of this.getSpecDirs()) {
+      try {
+        await unlink(join(specDir, 'QA_FIX_REQUEST.md'));
+      } catch {
+        // No feedback to clear or removal failed; non-fatal after approval.
+      }
     }
   }
 
   private async clearHumanFeedbackState(): Promise<void> {
-    try {
-      const planPath = join(this.config.specDir, 'implementation_plan.json');
-      const raw = await readFile(planPath, 'utf-8');
-      const plan = safeParseJson<Record<string, unknown>>(raw);
-      if (!plan || plan.human_feedback_pending === undefined) return;
-      delete plan.human_feedback_pending;
-      plan.updated_at = new Date().toISOString();
-      await writeFile(planPath, JSON.stringify(plan, null, 2), 'utf-8');
-    } catch {
-      // Non-fatal after approval.
+    for (const specDir of this.getSpecDirs()) {
+      try {
+        const planPath = join(specDir, 'implementation_plan.json');
+        const raw = await readFile(planPath, 'utf-8');
+        const plan = safeParseJson<Record<string, unknown>>(raw);
+        if (!plan || plan.human_feedback_pending === undefined) continue;
+        delete plan.human_feedback_pending;
+        plan.updated_at = new Date().toISOString();
+        await writeFile(planPath, JSON.stringify(plan, null, 2), 'utf-8');
+      } catch {
+        // Non-fatal after approval.
+      }
     }
   }
 
   private async resetQASignoffForHumanFeedback(humanFeedback: string | null): Promise<void> {
-    try {
-      const planPath = join(this.config.specDir, 'implementation_plan.json');
-      const raw = await readFile(planPath, 'utf-8');
-      const plan = safeParseJson<Record<string, unknown>>(raw);
-      if (!plan) return;
+    for (const specDir of this.getSpecDirs()) {
+      try {
+        const planPath = join(specDir, 'implementation_plan.json');
+        const raw = await readFile(planPath, 'utf-8');
+        const plan = safeParseJson<Record<string, unknown>>(raw);
+        if (!plan) continue;
 
-      delete plan.qa_signoff;
-      delete plan.final_acceptance;
-      plan.status = 'ai_review';
-      plan.planStatus = 'review';
-      plan.xstateState = 'qa_fixing';
-      plan.executionPhase = 'qa_fixing';
-      plan.human_feedback_pending = {
-        requested_at: new Date().toISOString(),
-        preview: humanFeedback?.slice(0, 500) ?? null,
-      };
-      plan.updated_at = new Date().toISOString();
+        delete plan.qa_signoff;
+        delete plan.final_acceptance;
+        plan.status = 'ai_review';
+        plan.planStatus = 'review';
+        plan.xstateState = 'qa_fixing';
+        plan.executionPhase = 'qa_fixing';
+        plan.human_feedback_pending = {
+          requested_at: new Date().toISOString(),
+          preview: humanFeedback?.slice(0, 500) ?? null,
+        };
+        plan.updated_at = new Date().toISOString();
 
-      await writeFile(planPath, JSON.stringify(plan, null, 2), 'utf-8');
-    } catch {
-      // Non-fatal: the reviewer still must write a fresh signoff before approval.
+        await writeFile(planPath, JSON.stringify(plan, null, 2), 'utf-8');
+      } catch {
+        // Non-fatal: the reviewer still must write a fresh signoff before approval.
+      }
     }
+  }
+
+  private getSpecDirs(): string[] {
+    const dirs = [this.config.specDir];
+    if (this.config.sourceSpecDir && this.config.sourceSpecDir !== this.config.specDir) {
+      dirs.push(this.config.sourceSpecDir);
+    }
+    return dirs;
   }
 
   /**

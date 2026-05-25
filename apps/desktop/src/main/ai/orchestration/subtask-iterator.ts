@@ -484,6 +484,19 @@ function isRateLimitedSessionResult(result: SessionResult): boolean {
 
 function shouldKeepRetryingSubtask(subtask: PlanSubtask): boolean {
   if (
+    RECOVERY_SUBTASK_PRIORITY.includes(subtask.id) &&
+    (
+      subtask.last_error?.includes('Bash command failed during the attempt')
+      || subtask.last_error?.includes('latest Bash verification failed')
+      || subtask.last_error?.includes('Bash verification command stalled')
+      || subtask.last_error?.includes('Bash verification command timed out')
+      || subtask.last_error?.includes('Bash verification command was rejected')
+    )
+  ) {
+    return true;
+  }
+
+  if (
     subtask.last_attempt_outcome === 'completed' &&
     subtask.last_error?.includes('without marking the subtask completed')
   ) {
