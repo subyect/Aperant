@@ -72,6 +72,12 @@ Aperant workflow guard:
 - Implement pending subtasks, run focused verification for the changed subtask, update the plan, and keep working until the plan is complete.
 `;
 
+function compactQaFallbackEvidence(content: string): string {
+  const maxChars = 6_000;
+  if (content.length <= maxChars) return content;
+  return `[earlier content truncated]\n${content.slice(-maxChars)}`;
+}
+
 function loadProjectMcpEnv(projectPath: string, project?: { autoBuildPath?: string }): Record<string, string> {
   if (!project?.autoBuildPath) return {};
   try {
@@ -965,7 +971,8 @@ export class AgentManager extends EventEmitter {
   ): void {
     const now = new Date().toISOString();
     const recoverySubtaskId = 'aperant-qa-report-failure';
-    const reportExcerpt = normalizeQaFailureEvidenceContent(reportContent).slice(0, 8000);
+    const fallbackFailureContent = this.collectQaFailureFallback(project, task, reportPath);
+    const reportExcerpt = normalizeQaFailureEvidenceContent(reportContent, fallbackFailureContent).slice(0, 8000);
     const recoveryDescription = [
       'Resolve the failed QA report and return this task to a passing review state.',
       '',
@@ -1050,7 +1057,10 @@ export class AgentManager extends EventEmitter {
 
         const specDir = path.dirname(planPath);
         writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
-        writeFileAtomicSync(path.join(specDir, 'QA_FIX_REQUEST.md'), buildQaFixRequestContent(reportExcerpt, now));
+        writeFileAtomicSync(
+          path.join(specDir, 'QA_FIX_REQUEST.md'),
+          buildQaFixRequestContent(reportExcerpt, now, fallbackFailureContent),
+        );
         persisted = true;
       } catch (error) {
         console.warn(`[AgentManager] Failed to persist QA report recovery for ${task.specId}:`, error);
@@ -1060,6 +1070,42 @@ export class AgentManager extends EventEmitter {
     if (persisted) {
       projectStore.invalidateTasksCache(project.id);
     }
+  }
+
+  private collectQaFailureFallback(project: Project, task: Task, reportPath: string): string | null {
+    const parts: string[] = [];
+
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      const specDir = path.dirname(planPath);
+
+      try {
+        const plan = safeParseJson<Record<string, any>>(readFileSync(planPath, 'utf-8'));
+        const subtasks = Array.isArray(plan?.phases)
+          ? plan.phases.flatMap((phase: Record<string, any>) => Array.isArray(phase.subtasks) ? phase.subtasks : [])
+          : [];
+        const recoverySubtask = subtasks.find((subtask: Record<string, any>) => subtask?.id === 'aperant-qa-report-failure');
+        const notes = typeof recoverySubtask?.notes === 'string' ? recoverySubtask.notes.trim() : '';
+        const lastError = typeof recoverySubtask?.last_error === 'string' ? recoverySubtask.last_error.trim() : '';
+        if (notes) parts.push(`Persisted recovery notes:\n${notes}`);
+        if (lastError) parts.push(`Last recovery error:\n${lastError}`);
+      } catch {
+        // Keep gathering file-based evidence below.
+      }
+
+      for (const fileName of ['qa_report.md', 'QA_FIX_REQUEST.md', 'QA_ESCALATION.md', 'build-progress.txt']) {
+        const evidencePath = path.join(specDir, fileName);
+        if (evidencePath === reportPath || !existsSync(evidencePath)) continue;
+        try {
+          const content = readFileSync(evidencePath, 'utf-8').trim();
+          if (content) parts.push(`${fileName}:\n${compactQaFallbackEvidence(content)}`);
+        } catch {
+          // Non-fatal; this fallback is best effort.
+        }
+      }
+    }
+
+    return parts.length > 0 ? parts.join('\n\n---\n\n') : null;
   }
 
   private persistBaseSyncConflictForCoding(
