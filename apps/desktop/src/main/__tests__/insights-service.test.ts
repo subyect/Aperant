@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { buildInsightsConversationHistory } from '../insights-service';
+import { buildInsightsConversationHistory, InsightsService } from '../insights-service';
 import type { InsightsChatMessage } from '../../shared/types';
 
 function message(
@@ -64,5 +67,41 @@ describe('buildInsightsConversationHistory', () => {
 
     expect(history[0].content).toContain('Look at this');
     expect(history[0].content).toContain('previously attached 1 image');
+  });
+});
+
+describe('InsightsService error persistence', () => {
+  let projectPath: string | null = null;
+
+  afterEach(() => {
+    if (projectPath) {
+      rmSync(projectPath, { recursive: true, force: true });
+      projectPath = null;
+    }
+  });
+
+  it('persists failed responses as transient assistant turns instead of leaving a blank chat', async () => {
+    projectPath = mkdtempSync(path.join(tmpdir(), 'aperant-insights-error-'));
+    const service = new InsightsService();
+    const executor = (service as unknown as {
+      executor: {
+        execute: (...args: unknown[]) => Promise<unknown>;
+        cancelSession: (projectId: string) => boolean;
+      };
+    }).executor;
+    vi.spyOn(executor, 'cancelSession').mockReturnValue(false);
+    vi.spyOn(executor, 'execute').mockRejectedValue(new Error('Bad Request: model does not support tools'));
+
+    const sessionUpdates: unknown[] = [];
+    service.on('session-updated', (_projectId, session) => sessionUpdates.push(session));
+
+    await service.sendMessage('project-1', projectPath, 'Hi');
+
+    const session = service.loadSession('project-1', projectPath);
+    expect(session?.messages.map((m) => [m.role, m.content])).toEqual([
+      ['user', 'Hi'],
+      ['assistant', 'Insights request failed: Bad Request: model does not support tools'],
+    ]);
+    expect(sessionUpdates).toHaveLength(1);
   });
 });

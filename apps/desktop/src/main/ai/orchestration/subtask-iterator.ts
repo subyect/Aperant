@@ -597,11 +597,10 @@ function hasNewChangedProjectFile(before: string[], after: string[]): boolean {
 
 function getDeclaredVerifierCommand(subtask?: PlanSubtask): string | null {
   const verification = subtask?.verification;
-  if (!verification) return null;
-
   const candidates = [
-    typeof verification.command === 'string' ? verification.command : '',
-    typeof verification.run === 'string' ? verification.run : '',
+    typeof verification?.command === 'string' ? verification.command : '',
+    typeof verification?.run === 'string' ? verification.run : '',
+    typeof subtask?.description === 'string' ? subtask.description : '',
   ];
 
   for (const candidate of candidates) {
@@ -620,6 +619,11 @@ function extractVerifierCommandCandidate(value: string): string | null {
   const backtickMatches = trimmed.match(/`([^`]+)`/g) ?? [];
   for (const match of backtickMatches) {
     const command = match.slice(1, -1).trim();
+    if (looksLikeVerifierCommand(command)) return command;
+  }
+
+  for (const line of trimmed.split(/\r?\n/)) {
+    const command = line.trim().replace(/^(?:[$>]\s*)/, '');
     if (looksLikeVerifierCommand(command)) return command;
   }
 

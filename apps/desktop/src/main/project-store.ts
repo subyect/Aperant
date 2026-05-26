@@ -988,8 +988,8 @@ export class ProjectStore {
 
     const completedCount = subtasks.filter(s => s.status === 'completed').length;
     const allCompleted = completedCount === subtasks.length;
-    const qaApproved = isQASignoffApproved((plan as unknown as { qa_signoff?: Record<string, unknown> } | null)?.qa_signoff)
-      || this.hasApprovedQaReportVerdict(planPath);
+    const qaReportApproved = this.hasApprovedQaReportVerdict(planPath);
+    const qaApproved = qaReportApproved;
 
     if (allCompleted && qaApproved && finalStatus !== 'done' && finalStatus !== 'pr_created' && plan) {
       const mergeEvidence = findReachableTaskMergeEvidence({
@@ -1112,8 +1112,12 @@ export class ProjectStore {
     ) && !planMergeEvidence && !reachableMergeEvidence;
     const unreachableMergeCommit = terminalStatus && recordedMergeUnreachable && !reachableMergeEvidence;
     const failedQaReport = this.hasFailedQaReportVerdict(planPath);
+    const passingQaReport = this.hasApprovedQaReportVerdict(planPath);
+    const qaPlanApproved = isQASignoffApproved((plan as unknown as { qa_signoff?: Record<string, unknown> }).qa_signoff);
+    const completedHumanReview = finalStatus === 'human_review' && finalReviewReason === 'completed';
+    const missingPassingQaReport = !passingQaReport && (terminalStatus || completedHumanReview || qaPlanApproved);
 
-    if (!doneGuard.incomplete && !missingMergeEvidence && !unreachableMergeCommit && !failedQaReport) {
+    if (!doneGuard.incomplete && !missingMergeEvidence && !unreachableMergeCommit && !failedQaReport && !missingPassingQaReport) {
       if (reachableMergeEvidence && (!planMergeEvidence || recordedMergeUnreachable)) {
         this.persistRecoveredMergeEvidence(
           plan as unknown as Record<string, unknown>,
@@ -1165,6 +1169,8 @@ export class ProjectStore {
         ? `Recovered terminal status for ${taskName}: recorded merge commit is not reachable from the current checkout; rerunning QA and merge.`
         : missingMergeEvidence
         ? `Recovered terminal status for ${taskName}: merge evidence is missing; rerunning QA and merge.`
+        : missingPassingQaReport
+        ? `Recovered terminal status for ${taskName}: passing qa_report.md is missing; rerunning QA before accepting completion.`
         : `Recovered stale terminal status for ${taskName}: all subtasks are complete but QA or merge evidence is missing; rerunning QA.`;
       delete correctedPlan.reviewReason;
       delete correctedPlan.qa_signoff;

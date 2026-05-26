@@ -263,6 +263,17 @@ export class InsightsService extends EventEmitter {
     } catch (error) {
       // Error already emitted by executor
       console.error('[InsightsService] Error executing insights:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const assistantMessage: InsightsChatMessage = {
+        id: `msg-${Date.now()}`,
+        role: 'assistant',
+        content: `Insights request failed: ${errorMessage}`,
+        timestamp: new Date(),
+      };
+      session.messages.push(assistantMessage);
+      session.updatedAt = new Date();
+      this.sessionManager.saveSession(projectPath, session);
+      this.emit('session-updated', projectId, session);
     }
   }
 

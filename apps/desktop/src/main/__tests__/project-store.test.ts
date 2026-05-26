@@ -844,6 +844,7 @@ describe('ProjectStore', () => {
         path.join(specsDir, 'implementation_plan.json'),
         JSON.stringify(plan)
       );
+      writeFileSync(path.join(specsDir, 'qa_report.md'), 'Status: PASSED\n');
 
       const { ProjectStore } = await import('../project-store');
       const store = new ProjectStore();
@@ -888,6 +889,7 @@ describe('ProjectStore', () => {
         path.join(specsDir, 'implementation_plan.json'),
         JSON.stringify(plan)
       );
+      writeFileSync(path.join(specsDir, 'qa_report.md'), 'Status: PASSED\n');
 
       const { ProjectStore } = await import('../project-store');
       const store = new ProjectStore();
@@ -898,6 +900,76 @@ describe('ProjectStore', () => {
       expect(tasks[0].status).toBe('done');
       expect(tasks[0].mergeCommit).toBe('abc1234');
       expect(tasks[0].mergedAt).toBe('2024-01-01T00:00:00Z');
+    });
+
+    it('reopens terminal done tasks that have approved signoff and merge evidence but no qa_report.md', async () => {
+      execFileSync('git', ['init'], { cwd: TEST_PROJECT_PATH, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: TEST_PROJECT_PATH });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: TEST_PROJECT_PATH });
+
+      const specId = '006-done-missing-qa-report';
+      writeFileSync(path.join(TEST_PROJECT_PATH, 'README.md'), '# merged without report\n');
+      execFileSync('git', ['add', 'README.md'], { cwd: TEST_PROJECT_PATH });
+      execFileSync('git', ['commit', '-m', `Auto-merge ${specId}: Existing merge`], {
+        cwd: TEST_PROJECT_PATH,
+        stdio: 'ignore',
+      });
+      const commitSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: TEST_PROJECT_PATH,
+        encoding: 'utf-8',
+      }).trim();
+      const mergedAt = execFileSync('git', ['show', '-s', '--format=%cI', 'HEAD'], {
+        cwd: TEST_PROJECT_PATH,
+        encoding: 'utf-8',
+      }).trim();
+
+      const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', specId);
+      mkdirSync(specsDir, { recursive: true });
+
+      const plan = {
+        feature: 'Done Without QA Report',
+        workflow_type: 'feature',
+        services_involved: [],
+        status: 'done',
+        qa_signoff: { status: 'approved', issues_found: [] },
+        mergeCommit: commitSha,
+        mergedAt,
+        phases: [
+          {
+            phase: 1,
+            name: 'Phase 1',
+            type: 'implementation',
+            subtasks: [
+              { id: 'subtask-1', description: 'Subtask 1', status: 'completed' }
+            ]
+          }
+        ],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+        spec_file: 'spec.md'
+      };
+
+      writeFileSync(
+        path.join(specsDir, 'implementation_plan.json'),
+        JSON.stringify(plan)
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(specsDir, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(tasks[0].status).toBe('ai_review');
+      expect(persistedPlan.status).toBe('ai_review');
+      expect(persistedPlan.qa_signoff).toBeUndefined();
+      expect(persistedPlan.mergeCommit).toBe(commitSha);
+      expect(persistedPlan.recoveryNote).toContain('passing qa_report.md is missing');
     });
 
     it('reopens terminal done tasks that have QA but no merge evidence', async () => {
@@ -930,6 +1002,7 @@ describe('ProjectStore', () => {
         path.join(specsDir, 'implementation_plan.json'),
         JSON.stringify(plan)
       );
+      writeFileSync(path.join(specsDir, 'qa_report.md'), 'Status: PASSED\n');
 
       const { ProjectStore } = await import('../project-store');
       const store = new ProjectStore();
@@ -988,6 +1061,7 @@ describe('ProjectStore', () => {
         path.join(specsDir, 'implementation_plan.json'),
         JSON.stringify(plan)
       );
+      writeFileSync(path.join(specsDir, 'qa_report.md'), 'Status: PASSED\n');
 
       const { ProjectStore } = await import('../project-store');
       const store = new ProjectStore();
@@ -1296,6 +1370,10 @@ describe('ProjectStore', () => {
           mergedAt: '2024-01-03T00:00:00Z',
         },
       );
+      writeFileSync(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', specId, 'qa_report.md'),
+        'Status: PASSED\n',
+      );
 
       mkdirSync(worktreeSpecDir, { recursive: true });
       writeFileSync(path.join(worktreeSpecDir, 'implementation_plan.json'), JSON.stringify({
@@ -1341,6 +1419,10 @@ describe('ProjectStore', () => {
           final_acceptance: ['merged'],
         },
       );
+      writeFileSync(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', specId, 'qa_report.md'),
+        'Status: PASSED\n',
+      );
       writeSpec(
         path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId, '.auto-claude', 'specs'),
         specId,
@@ -1381,6 +1463,10 @@ describe('ProjectStore', () => {
           mergedAt: '2024-01-03T00:00:00Z',
           final_acceptance: ['merged'],
         },
+      );
+      writeFileSync(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', specId, 'qa_report.md'),
+        'Status: PASSED\n',
       );
       writeSpec(
         path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId, '.auto-claude', 'specs'),
@@ -1453,6 +1539,7 @@ describe('ProjectStore', () => {
         mergedAt: '2024-01-03T00:00:00Z',
       };
       writeSpec(specRoot, specId, plan);
+      writeFileSync(path.join(specRoot, specId, 'qa_report.md'), 'Status: PASSED\n');
 
       const { ProjectStore } = await import('../project-store');
       const store = new ProjectStore();
@@ -1496,6 +1583,7 @@ describe('ProjectStore', () => {
       (plan.phases[0].subtasks[0] as Record<string, unknown>).last_attempt_outcome = 'completed';
       (plan.phases[0].subtasks[0] as Record<string, unknown>).last_attempt_at = '2026-05-25T10:00:00.000Z';
       writeSpec(specRoot, specId, plan);
+      writeFileSync(path.join(specDir, 'qa_report.md'), 'Status: PASSED\n');
       writeFileSync(path.join(specDir, 'QA_FIX_REQUEST.md'), 'Status: REJECTED\n');
       writeFileSync(path.join(specDir, 'QA_ESCALATION.md'), '# QA Escalation - Human Intervention Required\n');
       writeFileSync(path.join(specDir, 'BASE_SYNC_CONFLICT.md'), '# Base Branch Sync Conflict\n');

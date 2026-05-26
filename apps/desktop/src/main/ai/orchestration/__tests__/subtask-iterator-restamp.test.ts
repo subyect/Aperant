@@ -587,6 +587,65 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toBeUndefined();
   });
 
+  it('requires the verifier command embedded in human feedback descriptions', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Human review feedback',
+          subtasks: [
+            {
+              id: 'aperant-human-feedback-rework',
+              title: 'Address human review feedback',
+              description: [
+                'Address the latest human review feedback recorded in QA_FIX_REQUEST.md.',
+                '',
+                'Command run from Yect main:',
+                'pnpm --filter @yect/obyect typecheck && pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts',
+              ].join('\n'),
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => {
+        const completedPlan = structuredClone(plan);
+        completedPlan.phases[0].subtasks[0].status = 'completed';
+        await writeFile(planPath, JSON.stringify(completedPlan, null, 2));
+        return sessionResult('completed', {
+          toolResults: [
+            {
+              toolName: 'Bash',
+              args: { command: 'pnpm --filter @yect/obyect typecheck' },
+              result: 'Exit code: 0',
+              durationMs: 8_000,
+              isError: false,
+            },
+          ],
+        });
+      },
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(0);
+    expect(result.stuckSubtasks).toEqual(['aperant-human-feedback-rework']);
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('declared verifier did not pass');
+    expect(subtask.last_error).toContain('useLibraryFeed.tag-filtering.test.ts');
+  });
+
   it('reopens a completed command subtask when its retry context says the verifier failed', async () => {
     const plan = {
       feature: 'test',

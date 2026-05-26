@@ -12,6 +12,7 @@ import { InsightsConfig } from './config';
 import { detectRateLimit, createSDKRateLimitInfo } from '../rate-limit-detector';
 import { runInsightsQuery } from '../ai/runners/insights';
 import type { ModelShorthand } from '../ai/config/types';
+import { resolveInsightsModelConfig } from './model-config';
 
 /**
  * Message processor result
@@ -83,9 +84,11 @@ export class InsightsExecutor extends EventEmitter {
     let accumulatedText = '';
     let allOutput = '';
 
-    // Map InsightsModelConfig to ModelShorthand/ThinkingLevel
-    const modelShorthand: ModelShorthand = (modelConfig?.model as ModelShorthand) ?? 'sonnet';
-    const thinkingLevel: 'low' | 'medium' | 'high' | 'xhigh' = modelConfig?.thinkingLevel ?? 'medium';
+    // Resolve again at the executor boundary so stale sessions or direct callers
+    // cannot bypass the active provider/subscription compatibility rules.
+    const resolvedConfig = resolveInsightsModelConfig(modelConfig);
+    const modelShorthand: ModelShorthand = resolvedConfig.model as ModelShorthand;
+    const thinkingLevel: 'low' | 'medium' | 'high' | 'xhigh' = resolvedConfig.thinkingLevel ?? 'medium';
 
     // Map history to InsightsMessage format
     const history = conversationHistory
