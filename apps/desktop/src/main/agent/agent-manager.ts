@@ -886,14 +886,14 @@ export class AgentManager extends EventEmitter {
         this.persistRuntimeState(project, task, 'ai_review', 'review', 'qa_review', 'qa_review');
         console.warn(`[AgentManager] Startup recovery rerouting completed in-progress task to QA for ${task.specId}`);
         await this.startQAProcess(task.id, project.path, task.specId, project.id);
-        return true;
+        return this.confirmRecoveredWorkerStarted(project, task, 'QA recovery');
       }
 
       if ((task.status === 'ai_review' || this.shouldRetryTerminalAgentError(project, task)) && allSubtasksComplete) {
         this.persistRuntimeState(project, task, 'ai_review', 'review', 'qa_review', 'qa_review');
         console.warn(`[AgentManager] Startup recovery resuming QA for ${task.specId}`);
         await this.startQAProcess(task.id, project.path, task.specId, project.id);
-        return true;
+        return this.confirmRecoveredWorkerStarted(project, task, 'QA recovery');
       }
 
       if (!hasSpec || !hasPlanSubtasks) {
@@ -930,11 +930,30 @@ export class AgentManager extends EventEmitter {
         },
         project.id,
       );
-      return true;
+      return this.confirmRecoveredWorkerStarted(project, task, 'coding recovery');
     } catch (error) {
       console.warn(`[AgentManager] Startup recovery could not resume ${task.specId}:`, error);
       return false;
     }
+  }
+
+  private confirmRecoveredWorkerStarted(project: Project, task: Task, recoveryMode: string): boolean {
+    if (this.isRunning(task.id)) return true;
+
+    this.persistRuntimeState(
+      project,
+      task,
+      'queue',
+      'queued',
+      'queue',
+      'idle',
+      `${recoveryMode} requested a worker for ${task.specId}, but no live worker was registered; queued for retry.`
+    );
+    console.warn(
+      `[AgentManager] ${recoveryMode} requested a worker for ${task.specId}, ` +
+      'but no live worker was registered; queued for retry.'
+    );
+    return false;
   }
 
   private areAllPlanSubtasksComplete(project: Project, task: Task): boolean {
@@ -1255,6 +1274,7 @@ export class AgentManager extends EventEmitter {
     planStatus: string,
     xstateState: string,
     executionPhase: string,
+    recoveryNote?: string,
   ): void {
     let persisted = false;
     for (const planPath of getPlanPathsForSpec(project, task.specId)) {
@@ -1268,6 +1288,9 @@ export class AgentManager extends EventEmitter {
         plan.executionPhase = executionPhase;
         plan.updated_at = new Date().toISOString();
         if (status !== 'human_review') delete plan.reviewReason;
+        if (recoveryNote) {
+          plan.recoveryNote = recoveryNote;
+        }
         if (status === 'ai_review') {
           delete plan.qa_signoff;
           delete plan.final_acceptance;
@@ -1346,7 +1369,7 @@ export class AgentManager extends EventEmitter {
       },
       project.id,
     );
-    return true;
+    return this.confirmRecoveredWorkerStarted(project, task, 'failed QA coding recovery');
   }
 
   hasFailedQaReport(project: Project, task: Task): boolean {

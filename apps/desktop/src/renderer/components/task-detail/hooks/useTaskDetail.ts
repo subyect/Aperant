@@ -112,6 +112,11 @@ export function useTaskDetail({ task }: UseTaskDetailOptions) {
   const isIncomplete = isIncompleteHumanReview(task);
   const taskProgress = getTaskProgress(task);
 
+  useEffect(() => {
+    setActiveTab('overview');
+    setIsUserScrolledUp(false);
+  }, [task.id, task.specId]);
+
   // Catastrophic stuck detection — last-resort safety net.
   // XState handles all normal process-exit transitions via PROCESS_EXITED events.
   // This only fires if XState somehow fails to transition after 60s with no activity.

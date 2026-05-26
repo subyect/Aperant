@@ -153,6 +153,45 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('without marking the subtask completed');
   });
 
+  it('leads retry context with the latest repo-local failure and omits nested stale summaries', async () => {
+    const plan = planWithStatus('pending');
+    plan.phases[0].subtasks[0] = {
+      ...plan.phases[0].subtasks[0],
+      last_error: [
+        'Bash command failed during the attempt: `pnpm test`.',
+        '',
+        'Reported failure summary:',
+        'old nested payload that should be omitted',
+      ].join('\n'),
+    } as ReturnType<typeof planWithStatus>['phases'][number]['subtasks'][number] & { last_error: string };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        messages: [
+          {
+            role: 'assistant',
+            content: 'Current verifier failed with Cannot find module "./query-helpers.js" and Exit code: 1.',
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ last_error?: string }> }>;
+    };
+    const lastError = written.phases[0].subtasks[0].last_error ?? '';
+
+    expect(lastError).toContain('Current verifier failed with Cannot find module');
+    expect(lastError).toContain('[previous nested failure summary omitted]');
+    expect(lastError).not.toContain('old nested payload that should be omitted');
+    expect(lastError.indexOf('Current verifier failed')).toBeLessThan(lastError.indexOf('previous nested failure'));
+  });
+
   it('rejects a plan completion after the session only read files', async () => {
     const projectDir = join(tmpDir, 'project');
     await mkdir(projectDir, { recursive: true });

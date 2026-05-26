@@ -71,6 +71,23 @@ vi.mock('electron', () => ({
 
 import { AgentManager, getProcessStatCommand, isZombieProcessStat } from './agent-manager';
 
+function registerLiveWorker(manager: AgentManager, taskId: string, projectId: string, processType = 'task-execution'): void {
+  (manager as unknown as {
+    state: {
+      addProcess: (taskId: string, process: unknown) => void;
+    };
+  }).state.addProcess(taskId, {
+    taskId,
+    process: null,
+    worker: { pid: process.pid },
+    startedAt: new Date(),
+    lastActivityAt: new Date(),
+    spawnId: 1,
+    projectId,
+    processType,
+  });
+}
+
 describe('process liveness helpers', () => {
   it('treats zombie ps stat values as not live', () => {
     expect(isZombieProcessStat('Z')).toBe(true);
@@ -144,7 +161,9 @@ describe('AgentManager workflow recovery', () => {
     const manager = new AgentManager();
     const startQAProcess = vi
       .spyOn(manager as unknown as { startQAProcess: (...args: unknown[]) => Promise<void> }, 'startQAProcess')
-      .mockResolvedValue(undefined);
+      .mockImplementation(async () => {
+        registerLiveWorker(manager, task.id, project.id, 'qa-process');
+      });
     const startTaskExecution = vi
       .spyOn(manager as unknown as { startTaskExecution: (...args: unknown[]) => Promise<void> }, 'startTaskExecution')
       .mockResolvedValue(undefined);
@@ -215,7 +234,9 @@ describe('AgentManager workflow recovery', () => {
       .mockResolvedValue(undefined);
     const startTaskExecution = vi
       .spyOn(manager as unknown as { startTaskExecution: (...args: unknown[]) => Promise<void> }, 'startTaskExecution')
-      .mockResolvedValue(undefined);
+      .mockImplementation(async () => {
+        registerLiveWorker(manager, task.id, project.id);
+      });
 
     await manager.runWorkflowRecoveryPass('test');
 
@@ -244,6 +265,73 @@ describe('AgentManager workflow recovery', () => {
     expect(recoverySubtask?.description).toContain('Active fix request:');
     expect(recoverySubtask?.description).toContain('Read QA_FIX_REQUEST.md first');
     expect(recoverySubtask?.verification?.run).toContain('Read QA_FIX_REQUEST.md first');
+  });
+
+  it('queues recovered in-progress tasks when worker start returns without a live worker', async () => {
+    writeFileSync(planPath, JSON.stringify({
+      feature: 'Task',
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      phases: [
+        {
+          id: 'phase-1',
+          name: 'Implementation',
+          subtasks: [
+            { id: '1', title: 'Pending', status: 'pending' },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const project = {
+      id: 'project-1',
+      path: projectPath,
+      autoBuildPath: '.auto-claude',
+      settings: { maxParallelTasks: 3, mainBranch: 'main' },
+    };
+    const task = {
+      id: 'task-id-1',
+      specId: 'task-001',
+      title: 'Task',
+      description: 'Task',
+      status: 'in_progress',
+      updatedAt: new Date('2026-05-26T10:00:00.000Z'),
+      metadata: {},
+      subtasks: [{ id: '1', title: 'Pending', status: 'pending' }],
+    };
+
+    projectStoreMock.getProjects.mockReturnValue([project]);
+    projectStoreMock.getTasks.mockReturnValue([task]);
+
+    const manager = new AgentManager();
+    const startTaskExecution = vi
+      .spyOn(manager as unknown as { startTaskExecution: (...args: unknown[]) => Promise<void> }, 'startTaskExecution')
+      .mockResolvedValue(undefined);
+
+    await manager.runWorkflowRecoveryPass('test');
+
+    expect(startTaskExecution).toHaveBeenCalledWith(
+      task.id,
+      projectPath,
+      task.specId,
+      expect.objectContaining({ baseBranch: 'main', workers: 1 }),
+      project.id,
+    );
+
+    const persisted = JSON.parse(readFileSync(planPath, 'utf-8')) as {
+      status?: string;
+      planStatus?: string;
+      xstateState?: string;
+      executionPhase?: string;
+      recoveryNote?: string;
+    };
+    expect(persisted.status).toBe('queue');
+    expect(persisted.planStatus).toBe('queued');
+    expect(persisted.xstateState).toBe('queue');
+    expect(persisted.executionPhase).toBe('idle');
+    expect(persisted.recoveryNote).toContain('no live worker was registered');
   });
 
   it('clears exited worker handles before enforcing project capacity', async () => {

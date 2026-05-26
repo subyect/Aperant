@@ -431,7 +431,17 @@ function buildRetryReason(
   if (result.outcome === 'completed') {
     const finalMessage = getLastAssistantMessage(result);
     const persistedFailureContext = getPersistedVerifierFailureContext(subtask);
-    const verifierFailureContext = [persistedFailureContext, finalMessage].filter(Boolean).join('\n\n');
+    const finalFailureContext = finalMessage && looksLikeRepoLocalVerifierFailureSummary(finalMessage)
+      ? finalMessage
+      : null;
+    const finalNonFailureContext = finalMessage && !finalFailureContext
+      ? finalMessage
+      : null;
+    const verifierFailureContext = [
+      finalFailureContext,
+      persistedFailureContext,
+      finalNonFailureContext,
+    ].filter(Boolean).join('\n\n');
     if (verifierFailureContext && looksLikeRepoLocalVerifierFailureSummary(verifierFailureContext)) {
       return (
         `Bash command failed during the attempt or the assistant reported a repo-local verifier failure, ` +
@@ -642,8 +652,24 @@ function getPersistedVerifierFailureContext(subtask?: PlanSubtask): string | nul
   const parts = [
     typeof subtask?.notes === 'string' ? subtask.notes : '',
     typeof subtask?.last_error === 'string' ? subtask.last_error : '',
-  ].map((part) => part.trim()).filter(Boolean);
+  ].map((part) => compactPersistedRetryContext(part)).filter(Boolean);
   return parts.length > 0 ? parts.join('\n\n') : null;
+}
+
+function compactPersistedRetryContext(value: string): string {
+  let normalized = value.replace(/\r\n/g, '\n').trim();
+  if (!normalized) return '';
+
+  normalized = normalized.replace(
+    /\n\nReported failure summary:\n[\s\S]*$/i,
+    '\n\n[previous nested failure summary omitted]'
+  );
+  normalized = normalized.replace(
+    /\n\nLast assistant message:\n[\s\S]*$/i,
+    '\n\n[previous assistant summary omitted]'
+  );
+
+  return compactForPlan(normalized, 800);
 }
 
 function looksLikeFalseCompletionClaim(message: string): boolean {
