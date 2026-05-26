@@ -48,6 +48,15 @@ describe('task review artifacts', () => {
     ].join('\n'))).toBe(false);
   });
 
+  it('rejects passing QA reports that say the workspace test command fails', () => {
+    expect(isPassingQaReportContent([
+      'Status: PASSED',
+      '',
+      '## Verification Executed',
+      '- Result: Overall workspace test command fails due to unrelated package-resolution issues.',
+    ].join('\n'))).toBe(false);
+  });
+
   it('finds a passing qa_report.md across candidate spec dirs', () => {
     const first = makeTempDir();
     const second = makeTempDir();

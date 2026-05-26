@@ -971,6 +971,7 @@ export function isMetadataOnlyQaFailureContent(content: string): boolean {
 export function readFailedQaEvidenceSync(specDir: string): { reportPath: string; content: string } | null {
   const verdict = readQaReportVerdictSync(specDir);
   if (verdict?.status === 'failed') {
+    if (isMetadataOnlyQaFailureContent(verdict.content)) return null;
     return { reportPath: verdict.reportPath, content: normalizeQaFailureEvidenceContent(verdict.content) };
   }
 

@@ -424,6 +424,31 @@ describe('plan-file runtime guards', () => {
     expect(readFailedQaEvidenceSync(tempDir)).toBeNull();
   });
 
+  it('ignores metadata-only generated failed QA reports so startup reruns QA instead of coding', () => {
+    writeFileSync(path.join(tempDir, 'qa_report.md'), [
+      '# QA Report',
+      '',
+      '**Final Status**: MAX ITERATIONS REACHED',
+      '**Result**: FAILED',
+      '',
+      '## Iteration History',
+      '',
+      '### Iteration 1 — ERROR',
+      '',
+      '- **QA error**',
+      '  - QA agent did not update implementation_plan.json with qa_signoff',
+      '',
+      '## Result',
+      '',
+      'QA validation reached the maximum of 50 iterations without approval. Human review required.',
+    ].join('\n'));
+
+    const verdict = readQaReportVerdictSync(tempDir);
+
+    expect(verdict?.status).toBe('failed');
+    expect(readFailedQaEvidenceSync(tempDir)).toBeNull();
+  });
+
   it('uses actionable failed QA plan state as recovery evidence when QA artifacts were cleared', () => {
     const plan = planWithSubtasks();
     plan.phases[0].subtasks[1].status = 'completed';

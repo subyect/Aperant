@@ -761,6 +761,118 @@ describe('ProjectStore', () => {
       expect(persistedPlan.recoveryNote).toContain('merge evidence is missing');
     });
 
+    it('reopens terminal done tasks when qa_report.md has a failed verdict', async () => {
+      const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '006-done-failed-qa-report');
+      mkdirSync(specsDir, { recursive: true });
+
+      const plan = {
+        feature: 'Done With Failed QA Report',
+        workflow_type: 'feature',
+        services_involved: [],
+        status: 'done',
+        qa_signoff: { status: 'approved', issues_found: [] },
+        mergeCommit: 'abc1234',
+        mergedAt: '2024-01-01T00:00:00Z',
+        phases: [
+          {
+            phase: 1,
+            name: 'Phase 1',
+            type: 'implementation',
+            subtasks: [
+              { id: 'subtask-1', description: 'Subtask 1', status: 'completed' }
+            ]
+          }
+        ],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+        spec_file: 'spec.md'
+      };
+
+      writeFileSync(
+        path.join(specsDir, 'implementation_plan.json'),
+        JSON.stringify(plan)
+      );
+      writeFileSync(path.join(specsDir, 'qa_report.md'), [
+        'Status: PASSED',
+        '',
+        'Verification executed:',
+        '- Result: Overall workspace test command fails due to unrelated package-resolution issues.',
+      ].join('\n'));
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(specsDir, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(tasks[0].status).toBe('ai_review');
+      expect(persistedPlan.status).toBe('ai_review');
+      expect(persistedPlan.qa_signoff).toBeUndefined();
+      expect(persistedPlan.mergeCommit).toBeUndefined();
+      expect(persistedPlan.recoveryNote).toContain('qa_report.md contains a failed verdict');
+    });
+
+    it('reopens terminal done tasks when recorded merge commit is not on checkout HEAD', async () => {
+      execFileSync('git', ['init'], { cwd: TEST_PROJECT_PATH, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: TEST_PROJECT_PATH });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: TEST_PROJECT_PATH });
+      writeFileSync(path.join(TEST_PROJECT_PATH, 'README.md'), '# test\n');
+      execFileSync('git', ['add', 'README.md'], { cwd: TEST_PROJECT_PATH });
+      execFileSync('git', ['commit', '-m', 'initial'], { cwd: TEST_PROJECT_PATH, stdio: 'ignore' });
+
+      const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '006-done-unreachable-merge');
+      mkdirSync(specsDir, { recursive: true });
+
+      const plan = {
+        feature: 'Done With Unreachable Merge',
+        workflow_type: 'feature',
+        services_involved: [],
+        status: 'done',
+        qa_signoff: { status: 'approved', issues_found: [] },
+        mergeCommit: 'ffffffffffffffffffffffffffffffffffffffff',
+        mergedAt: '2024-01-01T00:00:00Z',
+        phases: [
+          {
+            phase: 1,
+            name: 'Phase 1',
+            type: 'implementation',
+            subtasks: [
+              { id: 'subtask-1', description: 'Subtask 1', status: 'completed' }
+            ]
+          }
+        ],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+        spec_file: 'spec.md'
+      };
+
+      writeFileSync(
+        path.join(specsDir, 'implementation_plan.json'),
+        JSON.stringify(plan)
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(specsDir, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(tasks[0].status).toBe('ai_review');
+      expect(persistedPlan.status).toBe('ai_review');
+      expect(persistedPlan.mergeCommit).toBeUndefined();
+      expect(persistedPlan.recoveryNote).toContain('recorded merge commit is not reachable');
+    });
+
     it('prefers active worktree progress over stale main queue status', async () => {
       const specId = '007-worktree-progress';
       writeSpec(

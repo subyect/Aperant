@@ -9,7 +9,7 @@ const APPROVED_STATUSES = new Set(['passed', 'pass', 'approved']);
 const CONTRADICTORY_FAILURE_PATTERNS = [
   /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?\s*(?:Status|Final Status|Result)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*(FAILED|FAIL|REJECTED|ISSUES|ESCALATED|MAX ITERATIONS REACHED)\b/i,
   /\b(?:test suite|tests?)\s+(?:has|have|had)\s+(?:unrelated\s+)?failures?\b/i,
-  /\b(?:verification|verifier|command|test run|suite)\b[^\n]*(?:failed|failing|failure|did not pass|not passing)\b/i,
+  /\b(?:verification|verifier|command|test run|suite)\b[^\n]*(?:failed|fails|failing|failure|did not pass|does not pass|not passing)\b/i,
   /\bverification\s+(?:could not|cannot|did not)\s+complete\b/i,
   /\bnot ready for sign[- ]off\b/i,
   /\bcannot be accepted\b/i,

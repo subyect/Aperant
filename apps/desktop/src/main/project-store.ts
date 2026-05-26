@@ -23,6 +23,7 @@ import { updateRoadmapFeatureOutcome, revertRoadmapFeatureOutcome } from './util
 import { safeParseJson } from './utils/json-repair';
 import { getIsolatedGitEnv } from './utils/git-isolation';
 import { BASE_SYNC_RECOVERY_NOTE, BASE_SYNC_RECOVERY_SUBTASK_ID } from './agent/base-sync-recovery';
+import { getQaReportVerdictFromContent } from './agent/task-review-artifacts';
 import {
   applyRuntimePhaseState,
   checkSubtasksCompletion,
@@ -757,7 +758,8 @@ export class ProjectStore {
           finalReviewReason,
           plan,
           planPath,
-          dir.name
+          dir.name,
+          basePath
         );
 
         // Auto-correct status to human_review if all subtasks are completed
@@ -1032,7 +1034,8 @@ export class ProjectStore {
     finalReviewReason: ReviewReason | undefined,
     plan: ImplementationPlan | null,
     planPath: string,
-    taskName: string
+    taskName: string,
+    basePath: string
   ): { status: TaskStatus; reviewReason: ReviewReason | undefined } {
     if (hasJsonError || !plan || !statusRequiresCompletedSubtasks(finalStatus, finalReviewReason)) {
       return { status: finalStatus, reviewReason: finalReviewReason };
@@ -1043,8 +1046,13 @@ export class ProjectStore {
       finalStatus === 'done'
       || finalStatus === 'pr_created'
     ) && !planHasMergeCompletionEvidence(plan as unknown as Record<string, unknown>);
+    const unreachableMergeCommit = (
+      finalStatus === 'done'
+      || finalStatus === 'pr_created'
+    ) && this.hasUnreachableMergeCommit(plan as unknown as Record<string, unknown>, basePath);
+    const failedQaReport = this.hasFailedQaReportVerdict(planPath);
 
-    if (!doneGuard.incomplete && !missingMergeEvidence) {
+    if (!doneGuard.incomplete && !missingMergeEvidence && !unreachableMergeCommit && !failedQaReport) {
       const recoveryNote = (plan as unknown as { recoveryNote?: unknown }).recoveryNote;
       if (typeof recoveryNote === 'string' && /^Blocked terminal (event|phase|status)\b/.test(recoveryNote)) {
         const correctedPlan = plan as unknown as Record<string, unknown>;
@@ -1082,12 +1090,17 @@ export class ProjectStore {
       correctedPlan.planStatus = 'review';
       correctedPlan.xstateState = 'qa_review';
       correctedPlan.executionPhase = 'qa_review';
-      correctedPlan.recoveryNote = missingMergeEvidence
+      correctedPlan.recoveryNote = failedQaReport
+        ? `Recovered terminal status for ${taskName}: qa_report.md contains a failed verdict; rerunning QA and merge.`
+        : unreachableMergeCommit
+        ? `Recovered terminal status for ${taskName}: recorded merge commit is not reachable from the current checkout; rerunning QA and merge.`
+        : missingMergeEvidence
         ? `Recovered terminal status for ${taskName}: merge evidence is missing; rerunning QA and merge.`
         : `Recovered stale terminal status for ${taskName}: all subtasks are complete but QA or merge evidence is missing; rerunning QA.`;
       delete correctedPlan.reviewReason;
+      delete correctedPlan.qa_signoff;
       delete correctedPlan.final_acceptance;
-      if (missingMergeEvidence) {
+      if (missingMergeEvidence || unreachableMergeCommit || failedQaReport) {
         delete correctedPlan.mergeCommit;
         delete correctedPlan.mergedAt;
       }
@@ -1122,6 +1135,46 @@ export class ProjectStore {
     } catch (writeError) {
       console.error(`[ProjectStore] Failed to persist incomplete terminal correction for ${taskName}:`, writeError);
       return { status: finalStatus, reviewReason: finalReviewReason };
+    }
+  }
+
+  private hasFailedQaReportVerdict(planPath: string): boolean {
+    try {
+      const qaReportPath = path.join(path.dirname(planPath), AUTO_BUILD_PATHS.QA_REPORT);
+      const content = readFileSync(qaReportPath, 'utf-8');
+      return getQaReportVerdictFromContent(content) === 'failed';
+    } catch {
+      return false;
+    }
+  }
+
+  private hasUnreachableMergeCommit(plan: Record<string, unknown>, basePath: string): boolean {
+    const mergeCommit = typeof plan.mergeCommit === 'string' ? plan.mergeCommit.trim() : '';
+    if (!mergeCommit) return false;
+
+    try {
+      execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+        cwd: basePath,
+        env: getIsolatedGitEnv(),
+        stdio: 'ignore',
+      });
+      execFileSync('git', ['merge-base', '--is-ancestor', mergeCommit, 'HEAD'], {
+        cwd: basePath,
+        env: getIsolatedGitEnv(),
+        stdio: 'ignore',
+      });
+      return false;
+    } catch {
+      try {
+        execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+          cwd: basePath,
+          env: getIsolatedGitEnv(),
+          stdio: 'ignore',
+        });
+        return true;
+      } catch {
+        return false;
+      }
     }
   }
 
