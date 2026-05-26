@@ -405,6 +405,40 @@ describe('ProjectStore', () => {
       expect(tasks[0].description).toBe('Use this goal text in the task overview.');
     });
 
+    it('skips metadata-only intro blocks before using Goal overview text', async () => {
+      const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '001-metadata-goal-description');
+      mkdirSync(specsDir, { recursive: true });
+      writeFileSync(path.join(specsDir, 'implementation_plan.json'), JSON.stringify({
+        feature: 'Metadata Goal Description',
+        workflow_type: 'feature',
+        services_involved: [],
+        status: 'in_progress',
+        phases: [],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+        spec_file: 'spec.md',
+      }));
+      writeFileSync(path.join(specsDir, 'spec.md'), [
+        '# Metadata Goal Description',
+        '',
+        '- **Linear Issue:** YEC-1',
+        '- **Priority:** High',
+        '- **Status:** In Progress',
+        '',
+        '## 1) Goal',
+        '',
+        'Show the real goal instead of metadata.',
+      ].join('\n'));
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+
+      expect(tasks[0].description).toBe('Show the real goal instead of metadata.');
+    });
+
     it('uses the introductory paragraph after the spec title as task overview fallback', async () => {
       const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '001-intro-description');
       mkdirSync(specsDir, { recursive: true });

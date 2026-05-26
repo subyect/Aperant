@@ -401,8 +401,11 @@ export class ProjectStore {
   private extractSpecDescription(content: string): string {
     const withoutTitle = content.replace(/^#\s+.*(?:\r?\n|$)/, '').trim();
     const introMatch = withoutTitle.match(/^([\s\S]*?)(?=\n#{1,6}\s|$)/);
-    if (introMatch?.[1]?.trim() && !introMatch[1].trim().startsWith('#')) {
-      return introMatch[1].trim();
+    const intro = introMatch?.[1]?.trim() ?? '';
+    const introLines = intro.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const metadataOnlyIntro = introLines.length > 0 && introLines.every((line) => /^-\s+\*\*[^*]+:\*\*/.test(line));
+    if (intro && !intro.startsWith('#') && !metadataOnlyIntro) {
+      return intro;
     }
 
     const preferredSection = content.match(
