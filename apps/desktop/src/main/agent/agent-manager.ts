@@ -542,12 +542,30 @@ export class AgentManager extends EventEmitter {
   private getWorkflowRecoveryPriority(project: Project, task: Task): number {
     if (task.status === 'ai_review') return 0;
     if (this.hasPendingQaReportRecovery(project, task)) return 1;
+    if (this.hasPendingHumanFeedbackRework(project, task)) return 1;
 
     const completedSubtasks = task.subtasks.filter((subtask) => subtask.status === 'completed').length;
     if (completedSubtasks > 0) return 2;
 
     if (task.status === 'human_review' || task.status === 'error') return 3;
     return 4;
+  }
+
+  private hasPendingHumanFeedbackRework(project: Project, task: Task): boolean {
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = safeParseJson<Record<string, any>>(readFileSync(planPath, 'utf-8'));
+        if (!plan?.human_feedback_pending) continue;
+        const subtasks = (Array.isArray(plan.phases) ? plan.phases : [])
+          .flatMap((phase: Record<string, any>) => Array.isArray(phase.subtasks) ? phase.subtasks : []);
+        const rework = subtasks.find((subtask: Record<string, any>) => subtask?.id === 'aperant-human-feedback-rework');
+        return !rework || rework.status !== 'completed';
+      } catch {
+        // Ignore unreadable plans and continue checking alternate plan paths.
+      }
+    }
+    return false;
   }
 
   private getTaskWorktreeConflictFiles(project: Project, task: Task): string[] {
