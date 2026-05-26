@@ -16,7 +16,7 @@ import {
   ProcessType
 } from './types';
 import type { IdeationConfig, Project, Task } from '../../shared/types';
-import { getPlanPathsForSpec, readFailedQaEvidenceSync, recoverApprovedQASignoffForSpec, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
+import { getPlanPathsForSpec, isMetadataOnlyQaFailureContent, readFailedQaEvidenceSync, recoverApprovedQASignoffForSpec, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
 import { AUTO_BUILD_PATHS, getSpecsDir } from '../../shared/constants';
 import { projectStore } from '../project-store';
 import { resolveAuth, resolveAuthFromQueue } from '../ai/auth/resolver';
@@ -646,7 +646,8 @@ export class AgentManager extends EventEmitter {
   }
 
   private async resumePersistedWorkflowTask(project: Project, task: Task): Promise<boolean> {
-    const allSubtasksComplete = task.subtasks.length > 0 && task.subtasks.every((subtask) => subtask.status === 'completed');
+    let allSubtasksComplete = this.areAllPlanSubtasksComplete(project, task)
+      || task.subtasks.length > 0 && task.subtasks.every((subtask) => subtask.status === 'completed');
     const baseBranch = task.metadata?.baseBranch || project.settings?.mainBranch;
     const specsBaseDir = getSpecsDir(project.autoBuildPath);
     const specDir = path.join(project.path, specsBaseDir, task.specId);
@@ -655,6 +656,17 @@ export class AgentManager extends EventEmitter {
     const hasPlanSubtasks = this.taskHasPlanSubtasks(project, task);
 
     try {
+      if (this.clearMetadataOnlyQaRecovery(project, task)) {
+        allSubtasksComplete = this.areAllPlanSubtasksComplete(project, task)
+          || task.subtasks.length > 0 && task.subtasks.every((subtask) => subtask.status === 'completed');
+        if (allSubtasksComplete) {
+          this.persistRuntimeState(project, task, 'ai_review', 'review', 'qa_review', 'qa_review');
+          console.warn(`[AgentManager] Startup recovery rerouting metadata-only QA failure to QA for ${task.specId}`);
+          await this.startQAProcess(task.id, project.path, task.specId, project.id);
+          return true;
+        }
+      }
+
       if (task.status === 'in_progress' && this.hasPendingQaReportRecovery(project, task)) {
         const failure = this.findFailedQaReport(project, task);
         if (failure) {
@@ -730,6 +742,90 @@ export class AgentManager extends EventEmitter {
       console.warn(`[AgentManager] Startup recovery could not resume ${task.specId}:`, error);
       return false;
     }
+  }
+
+  private areAllPlanSubtasksComplete(project: Project, task: Task): boolean {
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = safeParseJson<Record<string, unknown>>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
+        const completion = checkSubtasksCompletion(plan);
+        if (completion.totalCount > 0 && completion.allCompleted) return true;
+      } catch {
+        // Ignore unreadable plans; task recovery has separate guards for corrupt files.
+      }
+    }
+
+    return false;
+  }
+
+  private clearMetadataOnlyQaRecovery(project: Project, task: Task): boolean {
+    let persisted = false;
+    const now = new Date().toISOString();
+
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = safeParseJson<Record<string, any>>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
+
+        const specDir = path.dirname(planPath);
+        const fixRequestPath = path.join(specDir, 'QA_FIX_REQUEST.md');
+        let metadataOnly = false;
+
+        if (existsSync(fixRequestPath)) {
+          try {
+            metadataOnly = isMetadataOnlyQaFailureContent(readFileSync(fixRequestPath, 'utf-8'));
+          } catch {
+            metadataOnly = false;
+          }
+        }
+
+        const phases = Array.isArray(plan.phases) ? plan.phases : [];
+        for (const phase of phases) {
+          if (!Array.isArray(phase?.subtasks)) continue;
+          const recoverySubtask = phase.subtasks.find((subtask: Record<string, any>) => subtask?.id === 'aperant-qa-report-failure');
+          if (recoverySubtask && isMetadataOnlyQaFailureContent(String(recoverySubtask.description ?? ''))) {
+            metadataOnly = true;
+          }
+        }
+
+        if (!metadataOnly) continue;
+
+        for (let index = phases.length - 1; index >= 0; index--) {
+          const phase = phases[index];
+          if (!Array.isArray(phase?.subtasks)) continue;
+          phase.subtasks = phase.subtasks.filter((subtask: Record<string, any>) => subtask?.id !== 'aperant-qa-report-failure');
+          if ((phase.id === 'aperant-qa-report-recovery' || phase.type === 'qa_report_recovery') && phase.subtasks.length === 0) {
+            phases.splice(index, 1);
+          }
+        }
+
+        plan.phases = phases;
+        plan.status = 'ai_review';
+        plan.planStatus = 'review';
+        plan.xstateState = 'qa_review';
+        plan.executionPhase = 'qa_review';
+        plan.updated_at = now;
+        plan.recoveryNote = 'Metadata-only QA failure cleared; rerunning QA instead of coding.';
+        delete plan.human_feedback_pending;
+        delete plan.reviewReason;
+        delete plan.qa_signoff;
+        delete plan.final_acceptance;
+
+        rmSync(fixRequestPath, { force: true });
+        writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+        persisted = true;
+      } catch (error) {
+        console.warn(`[AgentManager] Failed to clear metadata-only QA recovery for ${task.specId}:`, error);
+      }
+    }
+
+    if (persisted) {
+      projectStore.invalidateTasksCache(project.id);
+    }
+    return persisted;
   }
 
   private taskHasPlanSubtasks(project: Project, task: Task): boolean {

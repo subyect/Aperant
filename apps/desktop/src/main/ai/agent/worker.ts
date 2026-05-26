@@ -820,6 +820,19 @@ async function runQALoop(
     generatePrompt: async (agentType, context) => {
       const promptName = agentType === 'qa_fixer' ? 'qa_fixer' : 'qa_reviewer';
       let prompt = await assemblePrompt(promptName, session);
+      if (context.previousError) {
+        prompt += [
+          '',
+          '## QA RETRY REQUIREMENT',
+          '',
+          `The previous QA reviewer attempt failed because: ${context.previousError.errorMessage}`,
+          `Consecutive metadata errors: ${context.previousError.consecutiveErrors}`,
+          '',
+          `Required action: ${context.previousError.expectedAction}.`,
+          `Also write ${session.specDir}/qa_report.md with a clear "Status: PASSED" or "Status: FAILED" line before ending.`,
+          'Do not end the QA review with only prose output; the workflow reads these files to continue.',
+        ].join('\n');
+      }
       if (context.humanFeedback) {
         prompt += `\n\n## Human Feedback\n\nThe user supplied QA feedback in QA_FIX_REQUEST.md. Treat it as the primary fix request until QA approves:\n\n${context.humanFeedback}`;
       }

@@ -957,6 +957,17 @@ export function readQaReportVerdictSync(specDir: string): { status: 'approved' |
   }
 }
 
+const METADATA_ONLY_QA_FAILURE_PATTERNS = [
+  /No qa_report\.md or QA_FIX_REQUEST\.md artifact was available/i,
+  /use the plan QA failure state as the recovery signal/i,
+  /QA agent did not update implementation_plan\.json with qa_signoff/i,
+  /missing_implementation_plan_update/i,
+];
+
+export function isMetadataOnlyQaFailureContent(content: string): boolean {
+  return METADATA_ONLY_QA_FAILURE_PATTERNS.some((pattern) => pattern.test(content));
+}
+
 export function readFailedQaEvidenceSync(specDir: string): { reportPath: string; content: string } | null {
   const verdict = readQaReportVerdictSync(specDir);
   if (verdict?.status === 'failed') {
@@ -967,6 +978,8 @@ export function readFailedQaEvidenceSync(specDir: string): { reportPath: string;
     const fixRequestPath = path.join(specDir, 'QA_FIX_REQUEST.md');
     normalizeQaFixRequestFileSync(fixRequestPath);
     const content = readFileSync(fixRequestPath, 'utf-8');
+    if (isMetadataOnlyQaFailureContent(content)) return null;
+
     const hasRejectedStatus = /(?:^|\n)\s*(?:\*\*)?\s*Status\s*:\s*(REJECTED|FAILED|FAIL|ISSUES)\s*(?:\*\*)?/i.test(content);
     const hasFailedReport = /Failed QA Report|Aperant QA failed this task|QA failed/i.test(content);
     if (hasRejectedStatus || hasFailedReport) {
@@ -1012,6 +1025,9 @@ export function readFailedQaEvidenceSync(specDir: string): { reportPath: string;
         return description ? `- ${title}: ${description}` : `- ${title}`;
       });
     });
+    const actionableIssueLines = issueLines.filter((line) => !isMetadataOnlyQaFailureContent(line));
+
+    if (actionableIssueLines.length === 0) return null;
 
     const content = [
       'Status: FAILED',
@@ -1022,9 +1038,8 @@ export function readFailedQaEvidenceSync(specDir: string): { reportPath: string;
       `Last QA status: ${lastQaStatus || '(none)'}`,
       `Completed subtasks: ${completion.completedCount}/${completion.totalCount}`,
       '',
-      ...(issueLines.length > 0
-        ? ['Recent QA issues:', ...issueLines]
-        : ['No qa_report.md or QA_FIX_REQUEST.md artifact was available; use the plan QA failure state as the recovery signal.']),
+      'Recent QA issues:',
+      ...actionableIssueLines,
     ].join('\n').slice(0, 8000);
 
     return { reportPath: `${planPath}#qa-failure-state`, content };
