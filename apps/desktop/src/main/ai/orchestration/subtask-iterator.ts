@@ -18,6 +18,7 @@ import { isRateLimitError } from '../session/error-classifier';
 import type { SessionResult } from '../session/types';
 import { cleanupStaleForegroundCommands } from '../tools/builtin/bash-process-tracker';
 import type { SubtaskInfo } from './build-orchestrator';
+import { hasPassingTestEvidence, looksLikeVerifierCommand } from './verifier-evidence';
 import {
   RATE_LIMIT_PAUSE_FILE,
   removePauseFile,
@@ -564,12 +565,6 @@ function buildSuccessfulQaRecoveryVerificationNote(result: SessionResult): strin
   return null;
 }
 
-function hasPassingTestEvidence(output: string): boolean {
-  return /\b\d+\s+passed\b/i.test(output)
-    || /Test Files\s+\d+\s+passed/i.test(output)
-    || /Tests\s+\d+\s+passed/i.test(output);
-}
-
 function buildSuccessfulBaseSyncRecoveryVerificationNote(result: SessionResult): string | null {
   const bashResults = (result.toolResults ?? [])
     .filter((toolResult) => toolResult.toolName === 'Bash');
@@ -638,22 +633,13 @@ function findLatestPassingVerifier(result: SessionResult): { command: string; ou
       ? toolResult.args.command
       : '';
     const output = toolResult.result;
-    if (!looksLikeVerifierCommand(command, output)) continue;
+    if (!looksLikeVerifierCommand(command)) continue;
     if (isFailedBashOutput(output)) return null;
     if (/\bfailed\b/i.test(output) && !/\b0\s+failed\b/i.test(output)) return null;
     return { command, output };
   }
 
   return null;
-}
-
-function looksLikeVerifierCommand(command: string, output: string): boolean {
-  if (hasPassingTestEvidence(output)) return true;
-  const normalized = command.replace(/\\\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
-  return /(?:^|[;&|()\s])(?:pnpm|npm|yarn|bun)\s+(?:--filter\s+\S+\s+)*(?:exec\s+)?(?:run\s+)?(?:test|test:e2e|build|typecheck|lint|check)\b/i.test(normalized)
-    || /(?:^|[;&|()\s])(?:vitest|playwright|tsc|eslint|jest|pytest)\b/i.test(normalized)
-    || /(?:^|[;&|()\s])cargo\s+test\b/i.test(normalized)
-    || /(?:^|[;&|()\s])go\s+test\b/i.test(normalized);
 }
 
 function hasUnmergedFileEvidence(output: string): boolean {

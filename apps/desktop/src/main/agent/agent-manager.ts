@@ -17,7 +17,7 @@ import {
   ProcessType
 } from './types';
 import type { IdeationConfig, Project, Task } from '../../shared/types';
-import { getPlanPathsForSpec, isMetadataOnlyQaFailureContent, readFailedQaEvidenceSync, recoverApprovedQASignoffForSpec, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
+import { getPlanPathsForSpec, isMetadataOnlyQaFailureContent, readFailedQaEvidenceSync, recoverApprovedQASignoffForSpec, repairFalseCompletedSubtasks, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
 import { AUTO_BUILD_PATHS, getSpecsDir } from '../../shared/constants';
 import { projectStore } from '../project-store';
 import { resolveAuth, resolveAuthFromQueue } from '../ai/auth/resolver';
@@ -372,6 +372,7 @@ export class AgentManager extends EventEmitter {
 
       let totalScanned = 0;
       let totalReset = 0;
+      let totalFalseCompletedReset = 0;
       let totalStalePausesRemoved = 0;
 
       // Scan each project for stuck subtasks
@@ -416,14 +417,20 @@ export class AgentManager extends EventEmitter {
               totalReset += resetCount;
               console.log(`[AgentManager] Startup recovery: Reset ${resetCount} stuck subtask(s) in ${specDirName}`);
             }
+
+            const falseCompletionResult = await repairFalseCompletedSubtasks(planPath, project.path, specDirName, project.id);
+            if (falseCompletionResult.success && falseCompletionResult.resetCount > 0) {
+              totalFalseCompletedReset += falseCompletionResult.resetCount;
+              console.log(`[AgentManager] Startup recovery: Reset ${falseCompletionResult.resetCount} false-completed subtask(s) in ${specDirName}`);
+            }
           }
         } catch (err) {
           console.warn(`[AgentManager] Failed to scan specs directory for project ${project.name}:`, err);
         }
       }
 
-      if (totalReset > 0) {
-        console.log(`[AgentManager] Startup recovery complete: Reset ${totalReset} stuck subtask(s) across ${totalScanned} task(s)`);
+      if (totalReset > 0 || totalFalseCompletedReset > 0) {
+        console.log(`[AgentManager] Startup recovery complete: Reset ${totalReset} stuck subtask(s) and ${totalFalseCompletedReset} false-completed subtask(s) across ${totalScanned} task(s)`);
       } else if (totalStalePausesRemoved > 0) {
         console.log(`[AgentManager] Startup recovery complete: Removed ${totalStalePausesRemoved} stale rate-limit pause file(s) across ${totalScanned} task(s)`);
       } else {

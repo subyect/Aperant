@@ -59,10 +59,11 @@ describe('plan-file runtime guards', () => {
   let recoverApprovedQASignoffForSpec: typeof import('../plan-file-utils').recoverApprovedQASignoffForSpec;
   let ensureHumanFeedbackReworkSubtask: typeof import('../plan-file-utils').ensureHumanFeedbackReworkSubtask;
   let updatePlanAfterAppMerge: typeof import('../plan-file-utils').updatePlanAfterAppMerge;
+  let repairFalseCompletedSubtasks: typeof import('../plan-file-utils').repairFalseCompletedSubtasks;
 
   beforeEach(async () => {
     vi.resetModules();
-    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync, readQaReportVerdictSync, readFailedQaEvidenceSync, readApprovedQASignoffFromReportSync, recoverApprovedQASignoffForSpec, ensureHumanFeedbackReworkSubtask, updatePlanAfterAppMerge } = await import('../plan-file-utils'));
+    ({ persistPlanPhaseSync, persistPlanStatusAndReasonSync, syncPlanPhasesToMainSync, readQaReportVerdictSync, readFailedQaEvidenceSync, readApprovedQASignoffFromReportSync, recoverApprovedQASignoffForSpec, ensureHumanFeedbackReworkSubtask, updatePlanAfterAppMerge, repairFalseCompletedSubtasks } = await import('../plan-file-utils'));
     tempDir = mkdtempSync(path.join(tmpdir(), 'aperant-plan-'));
     planPath = path.join(tempDir, 'implementation_plan.json');
     writeFileSync(planPath, JSON.stringify(planWithSubtasks(), null, 2));
@@ -232,6 +233,53 @@ describe('plan-file runtime guards', () => {
     expect(plan.xstateState).toBe('coding');
     expect(plan.executionPhase).toBe('coding');
     expect(plan.qa_signoff).toBeUndefined();
+  });
+
+  it('reopens auto-completed subtasks backed only by inspection commands', async () => {
+    writeFileSync(planPath, JSON.stringify({
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: 'P1-S1',
+              status: 'completed',
+              completed_at: '2026-05-26T10:00:00.000Z',
+              completion_note: [
+                'Auto-completed subtask after the agent reported completion and the latest verifier passed.',
+                'Command: pwd && cat ./.auto-claude/specs/example/build-progress.txt',
+                'Result: build-progress content',
+              ].join('\n'),
+            },
+            {
+              id: 'P1-S2',
+              status: 'completed',
+              completed_at: '2026-05-26T10:00:00.000Z',
+              completion_note: [
+                'Auto-completed subtask after the agent reported completion and the latest verifier passed.',
+                'Command: pwd && pnpm --filter @yect/layer1-db typecheck',
+                'Result: tsc --noEmit',
+              ].join('\n'),
+            },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const result = await repairFalseCompletedSubtasks(planPath, tempDir, 'example', 'project-1');
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+    const [invalid, valid] = plan.phases[0].subtasks;
+
+    expect(result).toEqual({ success: true, resetCount: 1 });
+    expect(invalid.status).toBe('pending');
+    expect(invalid.completion_note).toBeUndefined();
+    expect(invalid.last_attempt_outcome).toBe('invalid_auto_completion');
+    expect(valid.status).toBe('completed');
+    expect(plan.recoveryNote).toMatch(/Reset 1 invalid auto-completed subtask/);
   });
 
   it('clears stale blocked terminal notes when app merge records a completed task', () => {

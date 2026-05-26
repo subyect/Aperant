@@ -31,6 +31,7 @@ import { getIsolatedGitEnv } from '../../utils/git-isolation';
 import { findTaskWorktree } from '../../worktree-paths';
 import { normalizeQaFailureEvidenceContent, normalizeQaFixRequestFileSync } from '../../qa-feedback-utils';
 import { getQaReportVerdictFromContent } from '../../agent/task-review-artifacts';
+import { looksLikeVerifierCommand } from '../../ai/orchestration/verifier-evidence';
 import {
   applyRuntimePhaseState,
   applyTaskEventRuntimeState,
@@ -1163,6 +1164,74 @@ function getNonAutoClaudeRepoState(projectDir: string): string {
   }
 }
 
+const AUTO_COMPLETED_VERIFIER_NOTE_PREFIX = 'Auto-completed subtask after the agent reported completion and the latest verifier passed.';
+const AUTO_COMPLETED_MANUAL_NOTE_PREFIX = 'Auto-completed manual-verification subtask after the agent reported completion and edited project files.';
+
+function compactRecoveryCommand(command: string): string {
+  return command.replace(/\s+/g, ' ').trim().slice(0, 220);
+}
+
+function extractAutoCompletionCommand(note: unknown): string | null {
+  if (typeof note !== 'string' || !note.startsWith(AUTO_COMPLETED_VERIFIER_NOTE_PREFIX)) {
+    return null;
+  }
+  const match = note.match(/\nCommand:\s*([\s\S]*?)\nResult:/);
+  return match?.[1]?.trim() || null;
+}
+
+function extractManualAutoCompletionFile(note: unknown): string | null {
+  if (typeof note !== 'string' || !note.startsWith(AUTO_COMPLETED_MANUAL_NOTE_PREFIX)) {
+    return null;
+  }
+  const match = note.match(/\nFile:\s*([^\n]+)/);
+  return match?.[1]?.trim() || null;
+}
+
+function getInvalidAutoCompletionReason(subtask: Record<string, unknown>): string | null {
+  const command = extractAutoCompletionCommand(subtask.completion_note);
+  if (command !== null) {
+    if (looksLikeVerifierCommand(command)) return null;
+    return `prior auto-completion used a non-verifier command: ${compactRecoveryCommand(command) || '(empty command)'}`;
+  }
+
+  const filePath = extractManualAutoCompletionFile(subtask.completion_note);
+  if (filePath && (filePath.startsWith('.auto-claude/') || filePath.includes('/.auto-claude/'))) {
+    return `prior manual auto-completion only edited an Aperant metadata file: ${compactRecoveryCommand(filePath)}`;
+  }
+
+  return null;
+}
+
+function resetInvalidAutoCompletedSubtasks(plan: Record<string, unknown>, allSubtasks: Record<string, unknown>[]): number {
+  let resetCount = 0;
+
+  for (const subtask of allSubtasks) {
+    if (subtask.status !== 'completed') continue;
+    const reason = getInvalidAutoCompletionReason(subtask);
+    if (!reason) continue;
+
+    subtask.status = 'pending';
+    subtask.started_at = null;
+    subtask.completed_at = null;
+    delete subtask.completion_note;
+    subtask.last_error = `Recovered: ${reason}. Rerun implementation and produce concrete project changes or a real verifier command before marking complete.`;
+    subtask.last_attempt_outcome = 'invalid_auto_completion';
+    resetCount++;
+  }
+
+  if (resetCount > 0) {
+    plan.status = 'in_progress';
+    plan.planStatus = 'in_progress';
+    plan.xstateState = 'coding';
+    plan.executionPhase = 'coding';
+    delete plan.reviewReason;
+    delete plan.qa_signoff;
+    plan.recoveryNote = `Reset ${resetCount} invalid auto-completed subtask(s) at ${new Date().toISOString()}`;
+  }
+
+  return resetCount;
+}
+
 export async function repairFalseCompletedSubtasks(
   planPath: string,
   projectPath: string,
@@ -1181,6 +1250,8 @@ export async function repairFalseCompletedSubtasks(
         return { success: true, resetCount: 0 };
       }
 
+      let resetCount = resetInvalidAutoCompletedSubtasks(plan, allSubtasks as Record<string, unknown>[]);
+
       const worktreePath = findTaskWorktree(projectPath, specId);
       const executionPath = worktreePath || projectPath;
       const repoState = getNonAutoClaudeRepoState(executionPath);
@@ -1188,18 +1259,19 @@ export async function repairFalseCompletedSubtasks(
         || plan.reviewReason === 'errors'
         || plan.executionPhase === 'failed'
         || /^QA_/.test((plan.lastEvent as { type?: string } | undefined)?.type || '');
-      if (repoState.length > 0 || !failedOrReviewError && plan.status !== 'in_progress') {
+      if (resetCount === 0 && (repoState.length > 0 || !failedOrReviewError && plan.status !== 'in_progress')) {
         return { success: true, resetCount: 0 };
       }
 
-      let resetCount = 0;
-      for (const subtask of allSubtasks) {
-        if (subtask.status === 'completed') {
-          subtask.status = 'pending';
-          subtask.started_at = null;
-          subtask.completed_at = null;
-          subtask.last_error = 'Recovered: prior completion had no non-.auto-claude repository changes.';
-          resetCount++;
+      if (resetCount === 0) {
+        for (const subtask of allSubtasks) {
+          if (subtask.status === 'completed') {
+            subtask.status = 'pending';
+            subtask.started_at = null;
+            subtask.completed_at = null;
+            subtask.last_error = 'Recovered: prior completion had no non-.auto-claude repository changes.';
+            resetCount++;
+          }
         }
       }
       if (resetCount === 0) return { success: true, resetCount: 0 };
@@ -1209,7 +1281,9 @@ export async function repairFalseCompletedSubtasks(
       plan.xstateState = 'coding';
       plan.executionPhase = 'coding';
       delete plan.reviewReason;
-      plan.recoveryNote = `Reset ${resetCount} completed subtask(s) with no repository evidence at ${new Date().toISOString()}`;
+      if (typeof plan.recoveryNote !== 'string') {
+        plan.recoveryNote = `Reset ${resetCount} completed subtask(s) with no repository evidence at ${new Date().toISOString()}`;
+      }
       plan.updated_at = new Date().toISOString();
       writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
       if (projectId) projectStore.invalidateTasksCache(projectId);
