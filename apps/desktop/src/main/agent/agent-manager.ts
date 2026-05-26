@@ -561,7 +561,10 @@ export class AgentManager extends EventEmitter {
 
       for (const task of activeTasks) {
         if (task.status === 'ai_review' && this.recoverApprovedQaForTask(project, task, `${reason}-qa-report`)) continue;
-        if (this.countRunningProjectTasks(project) >= maxParallelTasks) break;
+        if (this.countRunningProjectTasks(project) >= maxParallelTasks) {
+          this.deferInactiveInProgressTaskForCapacity(project, task, reason);
+          continue;
+        }
         if (this.isRunning(task.id)) continue;
         if (this.shouldDeferPlanningRecovery(project, task)) continue;
         if (await this.resumePersistedWorkflowTask(project, task)) totalStarted++;
@@ -1090,7 +1093,26 @@ export class AgentManager extends EventEmitter {
       `[AgentManager] Deferring ${phase} worker for ${specId}: ` +
       `${running}/${maxParallelTasks} project workers are already running.`
     );
+
+    const task = projectStore.getTasks(project.id)
+      .find((candidate) => candidate.id === taskId || candidate.specId === specId);
+    if (task) {
+      this.deferInactiveInProgressTaskForCapacity(project, task, `capacity-${phase}`);
+    }
     return true;
+  }
+
+  private deferInactiveInProgressTaskForCapacity(project: Project, task: Task, reason: string): void {
+    if (task.status !== 'in_progress' || this.isRunning(task.id)) return;
+
+    if (this.areAllPlanSubtasksComplete(project, task)) {
+      this.persistRuntimeState(project, task, 'ai_review', 'review', 'qa_review', 'qa_review');
+      console.warn(`[AgentManager] ${reason} deferred completed task ${task.specId} to QA review while capacity is full`);
+      return;
+    }
+
+    this.persistRuntimeState(project, task, 'queue', 'queued', 'queue', 'idle');
+    console.warn(`[AgentManager] ${reason} moved inactive in-progress task ${task.specId} back to queue while capacity is full`);
   }
 
   private persistRuntimeState(

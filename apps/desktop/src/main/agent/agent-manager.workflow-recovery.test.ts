@@ -228,4 +228,94 @@ describe('AgentManager workflow recovery', () => {
       project.id,
     );
   });
+
+  it('moves inactive in-progress recovery candidates back to queue when capacity is full', async () => {
+    writeFileSync(planPath, JSON.stringify({
+      feature: 'Task',
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      phases: [
+        {
+          id: 'phase-1',
+          name: 'Implementation',
+          subtasks: [
+            { id: '1', title: 'Pending', status: 'pending' },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const project = {
+      id: 'project-1',
+      path: projectPath,
+      autoBuildPath: '.auto-claude',
+      settings: { maxParallelTasks: 1, mainBranch: 'main' },
+    };
+    const runningTask = {
+      id: 'task-running',
+      specId: 'task-running',
+      title: 'Running',
+      description: 'Running',
+      status: 'in_progress',
+      updatedAt: new Date('2026-05-26T09:00:00.000Z'),
+      metadata: {},
+      subtasks: [{ id: '1', title: 'Pending', status: 'pending' }],
+    };
+    const deferredTask = {
+      id: 'task-id-1',
+      specId: 'task-001',
+      title: 'Task',
+      description: 'Task',
+      status: 'in_progress',
+      updatedAt: new Date('2026-05-26T10:00:00.000Z'),
+      metadata: {},
+      subtasks: [{ id: '1', title: 'Pending', status: 'pending' }],
+    };
+
+    projectStoreMock.getProjects.mockReturnValue([project]);
+    projectStoreMock.getTasks.mockReturnValue([runningTask, deferredTask]);
+
+    const manager = new AgentManager();
+    (manager as unknown as {
+      state: {
+        addProcess: (taskId: string, process: unknown) => void;
+      };
+    }).state.addProcess(runningTask.id, {
+      taskId: runningTask.id,
+      process: null,
+      worker: {},
+      startedAt: new Date(),
+      lastActivityAt: new Date(),
+      spawnId: 1,
+      projectId: project.id,
+      processType: 'task-execution',
+    });
+
+    const startTaskExecution = vi
+      .spyOn(manager as unknown as { startTaskExecution: (...args: unknown[]) => Promise<void> }, 'startTaskExecution')
+      .mockResolvedValue(undefined);
+
+    await manager.runWorkflowRecoveryPass('test');
+
+    expect(startTaskExecution).not.toHaveBeenCalledWith(
+      deferredTask.id,
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+
+    const persisted = JSON.parse(readFileSync(planPath, 'utf-8')) as {
+      status?: string;
+      planStatus?: string;
+      xstateState?: string;
+      executionPhase?: string;
+    };
+    expect(persisted.status).toBe('queue');
+    expect(persisted.planStatus).toBe('queued');
+    expect(persisted.xstateState).toBe('queue');
+    expect(persisted.executionPhase).toBe('idle');
+  });
 });
