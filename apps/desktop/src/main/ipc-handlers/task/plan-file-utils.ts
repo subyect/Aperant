@@ -1232,6 +1232,54 @@ function resetInvalidAutoCompletedSubtasks(plan: Record<string, unknown>, allSub
   return resetCount;
 }
 
+function hasRecoverySubtask(allSubtasks: Record<string, unknown>[]): boolean {
+  return allSubtasks.some((subtask) => {
+    return typeof subtask.id === 'string' && subtask.id.startsWith('aperant-');
+  });
+}
+
+function clearStaleQaRecoveryForPendingPlan(
+  plan: Record<string, unknown>,
+  allSubtasks: Record<string, unknown>[],
+  specDir: string,
+): boolean {
+  const hasPending = allSubtasks.some((subtask) => subtask.status === 'pending');
+  if (!hasPending || hasRecoverySubtask(allSubtasks)) return false;
+
+  const staleQaRecovery =
+    typeof plan.recoveryNote === 'string' && /^QA report failed\b/.test(plan.recoveryNote);
+  const staleQaEvent =
+    typeof (plan.lastEvent as { type?: unknown } | undefined)?.type === 'string'
+    && /^QA_/.test(String((plan.lastEvent as { type?: unknown }).type));
+
+  if (
+    !staleQaRecovery
+    && !staleQaEvent
+    && !existsSync(path.join(specDir, 'QA_FIX_REQUEST.md'))
+    && !existsSync(path.join(specDir, 'qa_report.md'))
+  ) {
+    return false;
+  }
+
+  for (const fileName of ['QA_FIX_REQUEST.md', 'QA_ESCALATION.md', 'qa_report.md']) {
+    try {
+      rmSync(path.join(specDir, fileName), { force: true });
+    } catch {
+      // Best effort cleanup; stale QA artifacts must not keep reopened work in QA-fix mode.
+    }
+  }
+  if (staleQaEvent) {
+    delete plan.lastEvent;
+  }
+  if (staleQaRecovery) {
+    delete plan.recoveryNote;
+  }
+  delete plan.qa_signoff;
+  delete plan.reviewReason;
+  delete plan.human_feedback_pending;
+  return true;
+}
+
 export async function repairFalseCompletedSubtasks(
   planPath: string,
   projectPath: string,
@@ -1245,12 +1293,32 @@ export async function repairFalseCompletedSubtasks(
       if (!plan) return { success: false, resetCount: 0 };
 
       const { allSubtasks, completedCount, totalCount } = checkSubtasksCompletion(plan);
-      if (totalCount === 0 || completedCount === 0) return { success: true, resetCount: 0 };
+      if (totalCount === 0) return { success: true, resetCount: 0 };
+      if (completedCount === 0) {
+        const cleaned = clearStaleQaRecoveryForPendingPlan(
+          plan,
+          allSubtasks as Record<string, unknown>[],
+          path.dirname(planPath),
+        );
+        if (cleaned) {
+          plan.status = 'in_progress';
+          plan.planStatus = 'in_progress';
+          plan.xstateState = 'coding';
+          plan.executionPhase = 'coding';
+          plan.recoveryNote = `Cleared stale QA recovery artifacts for reopened pending subtasks at ${new Date().toISOString()}`;
+          plan.updated_at = new Date().toISOString();
+          writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+          if (projectId) projectStore.invalidateTasksCache(projectId);
+        }
+        return { success: true, resetCount: 0 };
+      }
       if (isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined) || plan.status === 'done' || plan.status === 'pr_created') {
         return { success: true, resetCount: 0 };
       }
 
       let resetCount = resetInvalidAutoCompletedSubtasks(plan, allSubtasks as Record<string, unknown>[]);
+      let resetReason: 'invalid-auto-completion' | 'no-repo-evidence' | null =
+        resetCount > 0 ? 'invalid-auto-completion' : null;
 
       const worktreePath = findTaskWorktree(projectPath, specId);
       const executionPath = worktreePath || projectPath;
@@ -1269,8 +1337,11 @@ export async function repairFalseCompletedSubtasks(
             subtask.status = 'pending';
             subtask.started_at = null;
             subtask.completed_at = null;
+            delete subtask.completion_note;
             subtask.last_error = 'Recovered: prior completion had no non-.auto-claude repository changes.';
+            subtask.last_attempt_outcome = 'false_completion_no_repo_evidence';
             resetCount++;
+            resetReason = 'no-repo-evidence';
           }
         }
       }
@@ -1281,9 +1352,11 @@ export async function repairFalseCompletedSubtasks(
       plan.xstateState = 'coding';
       plan.executionPhase = 'coding';
       delete plan.reviewReason;
-      if (typeof plan.recoveryNote !== 'string') {
-        plan.recoveryNote = `Reset ${resetCount} completed subtask(s) with no repository evidence at ${new Date().toISOString()}`;
-      }
+      delete plan.qa_signoff;
+      clearStaleQaRecoveryForPendingPlan(plan, allSubtasks as Record<string, unknown>[], path.dirname(planPath));
+      plan.recoveryNote = resetReason === 'invalid-auto-completion'
+        ? `Reset ${resetCount} invalid auto-completed subtask(s) at ${new Date().toISOString()}`
+        : `Reset ${resetCount} false-completed subtask(s) at ${new Date().toISOString()}`;
       plan.updated_at = new Date().toISOString();
       writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
       if (projectId) projectStore.invalidateTasksCache(projectId);

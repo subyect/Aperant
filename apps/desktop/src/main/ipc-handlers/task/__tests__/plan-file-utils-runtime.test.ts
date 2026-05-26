@@ -282,6 +282,77 @@ describe('plan-file runtime guards', () => {
     expect(plan.recoveryNote).toMatch(/Reset 1 invalid auto-completed subtask/);
   });
 
+  it('clears stale QA recovery artifacts when false completion reset reopens normal subtasks', async () => {
+    writeFileSync(path.join(tempDir, 'QA_FIX_REQUEST.md'), '# stale QA');
+    writeFileSync(path.join(tempDir, 'qa_report.md'), '# stale report');
+    writeFileSync(planPath, JSON.stringify({
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      recoveryNote: 'QA report failed; continuing coding with QA findings as mandatory recovery work.',
+      lastEvent: { type: 'QA_REJECTED', timestamp: '2026-05-26T10:00:00.000Z' },
+      qa_signoff: { status: 'rejected' },
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: 'P1-S1',
+              status: 'completed',
+              completed_at: '2026-05-26T10:00:00.000Z',
+              completion_note: 'Unproven completion',
+            },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const result = await repairFalseCompletedSubtasks(planPath, tempDir, 'example', 'project-1');
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+    const [subtask] = plan.phases[0].subtasks;
+
+    expect(result).toEqual({ success: true, resetCount: 1 });
+    expect(subtask.status).toBe('pending');
+    expect(subtask.completion_note).toBeUndefined();
+    expect(subtask.last_attempt_outcome).toBe('false_completion_no_repo_evidence');
+    expect(existsSync(path.join(tempDir, 'QA_FIX_REQUEST.md'))).toBe(false);
+    expect(existsSync(path.join(tempDir, 'qa_report.md'))).toBe(false);
+    expect(plan.qa_signoff).toBeUndefined();
+    expect(plan.reviewReason).toBeUndefined();
+    expect(plan.lastEvent).toBeUndefined();
+    expect(plan.recoveryNote).toMatch(/Reset 1 false-completed subtask/);
+  });
+
+  it('clears stale QA recovery artifacts from already reopened pending plans', async () => {
+    writeFileSync(path.join(tempDir, 'QA_FIX_REQUEST.md'), '# stale QA');
+    writeFileSync(path.join(tempDir, 'qa_report.md'), '# stale report');
+    writeFileSync(planPath, JSON.stringify({
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      recoveryNote: 'QA report failed; continuing coding with QA findings as mandatory recovery work.',
+      lastEvent: { type: 'QA_MAX_ITERATIONS', timestamp: '2026-05-26T10:00:00.000Z' },
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [{ id: 'P1-S1', status: 'pending' }],
+        },
+      ],
+    }, null, 2));
+
+    const result = await repairFalseCompletedSubtasks(planPath, tempDir, 'example', 'project-1');
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+
+    expect(result).toEqual({ success: true, resetCount: 0 });
+    expect(existsSync(path.join(tempDir, 'QA_FIX_REQUEST.md'))).toBe(false);
+    expect(existsSync(path.join(tempDir, 'qa_report.md'))).toBe(false);
+    expect(plan.lastEvent).toBeUndefined();
+    expect(plan.recoveryNote).toMatch(/Cleared stale QA recovery artifacts/);
+    expect(plan.executionPhase).toBe('coding');
+  });
+
   it('clears stale blocked terminal notes when app merge records a completed task', () => {
     writeFileSync(planPath, JSON.stringify({
       status: 'human_review',
