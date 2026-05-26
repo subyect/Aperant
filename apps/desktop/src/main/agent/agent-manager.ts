@@ -10,6 +10,7 @@ import { getClaudeProfileManager, initializeClaudeProfileManager } from '../clau
 import type { ClaudeProfileManager } from '../claude-profile-manager';
 import { getOperationRegistry } from '../claude-profile/operation-registry';
 import {
+  AgentProcess,
   SpecCreationMetadata,
   TaskExecutionOptions,
   RoadmapConfig,
@@ -479,6 +480,15 @@ export class AgentManager extends EventEmitter {
     for (const [taskId, processInfo] of this.state.getAllProcesses()) {
       if (processInfo.projectId && !projectsById.has(processInfo.projectId)) continue;
 
+      if (this.hasExitedTrackedWorker(processInfo)) {
+        const project = processInfo.projectId ? projectsById.get(processInfo.projectId) : undefined;
+        const task = project ? projectStore.getTasks(project.id).find((candidate) => candidate.id === taskId) : undefined;
+        const label = task?.specId ?? taskId;
+        console.warn(`[AgentManager] ${reason} recovery clearing exited worker handle for ${label}`);
+        this.killTask(taskId);
+        continue;
+      }
+
       const processType = processInfo.processType ?? 'task-execution';
       const thresholdMs = STALE_WORKER_ACTIVITY_MS[processType];
       const lastActivityAt = processInfo.lastActivityAt ?? processInfo.startedAt;
@@ -495,6 +505,24 @@ export class AgentManager extends EventEmitter {
       this.emit('error', taskId, `Worker had no activity for ${Math.round(inactiveMs / 60_000)} minutes; restarting recovery.`, processInfo.projectId);
       this.killTask(taskId);
     }
+  }
+
+  private hasExitedTrackedWorker(processInfo: AgentProcess): boolean {
+    const handles = [processInfo.process, processInfo.worker].filter(Boolean);
+    return handles.some((handle) => {
+      const candidate = handle as {
+        exitCode?: number | null;
+        signalCode?: NodeJS.Signals | null;
+        threadId?: number;
+      };
+
+      if ('exitCode' in candidate || 'signalCode' in candidate) {
+        return candidate.exitCode !== null && candidate.exitCode !== undefined
+          || candidate.signalCode !== null && candidate.signalCode !== undefined;
+      }
+
+      return typeof candidate.threadId === 'number' && candidate.threadId < 0;
+    });
   }
 
   private async resumeOrphanedWorkflowTasks(projects: Project[], reason = 'workflow-recovery'): Promise<void> {

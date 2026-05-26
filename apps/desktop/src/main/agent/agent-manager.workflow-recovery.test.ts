@@ -152,4 +152,80 @@ describe('AgentManager workflow recovery', () => {
     expect(persisted.xstateState).toBe('qa_review');
     expect(persisted.executionPhase).toBe('qa_review');
   });
+
+  it('clears exited worker handles before enforcing project capacity', async () => {
+    writeFileSync(planPath, JSON.stringify({
+      feature: 'Task',
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      phases: [
+        {
+          id: 'phase-1',
+          name: 'Implementation',
+          subtasks: [
+            { id: '1', title: 'Pending', status: 'pending' },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const project = {
+      id: 'project-1',
+      path: projectPath,
+      autoBuildPath: '.auto-claude',
+      settings: { maxParallelTasks: 1, mainBranch: 'main' },
+    };
+    const task = {
+      id: 'task-id-1',
+      specId: 'task-001',
+      title: 'Task',
+      description: 'Task',
+      status: 'in_progress',
+      updatedAt: new Date('2026-05-26T10:00:00.000Z'),
+      metadata: {},
+      subtasks: [{ id: '1', title: 'Pending', status: 'pending' }],
+    };
+
+    projectStoreMock.getProjects.mockReturnValue([project]);
+    projectStoreMock.getTasks.mockReturnValue([task]);
+
+    const manager = new AgentManager();
+    const killedWorker = {
+      exitCode: 0,
+      signalCode: null,
+      connected: false,
+      kill: vi.fn(),
+    };
+    (manager as unknown as {
+      state: {
+        addProcess: (taskId: string, process: unknown) => void;
+      };
+    }).state.addProcess(task.id, {
+      taskId: task.id,
+      process: null,
+      worker: killedWorker,
+      startedAt: new Date(),
+      lastActivityAt: new Date(),
+      spawnId: 1,
+      projectId: project.id,
+      processType: 'task-execution',
+    });
+
+    const startTaskExecution = vi
+      .spyOn(manager as unknown as { startTaskExecution: (...args: unknown[]) => Promise<void> }, 'startTaskExecution')
+      .mockResolvedValue(undefined);
+
+    await manager.runWorkflowRecoveryPass('test');
+
+    expect(killedWorker.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(startTaskExecution).toHaveBeenCalledWith(
+      task.id,
+      projectPath,
+      task.specId,
+      expect.objectContaining({ baseBranch: 'main', workers: 1 }),
+      project.id,
+    );
+  });
 });
