@@ -390,6 +390,9 @@ export function getPlanContinuationMode(plan: MutablePlan | null | undefined): P
 
 export function planNeedsContinuationAfterExit(plan: MutablePlan | null | undefined, exitCode: number | null): PlanContinuationMode | null {
   const mode = getPlanContinuationMode(plan);
+  if (mode === 'coding' && exitCode !== 0 && isActivelyImplementingPlan(plan)) {
+    return 'coding';
+  }
   if (!mode && exitCode !== 0 && planHasFailedValidation(plan)) {
     const { totalCount, completedCount } = getPlanCompletionCounts(plan);
     if (totalCount > 0 && completedCount >= totalCount) return 'qa';
@@ -398,6 +401,14 @@ export function planNeedsContinuationAfterExit(plan: MutablePlan | null | undefi
   if (mode === 'planning') return mode;
   if (exitCode === 0) return mode;
   return isIncompleteSettledPlan(plan) || mode === 'qa' || planHasFailedValidation(plan) ? mode : null;
+}
+
+function isActivelyImplementingPlan(plan: MutablePlan | null | undefined): boolean {
+  const activeState = plan?.xstateState === 'coding'
+    || plan?.xstateState === 'planning'
+    || plan?.executionPhase === 'coding'
+    || plan?.executionPhase === 'planning';
+  return plan?.status === 'in_progress' || activeState;
 }
 
 export function createApprovedQASignoffFromReport(source = 'qa_report'): MutablePlan {

@@ -237,4 +237,16 @@ describe('runtime completion guards', () => {
       phases: [],
     }, 0)).toBe('planning');
   });
+
+  it('continues active coding work after a non-zero worker exit when subtasks remain', () => {
+    expect(planNeedsContinuationAfterExit(planWithSubtasks([
+      { id: '1.1', status: 'completed' },
+      { id: '1.2', status: 'pending' },
+    ], {
+      status: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      lastEvent: { type: 'CODING_STARTED' },
+    }), 1)).toBe('coding');
+  });
 });

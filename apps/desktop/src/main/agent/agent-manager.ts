@@ -461,7 +461,6 @@ export class AgentManager extends EventEmitter {
         console.warn('[AgentManager] Workflow recovery watchdog failed:', error);
       });
     }, 30_000);
-    this.workflowRecoveryTimer.unref?.();
   }
 
   async runWorkflowRecoveryPass(reason = 'manual'): Promise<void> {
