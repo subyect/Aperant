@@ -322,6 +322,41 @@ describe('QALoop', () => {
     );
   });
 
+  it('recovers rejection from generated Final Status qa_report.md when reviewer omits qa_signoff', async () => {
+    let planReadCount = 0;
+
+    mockReadFile.mockImplementation((filePath: string) => {
+      if (filePath.endsWith('implementation_plan.json')) {
+        planReadCount++;
+        return Promise.resolve(completedPlan());
+      }
+      if (filePath.endsWith('qa_report.md')) {
+        return Promise.resolve([
+          '# QA Report',
+          '',
+          '**Final Status**: MAX ITERATIONS REACHED',
+          '**Result**: FAILED',
+          '',
+          'QA validation reached max iterations.',
+        ].join('\n'));
+      }
+      return Promise.reject(new Error('ENOENT'));
+    });
+
+    const config = makeConfig({ maxIterations: 1 });
+    const loop = new QALoop(config);
+    const outcome = await loop.run();
+
+    expect(outcome.approved).toBe(false);
+    expect(outcome.reason).toBe('max_iterations');
+    expect(planReadCount).toBeGreaterThan(1);
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      path.join(SPEC_DIR, 'implementation_plan.json'),
+      expect.stringContaining('"status": "rejected"'),
+      'utf-8',
+    );
+  });
+
   // -------------------------------------------------------------------------
   // Recurring issue detection
   // -------------------------------------------------------------------------

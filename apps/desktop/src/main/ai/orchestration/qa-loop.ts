@@ -32,6 +32,7 @@ import { QASignoffSchema, validateStructuredOutput } from '../schema';
 import { safeParseJson } from '../../utils/json-repair';
 import { normalizeQaFailureEvidenceContent, normalizeQaFixRequestFileSync } from '../../qa-feedback-utils';
 import type { SessionResult } from '../session/types';
+import { getQaReportVerdictFromContent } from '../../agent/task-review-artifacts';
 
 // =============================================================================
 // Constants
@@ -428,11 +429,10 @@ export class QALoop extends EventEmitter {
       return null;
     }
 
-    const match = report.match(/(?:^|\n)\s*(?:\*\*)?\s*Status\s*:\s*(PASSED|PASS|APPROVED|FAILED|FAIL|REJECTED|ISSUES)\s*(?:\*\*)?/i);
-    if (!match) return null;
+    const verdict = getQaReportVerdictFromContent(report);
+    if (!verdict) return null;
 
-    const rawStatus = match[1].toLowerCase();
-    const approved = rawStatus === 'passed' || rawStatus === 'pass' || rawStatus === 'approved';
+    const approved = verdict === 'approved';
     const signoff: QASignoff = {
       status: approved ? 'approved' : 'rejected',
       qa_session: iteration,
