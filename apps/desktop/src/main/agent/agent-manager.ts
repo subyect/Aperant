@@ -58,7 +58,10 @@ import {
   copyReviewArtifactsToMainSpec,
   findPassingQaReport,
 } from './task-review-artifacts';
-import { canAutoMergeCompletedHumanReviewTask } from './human-review-merge-guard';
+import {
+  canAutoMergeCompletedHumanReviewPlans,
+  canAutoMergeCompletedHumanReviewTask,
+} from './human-review-merge-guard';
 
 const DEFAULT_MAX_PARALLEL_TASKS = 3;
 const MAX_CONCURRENT_PLANNING_RECOVERIES = 1;
@@ -2046,7 +2049,9 @@ export class AgentManager extends EventEmitter {
 
   private shouldAutoMergeHumanReviewTask(project: Project, task: Task): boolean {
     if (this.isRunning(task.id)) return false;
-    return canAutoMergeCompletedHumanReviewTask(task, this.readHumanReviewPlanCandidates(project, task));
+    const persistedPlans = this.readHumanReviewPlanCandidates(project, task);
+    return canAutoMergeCompletedHumanReviewTask(task, persistedPlans)
+      || canAutoMergeCompletedHumanReviewPlans(persistedPlans);
   }
 
   private readHumanReviewPlanCandidates(project: Project, task: Task): Array<Record<string, unknown>> {

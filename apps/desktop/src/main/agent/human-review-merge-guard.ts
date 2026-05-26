@@ -31,3 +31,9 @@ export function canAutoMergeCompletedHumanReviewTask(
   if (taskHasCompletedSubtasks(task)) return true;
   return false;
 }
+
+export function canAutoMergeCompletedHumanReviewPlans(persistedPlans: PlanLike[]): boolean {
+  if (persistedPlans.length === 0) return false;
+  if (persistedPlans.some(planHasIncompleteSubtasks)) return false;
+  return persistedPlans.some(planHasCompletedHumanReviewSubtasks);
+}

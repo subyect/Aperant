@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { canAutoMergeCompletedHumanReviewTask } from '../human-review-merge-guard';
+import {
+  canAutoMergeCompletedHumanReviewPlans,
+  canAutoMergeCompletedHumanReviewTask,
+} from '../human-review-merge-guard';
 
 function task(overrides: Record<string, unknown> = {}) {
   return {
@@ -53,5 +56,21 @@ describe('canAutoMergeCompletedHumanReviewTask', () => {
 
   it('does not auto-merge non-completed human review tasks', () => {
     expect(canAutoMergeCompletedHumanReviewTask(task({ reviewReason: 'errors' }), [plan(['completed'])])).toBe(false);
+  });
+});
+
+describe('canAutoMergeCompletedHumanReviewPlans', () => {
+  it('allows persisted human-review evidence when the cached task object is stale', () => {
+    expect(canAutoMergeCompletedHumanReviewPlans([
+      plan(['completed', 'completed']),
+      { ...plan(['completed', 'completed']), status: 'ai_review' },
+    ])).toBe(true);
+  });
+
+  it('blocks persisted human-review evidence when any persisted plan is incomplete', () => {
+    expect(canAutoMergeCompletedHumanReviewPlans([
+      plan(['completed', 'completed']),
+      { ...plan(['completed', 'pending']), status: 'ai_review' },
+    ])).toBe(false);
   });
 });
