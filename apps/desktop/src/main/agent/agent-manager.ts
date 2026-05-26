@@ -671,10 +671,12 @@ export class AgentManager extends EventEmitter {
           return true;
         }
 
-        const resumedFromFailedQaReport = await this.resumeCodingForFailedQaReport(project, task);
-        if (resumedFromFailedQaReport) {
-          console.warn(`[AgentManager] Startup recovery routed failed QA report back to coding for ${task.specId}`);
-          return true;
+        if (this.hasPendingQaReportRecovery(project, task)) {
+          const resumedFromFailedQaReport = await this.resumeCodingForFailedQaReport(project, task);
+          if (resumedFromFailedQaReport) {
+            console.warn(`[AgentManager] Startup recovery routed failed QA report back to coding for ${task.specId}`);
+            return true;
+          }
         }
       }
 
@@ -751,14 +753,18 @@ export class AgentManager extends EventEmitter {
         if (!plan) continue;
         const recoveryNote = typeof plan.recoveryNote === 'string' ? plan.recoveryNote : '';
         const hasQaRecoveryNote = /^QA report failed\b/.test(recoveryNote);
-        const hasPendingQaRecoverySubtask = Array.isArray(plan.phases)
-          && plan.phases.some((phase: Record<string, any>) =>
-            Array.isArray(phase?.subtasks)
-            && phase.subtasks.some((subtask: Record<string, any>) =>
-              subtask?.id === 'aperant-qa-report-failure' && subtask?.status !== 'completed'
-            )
-          );
-        if (hasQaRecoveryNote || hasPendingQaRecoverySubtask) return true;
+        const recoverySubtask = Array.isArray(plan.phases)
+          ? plan.phases
+            .flatMap((phase: Record<string, any>) => Array.isArray(phase?.subtasks) ? phase.subtasks : [])
+            .find((subtask: Record<string, any>) => subtask?.id === 'aperant-qa-report-failure')
+          : undefined;
+
+        if (recoverySubtask) {
+          if (recoverySubtask.status !== 'completed') return true;
+          continue;
+        }
+
+        if (hasQaRecoveryNote) return true;
       } catch {
         // Ignore unreadable plans; normal task loading will surface JSON errors.
       }
@@ -1086,7 +1092,11 @@ export class AgentManager extends EventEmitter {
         } else {
           recoverySubtask.title = 'Resolve failed QA report';
           recoverySubtask.description = recoveryDescription;
-          recoverySubtask.status = recoverySubtask.status === 'in_progress' ? 'in_progress' : 'pending';
+          recoverySubtask.status = recoverySubtask.status === 'completed'
+            ? 'completed'
+            : recoverySubtask.status === 'in_progress'
+              ? 'in_progress'
+              : 'pending';
           recoverySubtask.verification = {
             type: 'command',
             run: 'Run the focused verification named in qa_report.md, then rerun QA.',
