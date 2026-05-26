@@ -1232,10 +1232,44 @@ function resetInvalidAutoCompletedSubtasks(plan: Record<string, unknown>, allSub
   return resetCount;
 }
 
-function hasRecoverySubtask(allSubtasks: Record<string, unknown>[]): boolean {
-  return allSubtasks.some((subtask) => {
-    return typeof subtask.id === 'string' && subtask.id.startsWith('aperant-');
-  });
+function isRecoverySubtask(subtask: Record<string, unknown>): boolean {
+  return typeof subtask.id === 'string' && subtask.id.startsWith('aperant-');
+}
+
+function removeStaleQaRecoverySubtasks(plan: Record<string, unknown>): boolean {
+  if (!Array.isArray(plan.phases)) return false;
+
+  let removed = false;
+  plan.phases = plan.phases
+    .map((phase) => {
+      if (!phase || typeof phase !== 'object') return phase;
+      const mutablePhase = phase as Record<string, unknown>;
+      if (!Array.isArray(mutablePhase.subtasks)) return mutablePhase;
+
+      const subtasks = mutablePhase.subtasks;
+      const originalLength = subtasks.length;
+      mutablePhase.subtasks = subtasks.filter((subtask) => {
+        return !(
+          subtask
+          && typeof subtask === 'object'
+          && (subtask as Record<string, unknown>).id === 'aperant-qa-report-failure'
+        );
+      });
+      if ((mutablePhase.subtasks as unknown[]).length !== originalLength) {
+        removed = true;
+      }
+      return mutablePhase;
+    })
+    .filter((phase) => {
+      if (!phase || typeof phase !== 'object') return true;
+      const mutablePhase = phase as Record<string, unknown>;
+      if (mutablePhase.id !== 'aperant-qa-report-failure' && mutablePhase.type !== 'qa_report_failure') {
+        return true;
+      }
+      return Array.isArray(mutablePhase.subtasks) && mutablePhase.subtasks.length > 0;
+    });
+
+  return removed;
 }
 
 function clearStaleQaRecoveryForPendingPlan(
@@ -1243,8 +1277,11 @@ function clearStaleQaRecoveryForPendingPlan(
   allSubtasks: Record<string, unknown>[],
   specDir: string,
 ): boolean {
-  const hasPending = allSubtasks.some((subtask) => subtask.status === 'pending');
-  if (!hasPending || hasRecoverySubtask(allSubtasks)) return false;
+  const hasPendingNormalSubtask = allSubtasks.some((subtask) => {
+    return subtask.status === 'pending' && !isRecoverySubtask(subtask);
+  });
+  const hasCompletedSubtask = allSubtasks.some((subtask) => subtask.status === 'completed');
+  if (!hasPendingNormalSubtask || hasCompletedSubtask) return false;
 
   const staleQaRecovery =
     typeof plan.recoveryNote === 'string' && /^QA report failed\b/.test(plan.recoveryNote);
@@ -1277,6 +1314,7 @@ function clearStaleQaRecoveryForPendingPlan(
   delete plan.qa_signoff;
   delete plan.reviewReason;
   delete plan.human_feedback_pending;
+  removeStaleQaRecoverySubtasks(plan);
   return true;
 }
 
