@@ -20,6 +20,7 @@ function plan(statuses: string[]) {
     workflow_type: 'feature',
     phases: [
       {
+        phase: 1,
         name: 'Phase 1',
         subtasks: statuses.map((status, index) => ({
           id: `1.${index + 1}`,
@@ -88,5 +89,32 @@ describe('BuildOrchestrator coding phase', () => {
       expect.objectContaining({ id: '1.1', status: 'completed' }),
       expect.objectContaining({ id: '1.2', status: 'pending' }),
     ]);
+  }, 20_000);
+
+  it('runs QA when all subtasks are complete but no approved QA signoff exists', async () => {
+    await writeFile(planPath, JSON.stringify(plan(['completed']), null, 2));
+    const generatePrompt = vi.fn().mockResolvedValue('prompt');
+    const runSession = vi.fn(async (config) => {
+      if (config.agentType === 'qa_reviewer') {
+        await writeFile(join(tmpDir, 'qa_report.md'), 'Status: PASSED\n');
+      }
+      return sessionResult('completed');
+    });
+
+    const orchestrator = new BuildOrchestrator({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxSubtaskRetries: 1,
+      autoContinueDelayMs: 0,
+      generatePrompt,
+      runSession,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result).toEqual(expect.objectContaining({ success: true }));
+    expect(runSession).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: 'qa_reviewer',
+    }));
   }, 20_000);
 });

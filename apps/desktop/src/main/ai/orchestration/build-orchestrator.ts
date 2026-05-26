@@ -35,6 +35,12 @@ import { safeParseJson } from '../../utils/json-repair';
 import type { SessionResult } from '../session/types';
 import { iterateSubtasks } from './subtask-iterator';
 import type { SubtaskIteratorConfig, SubtaskResult } from './subtask-iterator';
+import {
+  clearResolvedRecoveryState,
+  hasPendingRecoverySubtasks,
+  hasResolvedRecoverySubtasks,
+  isQASignoffApproved,
+} from '../../task-plan-guards';
 
 // =============================================================================
 // Constants
@@ -295,6 +301,8 @@ export class BuildOrchestrator extends EventEmitter {
           `Implementation plan is invalid and cannot be executed: ${errorDetail}`);
       }
 
+      await this.clearResolvedRecoveryStateBeforeQA();
+
       // Check if build is already complete
       if (await this.isBuildComplete()) {
         this.transitionPhase('complete', 'Build already complete');
@@ -306,6 +314,8 @@ export class BuildOrchestrator extends EventEmitter {
       if (!codingResult.success) {
         return this.buildOutcome(false, Date.now() - startTime, codingResult.error);
       }
+
+      await this.clearResolvedRecoveryStateBeforeQA();
 
       // QA review phase
       const qaResult = await this.runQAPhase();
@@ -738,7 +748,10 @@ export class BuildOrchestrator extends EventEmitter {
           }
         }
       }
-      return true;
+      const planState = plan as ImplementationPlan & Record<string, unknown>;
+      return isQASignoffApproved(planState.qa_signoff as Record<string, unknown> | undefined)
+        && planState.human_feedback_pending === undefined
+        && !hasPendingRecoverySubtasks(planState);
     } catch {
       return false;
     }
@@ -816,6 +829,48 @@ export class BuildOrchestrator extends EventEmitter {
       await unlink(qaReportPath);
     } catch {
       // File may not exist — that's fine
+    }
+  }
+
+  private async clearResolvedRecoveryStateBeforeQA(): Promise<void> {
+    const specDirs = Array.from(new Set(
+      [this.config.specDir, this.config.sourceSpecDir].filter((value): value is string => Boolean(value))
+    ));
+
+    for (const specDir of specDirs) {
+      const planPath = join(specDir, 'implementation_plan.json');
+      try {
+        const raw = await readFile(planPath, 'utf-8');
+        const plan = safeParseJson<ImplementationPlan & Record<string, unknown>>(raw);
+        if (!plan) continue;
+
+        const hasResolvedRecovery = hasResolvedRecoverySubtasks(plan);
+        const changed = clearResolvedRecoveryState(plan);
+        if (!changed && !hasResolvedRecovery) continue;
+
+        if (changed) {
+          plan.updated_at = new Date().toISOString();
+          await writeFile(planPath, JSON.stringify(plan, null, 2));
+        }
+
+        const artifactNames = [
+          ...(plan.human_feedback_pending === undefined ? ['QA_FIX_REQUEST.md', 'QA_ESCALATION.md'] : []),
+          ...(plan.base_sync_conflict === undefined ? ['BASE_SYNC_CONFLICT.md'] : []),
+        ];
+        for (const fileName of artifactNames) {
+          try {
+            await unlink(join(specDir, fileName));
+          } catch {
+            // Best effort cleanup; missing files are expected.
+          }
+        }
+
+        if (changed) {
+          this.emitTyped('log', `Cleared resolved recovery state before QA in ${specDir}`);
+        }
+      } catch {
+        // Missing or unreadable plans are handled by the normal validation path.
+      }
     }
   }
 

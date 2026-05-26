@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   applyTaskEventRuntimeState,
   clearCompletedSubtaskDiagnostics,
+  clearResolvedRecoveryState,
   doneStatusHasIncompleteSubtasks,
+  hasPendingRecoverySubtasks,
+  hasResolvedRecoverySubtasks,
   planNeedsContinuationAfterExit,
   isIncompleteSettledPlan,
   statusRequiresCompletedSubtasks,
@@ -100,6 +103,47 @@ describe('clearCompletedSubtaskDiagnostics', () => {
     expect(plan.phases[0].subtasks[0].last_attempt_at).toBeUndefined();
     expect(plan.phases[0].subtasks[1].last_error).toBe('Still failing.');
     expect(plan.phases[0].subtasks[1].last_attempt_outcome).toBe('error');
+  });
+});
+
+describe('resolved recovery state guards', () => {
+  it('clears stale human-feedback recovery state once the rework subtask is complete', () => {
+    const plan = planWithSubtasks([
+      {
+        id: 'aperant-human-feedback-rework',
+        status: 'completed',
+        last_error: 'Agent session ended without marking the subtask completed.',
+      },
+    ], {
+      status: 'ai_review',
+      human_feedback_pending: { requested_at: '2026-05-26T08:00:00.000Z' },
+      recoveryNote: 'Reset to queue by backend stability reset at 2026-05-26T08:00:00.000Z',
+    });
+
+    expect(hasResolvedRecoverySubtasks(plan)).toBe(true);
+    expect(hasPendingRecoverySubtasks(plan)).toBe(false);
+    expect(clearResolvedRecoveryState(plan)).toBe(true);
+
+    expect(plan.human_feedback_pending).toBeUndefined();
+    expect(plan.recoveryNote).toBeUndefined();
+    expect(plan.phases[0].status).toBe('completed');
+    expect(plan.phases[0].subtasks[0].last_error).toBeUndefined();
+  });
+
+  it('keeps active feedback state while its recovery subtask is still pending', () => {
+    const plan = planWithSubtasks([
+      { id: 'aperant-human-feedback-rework', status: 'pending' },
+    ], {
+      human_feedback_pending: { requested_at: '2026-05-26T08:00:00.000Z' },
+      recoveryNote: 'Reset to queue by backend stability reset at 2026-05-26T08:00:00.000Z',
+    });
+
+    expect(hasResolvedRecoverySubtasks(plan)).toBe(false);
+    expect(hasPendingRecoverySubtasks(plan)).toBe(true);
+    expect(clearResolvedRecoveryState(plan)).toBe(false);
+
+    expect(plan.human_feedback_pending).toEqual({ requested_at: '2026-05-26T08:00:00.000Z' });
+    expect(plan.recoveryNote).toBe('Reset to queue by backend stability reset at 2026-05-26T08:00:00.000Z');
   });
 });
 

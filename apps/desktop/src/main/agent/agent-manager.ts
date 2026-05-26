@@ -41,7 +41,11 @@ import { getIsolatedGitEnv } from '../utils/git-isolation';
 import { cleanupWorktree } from '../utils/worktree-cleanup';
 import { writeFileAtomicSync } from '../utils/atomic-file';
 import { safeParseJson } from '../utils/json-repair';
-import { checkSubtasksCompletion } from '../task-plan-guards';
+import {
+  checkSubtasksCompletion,
+  clearResolvedRecoveryState,
+  hasResolvedRecoverySubtasks,
+} from '../task-plan-guards';
 import { buildQaFixRequestContent, normalizeQaFailureEvidenceContent } from '../qa-feedback-utils';
 import { taskStateManager } from '../task-state-manager';
 import { cleanupStaleRateLimitPauseFile } from '../ai/orchestration/pause-handler';
@@ -954,6 +958,21 @@ export class AgentManager extends EventEmitter {
           delete plan.qa_signoff;
           delete plan.final_acceptance;
           delete plan.lastEvent;
+        }
+        const hasResolvedRecovery = hasResolvedRecoverySubtasks(plan);
+        clearResolvedRecoveryState(plan);
+        if (hasResolvedRecovery) {
+          const artifactNames = [
+            ...(plan.human_feedback_pending === undefined ? ['QA_FIX_REQUEST.md', 'QA_ESCALATION.md'] : []),
+            ...(plan.base_sync_conflict === undefined ? ['BASE_SYNC_CONFLICT.md'] : []),
+          ];
+          for (const fileName of artifactNames) {
+            try {
+              rmSync(path.join(path.dirname(planPath), fileName), { force: true });
+            } catch {
+              // Best effort cleanup for stale resolved-recovery artifacts.
+            }
+          }
         }
         writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
         persisted = true;

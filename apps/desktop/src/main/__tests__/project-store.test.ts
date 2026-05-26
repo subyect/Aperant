@@ -471,6 +471,43 @@ describe('ProjectStore', () => {
       expect(tasks[0].description).toBe('Use this intro paragraph in the task overview.');
     });
 
+    it('uses the first content section when the heading is not a preferred overview name', async () => {
+      const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '001-quality-review-description');
+      mkdirSync(specsDir, { recursive: true });
+      writeFileSync(path.join(specsDir, 'implementation_plan.json'), JSON.stringify({
+        feature: 'Quality Review Description',
+        workflow_type: 'feature',
+        services_involved: [],
+        status: 'in_progress',
+        phases: [],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+        spec_file: 'spec.md',
+      }));
+      writeFileSync(path.join(specsDir, 'spec.md'), [
+        '# Quality Review Description',
+        '',
+        '- **Linear Issue:** YEC-1',
+        '- **Priority:** High',
+        '',
+        '## Spec quality review summary',
+        '',
+        'Show this quality review summary in the task overview.',
+        '',
+        '## Implementation constraints',
+        '',
+        'Constraint details.',
+      ].join('\n'));
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+
+      expect(tasks[0].description).toBe('Show this quality review summary in the task overview.');
+    });
+
     it('should determine status as backlog when no subtasks completed', async () => {
       const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '002-pending');
       mkdirSync(specsDir, { recursive: true });
@@ -1074,6 +1111,62 @@ describe('ProjectStore', () => {
       expect(existsSync(path.join(specDir, 'QA_FIX_REQUEST.md'))).toBe(false);
       expect(existsSync(path.join(specDir, 'QA_ESCALATION.md'))).toBe(false);
       expect(existsSync(path.join(specDir, 'BASE_SYNC_CONFLICT.md'))).toBe(false);
+    });
+
+    it('clears stale resolved-recovery state from active QA tasks on load', async () => {
+      const specId = '010-resolved-active-recovery';
+      const specRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');
+      const specDir = path.join(specRoot, specId);
+      const plan = {
+        ...makePlan({
+          feature: 'Resolved Active Recovery',
+          status: 'ai_review',
+          subtaskStatuses: ['completed'],
+          updatedAt: '2024-01-03T00:00:00Z',
+        }),
+        planStatus: 'review',
+        xstateState: 'qa_review',
+        executionPhase: 'qa_review',
+        recoveryNote: 'QA report failed; continuing coding with QA findings as mandatory recovery work.',
+        human_feedback_pending: { requested_at: '2026-05-23T19:40:25.571Z' },
+      };
+      (plan.phases as any[]).push({
+        id: 'aperant-qa-report-recovery',
+        phase: 2,
+        name: 'QA report recovery',
+        type: 'qa_report_recovery',
+        status: 'in_progress',
+        subtasks: [
+          {
+            id: 'aperant-qa-report-failure',
+            title: 'Resolve failed QA report',
+            description: 'Resolve failed QA report',
+            status: 'completed',
+            last_error: 'Agent session ended without marking the subtask completed.',
+          },
+        ],
+      });
+      writeSpec(specRoot, specId, plan);
+      writeFileSync(path.join(specDir, 'QA_FIX_REQUEST.md'), 'Status: REJECTED\n');
+      writeFileSync(path.join(specDir, 'QA_ESCALATION.md'), '# QA Escalation - Human Intervention Required\n');
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(specDir, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(tasks.find((task) => task.specId === specId)?.status).toBe('ai_review');
+      expect(persistedPlan.recoveryNote).toBeUndefined();
+      expect(persistedPlan.human_feedback_pending).toBeUndefined();
+      expect(persistedPlan.phases[1].status).toBe('completed');
+      expect(persistedPlan.phases[1].subtasks[0].last_error).toBeUndefined();
+      expect(existsSync(path.join(specDir, 'QA_FIX_REQUEST.md'))).toBe(false);
+      expect(existsSync(path.join(specDir, 'QA_ESCALATION.md'))).toBe(false);
     });
 
     it('clears resolved base-sync conflict metadata from active worktree tasks', async () => {

@@ -3,6 +3,25 @@ import { XSTATE_TO_PHASE, mapStateToLegacy } from '../shared/state-machines';
 
 type MutablePlan = Record<string, any>;
 
+const HUMAN_FEEDBACK_REWORK_SUBTASK_ID = 'aperant-human-feedback-rework';
+const QA_REPORT_RECOVERY_SUBTASK_ID = 'aperant-qa-report-failure';
+const BASE_SYNC_RECOVERY_SUBTASK_ID = 'aperant-base-sync-conflict';
+
+const RECOVERY_SUBTASK_IDS = new Set([
+  HUMAN_FEEDBACK_REWORK_SUBTASK_ID,
+  QA_REPORT_RECOVERY_SUBTASK_ID,
+  BASE_SYNC_RECOVERY_SUBTASK_ID,
+]);
+
+const RECOVERY_NOTE_PATTERNS = [
+  /^QA report failed\b/,
+  /^Base branch sync conflict\b/,
+  /^Terminal failure blocked\b/,
+  /^Worktree setup failed\b/,
+  /^Reset to queue by backend stability reset\b/,
+  /^Recovered (stale terminal status|from stale done status)\b/,
+];
+
 export interface PlanCompletionCounts {
   allSubtasks: MutablePlan[];
   completedCount: number;
@@ -76,6 +95,70 @@ export function clearCompletedSubtaskDiagnostics(plan: MutablePlan | null | unde
   }
 
   return changed;
+}
+
+function getRecoverySubtasks(plan: MutablePlan | null | undefined): MutablePlan[] {
+  return Array.isArray(plan?.phases)
+    ? plan.phases
+      .flatMap((phase: MutablePlan) => Array.isArray(phase.subtasks) ? phase.subtasks : [])
+      .filter((subtask: MutablePlan) => RECOVERY_SUBTASK_IDS.has(String(subtask?.id ?? '')))
+    : [];
+}
+
+function hasCompletedRecoverySubtask(plan: MutablePlan | null | undefined, id: string): boolean {
+  return getRecoverySubtasks(plan).some((subtask) => subtask?.id === id && subtask?.status === 'completed');
+}
+
+export function hasResolvedRecoverySubtasks(plan: MutablePlan | null | undefined): boolean {
+  const recoverySubtasks = getRecoverySubtasks(plan);
+  return recoverySubtasks.length > 0 && recoverySubtasks.every((subtask) => subtask?.status === 'completed');
+}
+
+export function hasPendingRecoverySubtasks(plan: MutablePlan | null | undefined): boolean {
+  return getRecoverySubtasks(plan).some((subtask) => subtask?.status !== 'completed');
+}
+
+export function clearResolvedRecoveryState(plan: MutablePlan | null | undefined): boolean {
+  if (!plan) return false;
+
+  const humanFeedbackResolved = hasCompletedRecoverySubtask(plan, HUMAN_FEEDBACK_REWORK_SUBTASK_ID);
+  const qaReportResolved = hasCompletedRecoverySubtask(plan, QA_REPORT_RECOVERY_SUBTASK_ID);
+  const baseSyncResolved = hasCompletedRecoverySubtask(plan, BASE_SYNC_RECOVERY_SUBTASK_ID);
+  const anyRecoveryResolved = humanFeedbackResolved || qaReportResolved || baseSyncResolved;
+  if (!anyRecoveryResolved) return false;
+
+  let changed = false;
+  if ((humanFeedbackResolved || qaReportResolved) && plan.human_feedback_pending !== undefined) {
+    delete plan.human_feedback_pending;
+    changed = true;
+  }
+  if (baseSyncResolved && plan.base_sync_conflict !== undefined) {
+    delete plan.base_sync_conflict;
+    changed = true;
+  }
+  if (
+    typeof plan.recoveryNote === 'string'
+    && (
+      (qaReportResolved && /^QA report failed\b/.test(plan.recoveryNote))
+      || (baseSyncResolved && /^Base branch sync conflict\b/.test(plan.recoveryNote))
+      || (!hasPendingRecoverySubtasks(plan) && RECOVERY_NOTE_PATTERNS.some((pattern) => pattern.test(plan.recoveryNote)))
+    )
+  ) {
+    delete plan.recoveryNote;
+    changed = true;
+  }
+
+  if (Array.isArray(plan.phases)) {
+    for (const phase of plan.phases) {
+      const subtasks = Array.isArray(phase?.subtasks) ? phase.subtasks : [];
+      if (subtasks.length > 0 && subtasks.every((subtask: MutablePlan) => subtask?.status === 'completed') && phase.status !== 'completed') {
+        phase.status = 'completed';
+        changed = true;
+      }
+    }
+  }
+
+  return clearCompletedSubtaskDiagnostics(plan) || changed;
 }
 
 export function statusRequiresCompletedSubtasks(status: TaskStatus, reviewReason?: string): boolean {

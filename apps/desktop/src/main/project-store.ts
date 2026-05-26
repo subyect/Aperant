@@ -27,7 +27,9 @@ import {
   applyRuntimePhaseState,
   checkSubtasksCompletion,
   clearCompletedSubtaskDiagnostics,
+  clearResolvedRecoveryState,
   doneStatusHasIncompleteSubtasks,
+  hasResolvedRecoverySubtasks,
   isQASignoffApproved,
   planHasMergeCompletionEvidence,
   statusRequiresCompletedSubtasks,
@@ -401,11 +403,13 @@ export class ProjectStore {
 
   private extractSpecDescription(content: string): string {
     const withoutTitle = content.replace(/^#\s+.*(?:\r?\n|$)/, '').trim();
+    const isMetadataOnly = (text: string): boolean => {
+      const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      return lines.length > 0 && lines.every((line) => /^-\s+\*\*[^*]+:\*\*/.test(line));
+    };
     const introMatch = withoutTitle.match(/^([\s\S]*?)(?=\n#{1,6}\s|$)/);
     const intro = introMatch?.[1]?.trim() ?? '';
-    const introLines = intro.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    const metadataOnlyIntro = introLines.length > 0 && introLines.every((line) => /^-\s+\*\*[^*]+:\*\*/.test(line));
-    if (intro && !intro.startsWith('#') && !metadataOnlyIntro) {
+    if (intro && !intro.startsWith('#') && !isMetadataOnly(intro)) {
       return intro;
     }
 
@@ -414,6 +418,14 @@ export class ProjectStore {
     );
     if (preferredSection?.[1]?.trim()) {
       return preferredSection[1].trim();
+    }
+
+    const sectionMatches = content.matchAll(/^##\s+[^\n]*\n+([\s\S]*?)(?=\n#{1,6}\s|$)/gm);
+    for (const match of sectionMatches) {
+      const sectionBody = match[1]?.trim() ?? '';
+      if (sectionBody && !isMetadataOnly(sectionBody)) {
+        return sectionBody;
+      }
     }
 
     return '';
@@ -649,6 +661,11 @@ export class ProjectStore {
                 dir.name,
                 location,
                 basePath
+              );
+              this.clearResolvedRecoveryStateIfNeeded(
+                plan as unknown as Record<string, unknown>,
+                planPath,
+                dir.name
               );
             } else {
               // safeParseJson returned null — JSON is unrepairable
@@ -895,6 +912,48 @@ export class ProjectStore {
     }
 
     return changed;
+  }
+
+  private clearResolvedRecoveryStateIfNeeded(
+    plan: Record<string, unknown>,
+    planPath: string,
+    taskName: string
+  ): void {
+    const hasResolvedRecovery = hasResolvedRecoverySubtasks(plan);
+    const changed = clearResolvedRecoveryState(plan);
+    if (!hasResolvedRecovery && !changed) return;
+
+    const artifactNames = [
+      ...(plan.human_feedback_pending === undefined ? ['QA_FIX_REQUEST.md', 'QA_ESCALATION.md'] : []),
+      ...(plan.base_sync_conflict === undefined ? ['BASE_SYNC_CONFLICT.md'] : []),
+    ];
+    let removedArtifact = false;
+    for (const fileName of artifactNames) {
+      const artifactPath = path.join(path.dirname(planPath), fileName);
+      if (existsSync(artifactPath)) {
+        removedArtifact = true;
+      }
+      try {
+        rmSync(artifactPath, { force: true });
+      } catch {
+        // Best effort cleanup for stale resolved-recovery artifacts.
+      }
+    }
+
+    if (!changed) {
+      if (removedArtifact) {
+        console.warn(`[ProjectStore] Removed stale resolved-recovery artifacts for ${taskName}.`);
+      }
+      return;
+    }
+
+    plan.updated_at = new Date().toISOString();
+    try {
+      writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+      console.warn(`[ProjectStore] Cleared stale resolved-recovery state for ${taskName}.`);
+    } catch (writeError) {
+      console.error(`[ProjectStore] Failed to clear resolved-recovery state for ${taskName}:`, writeError);
+    }
   }
 
   /**
