@@ -319,6 +319,27 @@ describe('runInsightsQuery', () => {
     );
   });
 
+  it('retries transient overloaded stream errors before surfacing chat failure', async () => {
+    mockStreamText
+      .mockReturnValueOnce(
+        makeStream([
+          { type: 'error', error: { message: 'Our servers are currently overloaded. Please try again later.' } },
+        ]),
+      )
+      .mockReturnValueOnce(
+        makeStream([
+          { type: 'text-delta', text: 'OK' },
+        ]),
+      );
+
+    const events: InsightsStreamEvent[] = [];
+    const result = await runInsightsQuery(baseConfig(), (e) => events.push(e));
+
+    expect(result.text).toBe('OK');
+    expect(mockStreamText).toHaveBeenCalledTimes(2);
+    expect(events.filter((e) => e.type === 'error')).toHaveLength(0);
+  });
+
   // ---------------------------------------------------------------------------
   // Error propagation
   // ---------------------------------------------------------------------------

@@ -88,6 +88,8 @@ export type InsightsStreamEvent =
   | { type: 'tool-end'; name: string }
   | { type: 'error'; error: string };
 
+const MAX_TRANSIENT_STREAM_RETRIES = 2;
+
 export function formatInsightsError(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
@@ -113,6 +115,18 @@ export function formatInsightsError(error: unknown): string {
   }
 
   return String(error);
+}
+
+function isRetryableInsightsError(errorMessage: string): boolean {
+  const normalized = errorMessage.toLowerCase();
+  return normalized.includes('overloaded')
+    || normalized.includes('temporarily unavailable')
+    || normalized.includes('please try again later');
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // =============================================================================
@@ -303,7 +317,11 @@ export async function runInsightsQuery(
   // Detect Codex models — they require instructions via providerOptions, not system
   const isCodexInsights = shouldUseOpenAIInstructions(client);
 
-  try {
+  for (let attempt = 0; attempt <= MAX_TRANSIENT_STREAM_RETRIES; attempt += 1) {
+    if (attempt > 0) {
+      await sleep(process.env.NODE_ENV === 'test' ? 0 : 750 * attempt);
+    }
+
     const result = streamText({
       model: client.model,
       system: isCodexInsights ? undefined : client.systemPrompt,
@@ -321,38 +339,53 @@ export async function runInsightsQuery(
       } : {}),
     });
 
-    for await (const part of result.fullStream) {
-      switch (part.type) {
-        case 'text-delta': {
-          responseText += part.text;
-          onStream?.({ type: 'text-delta', text: part.text });
-          break;
-        }
-        case 'tool-call': {
-          const args = 'input' in part ? (part.input as Record<string, unknown>) : {};
-          const input = extractToolInput(args);
-          toolCalls.push({ name: part.toolName, input });
-          onStream?.({ type: 'tool-start', name: part.toolName, input });
-          break;
-        }
-        case 'tool-result': {
-          onStream?.({ type: 'tool-end', name: part.toolName });
-          break;
-        }
-        case 'error': {
-          const errorMsg = formatInsightsError(part.error);
-          terminalStreamError = errorMsg;
-          onStream?.({ type: 'error', error: errorMsg });
-          throw new Error(errorMsg);
+    try {
+      for await (const part of result.fullStream) {
+        switch (part.type) {
+          case 'text-delta': {
+            responseText += part.text;
+            onStream?.({ type: 'text-delta', text: part.text });
+            break;
+          }
+          case 'tool-call': {
+            const args = 'input' in part ? (part.input as Record<string, unknown>) : {};
+            const input = extractToolInput(args);
+            toolCalls.push({ name: part.toolName, input });
+            onStream?.({ type: 'tool-start', name: part.toolName, input });
+            break;
+          }
+          case 'tool-result': {
+            onStream?.({ type: 'tool-end', name: part.toolName });
+            break;
+          }
+          case 'error': {
+            const errorMsg = formatInsightsError(part.error);
+            terminalStreamError = errorMsg;
+            throw new Error(errorMsg);
+          }
         }
       }
+
+      break;
+    } catch (error) {
+      const errorMsg = formatInsightsError(error);
+      const canRetry = attempt < MAX_TRANSIENT_STREAM_RETRIES
+        && responseText.length === 0
+        && toolCalls.length === 0
+        && isRetryableInsightsError(errorMsg);
+
+      if (canRetry) {
+        terminalStreamError = null;
+        continue;
+      }
+
+      if (errorMsg !== terminalStreamError || !isRetryableInsightsError(errorMsg)) {
+        onStream?.({ type: 'error', error: errorMsg });
+      } else {
+        onStream?.({ type: 'error', error: terminalStreamError });
+      }
+      throw error instanceof Error ? error : new Error(errorMsg);
     }
-  } catch (error) {
-    const errorMsg = formatInsightsError(error);
-    if (errorMsg !== terminalStreamError) {
-      onStream?.({ type: 'error', error: errorMsg });
-    }
-    throw error instanceof Error ? error : new Error(errorMsg);
   }
 
   const taskSuggestion = extractTaskSuggestion(responseText);

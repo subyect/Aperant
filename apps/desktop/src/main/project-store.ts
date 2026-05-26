@@ -29,6 +29,7 @@ import {
   clearCompletedSubtaskDiagnostics,
   doneStatusHasIncompleteSubtasks,
   isQASignoffApproved,
+  planHasMergeCompletionEvidence,
   statusRequiresCompletedSubtasks,
 } from './task-plan-guards';
 import { XSTATE_ACTIVE_STATES, XSTATE_TO_PHASE } from '../shared/state-machines';
@@ -421,15 +422,37 @@ export class ProjectStore {
   private mergeTaskDisplayFields(selected: Task, sibling: Task): Task {
     const selectedDescription = selected.description?.trim() ?? '';
     const siblingDescription = sibling.description?.trim() ?? '';
+    let merged = selected;
 
-    if (selectedDescription || !siblingDescription) {
-      return selected;
+    if (!selectedDescription && siblingDescription) {
+      merged = {
+        ...merged,
+        description: sibling.description,
+      };
     }
 
-    return {
-      ...selected,
-      description: sibling.description,
-    };
+    if (merged.subtasks.length === 0 && sibling.subtasks.length > 0) {
+      merged = {
+        ...merged,
+        subtasks: sibling.subtasks,
+      };
+    }
+
+    if (!merged.mergeCommit && sibling.mergeCommit) {
+      merged = {
+        ...merged,
+        mergeCommit: sibling.mergeCommit,
+      };
+    }
+
+    if (!merged.mergedAt && sibling.mergedAt) {
+      merged = {
+        ...merged,
+        mergedAt: sibling.mergedAt,
+      };
+    }
+
+    return merged;
   }
 
   private shouldReplaceTaskCandidate(existing: Task, candidate: Task): boolean {
@@ -759,6 +782,12 @@ export class ProjectStore {
         }
 
         const executionProgress = this.resolveExecutionProgressFromPlan(plan, planPath, dir.name);
+        const mergeCommit = typeof plan?.mergeCommit === 'string' && plan.mergeCommit.trim()
+          ? plan.mergeCommit
+          : undefined;
+        const mergedAt = typeof plan?.mergedAt === 'string' && plan.mergedAt.trim()
+          ? plan.mergedAt
+          : undefined;
 
         tasks.push({
           id: dir.name, // Use spec directory name as ID
@@ -772,6 +801,8 @@ export class ProjectStore {
           metadata,
           ...(correctedReviewReason !== undefined && { reviewReason: correctedReviewReason }),
           ...(executionProgress && { executionProgress }),
+          ...(mergeCommit && { mergeCommit }),
+          ...(mergedAt && { mergedAt }),
           stagedInMainProject,
           stagedAt,
           location, // Add location metadata (main vs worktree)
@@ -949,7 +980,12 @@ export class ProjectStore {
     }
 
     const doneGuard = doneStatusHasIncompleteSubtasks(plan as unknown as Record<string, unknown>);
-    if (!doneGuard.incomplete) {
+    const missingMergeEvidence = (
+      finalStatus === 'done'
+      || finalStatus === 'pr_created'
+    ) && !planHasMergeCompletionEvidence(plan as unknown as Record<string, unknown>);
+
+    if (!doneGuard.incomplete && !missingMergeEvidence) {
       const recoveryNote = (plan as unknown as { recoveryNote?: unknown }).recoveryNote;
       if (typeof recoveryNote === 'string' && /^Blocked terminal (event|phase|status)\b/.test(recoveryNote)) {
         const correctedPlan = plan as unknown as Record<string, unknown>;
@@ -987,9 +1023,15 @@ export class ProjectStore {
       correctedPlan.planStatus = 'review';
       correctedPlan.xstateState = 'qa_review';
       correctedPlan.executionPhase = 'qa_review';
-      correctedPlan.recoveryNote = `Recovered stale terminal status for ${taskName}: all subtasks are complete but QA or merge evidence is missing; rerunning QA.`;
+      correctedPlan.recoveryNote = missingMergeEvidence
+        ? `Recovered terminal status for ${taskName}: merge evidence is missing; rerunning QA and merge.`
+        : `Recovered stale terminal status for ${taskName}: all subtasks are complete but QA or merge evidence is missing; rerunning QA.`;
       delete correctedPlan.reviewReason;
       delete correctedPlan.final_acceptance;
+      if (missingMergeEvidence) {
+        delete correctedPlan.mergeCommit;
+        delete correctedPlan.mergedAt;
+      }
       correctedPlan.updated_at = new Date().toISOString();
 
       try {
