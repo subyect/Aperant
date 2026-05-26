@@ -38,6 +38,19 @@ describe('canAutoMergeCompletedHumanReviewTask', () => {
     expect(canAutoMergeCompletedHumanReviewTask(task(), [plan(['completed', 'pending'])])).toBe(false);
   });
 
+  it('does not let stale cached completion override pending persisted subtasks', () => {
+    expect(canAutoMergeCompletedHumanReviewTask(task({
+      subtasks: [{ id: 'P1-S1', status: 'completed' }],
+    }), [plan(['completed', 'pending'])])).toBe(false);
+  });
+
+  it('does not auto-merge while human feedback is still pending', () => {
+    expect(canAutoMergeCompletedHumanReviewTask(task(), [{
+      ...plan(['completed']),
+      human_feedback_pending: { requested_at: '2026-05-26T08:00:00.000Z' },
+    }])).toBe(false);
+  });
+
   it('does not auto-merge non-completed human review tasks', () => {
     expect(canAutoMergeCompletedHumanReviewTask(task({ reviewReason: 'errors' }), [plan(['completed'])])).toBe(false);
   });
