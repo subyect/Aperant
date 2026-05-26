@@ -675,7 +675,7 @@ export class AgentManager extends EventEmitter {
           return true;
         }
 
-        if (this.hasPendingQaReportRecovery(project, task)) {
+        if (this.hasPendingQaReportRecovery(project, task) || this.findFailedQaReport(project, task)) {
           const resumedFromFailedQaReport = await this.resumeCodingForFailedQaReport(project, task);
           if (resumedFromFailedQaReport) {
             console.warn(`[AgentManager] Startup recovery routed failed QA report back to coding for ${task.specId}`);

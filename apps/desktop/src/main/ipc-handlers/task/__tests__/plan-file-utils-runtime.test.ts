@@ -389,6 +389,46 @@ describe('plan-file runtime guards', () => {
     expect(failure?.content).toContain('MAX ITERATIONS REACHED');
   });
 
+  it('uses failed QA plan state as recovery evidence when QA artifacts were cleared', () => {
+    const plan = planWithSubtasks();
+    plan.phases[0].subtasks[1].status = 'completed';
+    Object.assign(plan, {
+      status: 'ai_review',
+      planStatus: 'review',
+      xstateState: 'qa_review',
+      executionPhase: 'failed',
+      lastEvent: {
+        type: 'QA_MAX_ITERATIONS',
+        timestamp: '2026-05-26T11:08:29.483Z',
+      },
+      qa_stats: {
+        total_iterations: 203,
+        last_iteration: 3,
+        last_status: 'error',
+      },
+      qa_iteration_history: [
+        {
+          iteration: 3,
+          status: 'error',
+          issues: [
+            {
+              title: 'QA error',
+              description: 'QA agent did not update implementation_plan.json with qa_signoff',
+            },
+          ],
+        },
+      ],
+    });
+    writeFileSync(planPath, JSON.stringify(plan, null, 2));
+
+    const failure = readFailedQaEvidenceSync(tempDir);
+
+    expect(failure?.reportPath.endsWith('implementation_plan.json#qa-failure-state')).toBe(true);
+    expect(failure?.content).toContain('Status: FAILED');
+    expect(failure?.content).toContain('QA_MAX_ITERATIONS');
+    expect(failure?.content).toContain('QA agent did not update implementation_plan.json');
+  });
+
   it('uses QA escalation reports as fallback failure evidence', () => {
     writeFileSync(path.join(tempDir, 'QA_ESCALATION.md'), [
       '# QA Escalation - Human Intervention Required',

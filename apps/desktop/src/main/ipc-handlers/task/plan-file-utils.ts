@@ -984,11 +984,53 @@ export function readFailedQaEvidenceSync(specDir: string): { reportPath: string;
         return { reportPath: escalationPath, content };
       }
     } catch {
-      return null;
+      // No escalation artifact; fall through to plan-state evidence.
     }
   }
 
-  return null;
+  try {
+    const planPath = path.join(specDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
+    const plan = safeParseJson<Record<string, any>>(readFileSync(planPath, 'utf-8'));
+    if (!plan || isQASignoffApproved(plan.qa_signoff)) return null;
+
+    const lastEventType = String(plan.lastEvent?.type ?? '');
+    const lastQaStatus = String(plan.qa_stats?.last_status ?? '').toLowerCase();
+    const hasFailedQaState =
+      /^QA_(?:FAILED|AGENT_ERROR|MAX_ITERATIONS|FIX_FAILED|REJECTED)/.test(lastEventType)
+      || ['rejected', 'failed', 'error'].includes(lastQaStatus);
+    const completion = checkSubtasksCompletion(plan);
+    if (!hasFailedQaState || !completion.allCompleted) return null;
+
+    const history = Array.isArray(plan.qa_iteration_history)
+      ? plan.qa_iteration_history.slice(-3)
+      : [];
+    const issueLines = history.flatMap((record: Record<string, any>) => {
+      const issues = Array.isArray(record?.issues) ? record.issues : [];
+      return issues.slice(0, 5).map((issue: Record<string, any>) => {
+        const title = String(issue?.title ?? 'QA issue').trim();
+        const description = String(issue?.description ?? '').trim();
+        return description ? `- ${title}: ${description}` : `- ${title}`;
+      });
+    });
+
+    const content = [
+      'Status: FAILED',
+      '',
+      'Aperant QA ended without approval after all implementation subtasks were completed.',
+      '',
+      `Last event: ${lastEventType || '(none)'}`,
+      `Last QA status: ${lastQaStatus || '(none)'}`,
+      `Completed subtasks: ${completion.completedCount}/${completion.totalCount}`,
+      '',
+      ...(issueLines.length > 0
+        ? ['Recent QA issues:', ...issueLines]
+        : ['No qa_report.md or QA_FIX_REQUEST.md artifact was available; use the plan QA failure state as the recovery signal.']),
+    ].join('\n').slice(0, 8000);
+
+    return { reportPath: `${planPath}#qa-failure-state`, content };
+  } catch {
+    return null;
+  }
 }
 
 export function getPlanPathsForSpec(project: Project, specId: string): string[] {
