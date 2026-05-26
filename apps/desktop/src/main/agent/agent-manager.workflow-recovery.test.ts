@@ -454,7 +454,7 @@ describe('AgentManager workflow recovery', () => {
     }).state.addProcess(runningTask.id, {
       taskId: runningTask.id,
       process: null,
-      worker: {},
+      worker: { pid: process.pid },
       startedAt: new Date(),
       lastActivityAt: new Date(),
       spawnId: 1,
@@ -486,5 +486,75 @@ describe('AgentManager workflow recovery', () => {
     expect(persisted.planStatus).toBe('queued');
     expect(persisted.xstateState).toBe('queue');
     expect(persisted.executionPhase).toBe('idle');
+  });
+
+  it('clears opaque worker handles that have no live process marker', async () => {
+    writeFileSync(planPath, JSON.stringify({
+      feature: 'Task',
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      phases: [
+        {
+          id: 'phase-1',
+          name: 'Implementation',
+          subtasks: [
+            { id: '1', title: 'Pending', status: 'pending' },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const project = {
+      id: 'project-1',
+      path: projectPath,
+      autoBuildPath: '.auto-claude',
+      settings: { maxParallelTasks: 1, mainBranch: 'main' },
+    };
+    const task = {
+      id: 'task-id-1',
+      specId: 'task-001',
+      title: 'Task',
+      description: 'Task',
+      status: 'in_progress',
+      updatedAt: new Date('2026-05-26T10:00:00.000Z'),
+      metadata: {},
+      subtasks: [{ id: '1', title: 'Pending', status: 'pending' }],
+    };
+
+    projectStoreMock.getProjects.mockReturnValue([project]);
+    projectStoreMock.getTasks.mockReturnValue([task]);
+
+    const manager = new AgentManager();
+    (manager as unknown as {
+      state: {
+        addProcess: (taskId: string, process: unknown) => void;
+      };
+    }).state.addProcess(task.id, {
+      taskId: task.id,
+      process: null,
+      worker: {},
+      startedAt: new Date(Date.now() - 60_000),
+      lastActivityAt: new Date(Date.now() - 60_000),
+      spawnId: 1,
+      projectId: project.id,
+      processType: 'task-execution',
+    });
+
+    const startTaskExecution = vi
+      .spyOn(manager as unknown as { startTaskExecution: (...args: unknown[]) => Promise<void> }, 'startTaskExecution')
+      .mockResolvedValue(undefined);
+
+    await manager.runWorkflowRecoveryPass('test');
+
+    expect(startTaskExecution).toHaveBeenCalledWith(
+      task.id,
+      projectPath,
+      task.specId,
+      expect.objectContaining({ baseBranch: 'main', workers: 1 }),
+      project.id,
+    );
+    expect(manager.isRunning(task.id)).toBe(false);
   });
 });

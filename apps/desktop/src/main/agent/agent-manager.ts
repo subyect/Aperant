@@ -549,8 +549,8 @@ export class AgentManager extends EventEmitter {
       return false;
     }
 
-    if (typeof candidate.threadId === 'number' && candidate.threadId < 0) {
-      return false;
+    if (typeof candidate.threadId === 'number') {
+      return candidate.threadId >= 0;
     }
 
     if (typeof candidate.pid === 'number' && candidate.pid > 0) {
@@ -561,7 +561,11 @@ export class AgentManager extends EventEmitter {
       return false;
     }
 
-    return true;
+    if (candidate.connected === true) {
+      return true;
+    }
+
+    return false;
   }
 
   private isPidAlive(pid: number): boolean {
