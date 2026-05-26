@@ -505,7 +505,11 @@ export class AgentManager extends EventEmitter {
           || this.shouldResumeIncompleteTerminalTask(project, task)
           || this.shouldRetryTerminalAgentError(project, task)
         )
-        .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
+        .sort((a, b) => {
+          const priorityDiff = this.getWorkflowRecoveryPriority(project, a) - this.getWorkflowRecoveryPriority(project, b);
+          if (priorityDiff !== 0) return priorityDiff;
+          return new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
+        });
 
       for (const task of activeTasks) {
         if (this.countRunningProjectTasks(project) >= maxParallelTasks) break;
@@ -533,6 +537,17 @@ export class AgentManager extends EventEmitter {
 
   private isRecoverableTaskStatus(status: Task['status']): boolean {
     return status === 'in_progress' || status === 'ai_review' || status === 'human_review' || status === 'error';
+  }
+
+  private getWorkflowRecoveryPriority(project: Project, task: Task): number {
+    if (task.status === 'ai_review') return 0;
+    if (this.hasPendingQaReportRecovery(project, task)) return 1;
+
+    const completedSubtasks = task.subtasks.filter((subtask) => subtask.status === 'completed').length;
+    if (completedSubtasks > 0) return 2;
+
+    if (task.status === 'human_review' || task.status === 'error') return 3;
+    return 4;
   }
 
   private getTaskWorktreeConflictFiles(project: Project, task: Task): string[] {
@@ -858,8 +873,37 @@ export class AgentManager extends EventEmitter {
   }
 
   private countRunningProjectTasks(project: Project): number {
-    const tasks = projectStore.getTasks(project.id);
-    return tasks.filter((task) => this.isRunning(task.id)).length;
+    return this.countRunningProjectWorkers(project.id);
+  }
+
+  private countRunningProjectWorkers(projectId: string): number {
+    return Array.from(this.state.getAllProcesses())
+      .filter(([, processInfo]) => processInfo.projectId === projectId)
+      .length;
+  }
+
+  private shouldDeferWorkerStartForProjectCapacity(
+    project: Project | undefined,
+    taskId: string,
+    specId: string,
+    phase: 'planning' | 'coding' | 'qa',
+  ): boolean {
+    if (!project) return false;
+
+    if (this.isRunning(taskId)) {
+      console.warn(`[AgentManager] Refusing duplicate ${phase} worker for ${specId}; task already has an active worker.`);
+      return true;
+    }
+
+    const running = this.countRunningProjectWorkers(project.id);
+    const maxParallelTasks = this.getMaxParallelTasks(project);
+    if (running < maxParallelTasks) return false;
+
+    console.warn(
+      `[AgentManager] Deferring ${phase} worker for ${specId}: ` +
+      `${running}/${maxParallelTasks} project workers are already running.`
+    );
+    return true;
   }
 
   private persistRuntimeState(
@@ -1381,6 +1425,12 @@ export class AgentManager extends EventEmitter {
     }
 
     const project = projectStore.getProjects().find((p) => p.id === projectId || p.path === projectPath);
+    const resolvedProjectId = projectId ?? project?.id;
+    const resolvedSpecDir = specDir ?? path.join(projectPath, '.auto-claude', 'specs', taskId);
+    const specId = path.basename(resolvedSpecDir);
+    if (this.shouldDeferWorkerStartForProjectCapacity(project, taskId, specId, 'planning')) {
+      return;
+    }
 
     // Reset stuck subtasks if restarting an existing spec creation task
     if (specDir) {
@@ -1423,7 +1473,6 @@ export class AgentManager extends EventEmitter {
     const resolved = await this.resolveAuthFromProviderQueue(specModelId, preferredProvider);
 
     // Build the serializable session config for the worker
-    const resolvedSpecDir = specDir ?? path.join(projectPath, '.auto-claude', 'specs', taskId);
     const sessionConfig: SerializableSessionConfig = {
       agentType: 'spec_orchestrator' as const,
       systemPrompt,
@@ -1454,18 +1503,18 @@ export class AgentManager extends EventEmitter {
 
     const executorConfig: AgentExecutorConfig = {
       taskId,
-      projectId,
+      projectId: resolvedProjectId,
       processType: 'spec-creation',
       session: sessionConfig,
     };
 
     // Store context for potential restart
-    this.storeTaskContext(taskId, projectPath, '', {}, true, taskDescription, specDir, metadata, baseBranch, projectId);
+    this.storeTaskContext(taskId, projectPath, '', {}, true, taskDescription, specDir, metadata, baseBranch, resolvedProjectId);
 
     // Register with unified OperationRegistry for proactive swap support
     this.registerTaskWithOperationRegistry(taskId, 'spec-creation', { projectPath, taskDescription, specDir });
 
-    await this.processManager.spawnWorkerProcess(taskId, executorConfig, {}, 'spec-creation', projectId);
+    await this.processManager.spawnWorkerProcess(taskId, executorConfig, {}, 'spec-creation', resolvedProjectId);
 
     // Note (Python fallback preserved for reference):
     // const combinedEnv = this.processManager.getCombinedEnv(projectPath);
@@ -1500,7 +1549,11 @@ export class AgentManager extends EventEmitter {
 
     // Resolve the spec directory from specId
     const project = projectStore.getProjects().find((p) => p.id === projectId || p.path === projectPath);
+    const resolvedProjectId = projectId ?? project?.id;
     const task = project ? projectStore.getTasks(project.id).find((candidate) => candidate.id === taskId || candidate.specId === specId) : undefined;
+    if (this.shouldDeferWorkerStartForProjectCapacity(project, taskId, specId, 'coding')) {
+      return;
+    }
     const specsBaseDir = getSpecsDir(project?.autoBuildPath);
     const specDir = path.join(projectPath, specsBaseDir, specId);
 
@@ -1590,18 +1643,18 @@ export class AgentManager extends EventEmitter {
 
     const executorConfig: AgentExecutorConfig = {
       taskId,
-      projectId,
+      projectId: resolvedProjectId,
       processType: 'task-execution',
       session: sessionConfig,
     };
 
     // Store context for potential restart
-    this.storeTaskContext(taskId, projectPath, specId, options, false, undefined, undefined, undefined, undefined, projectId);
+    this.storeTaskContext(taskId, projectPath, specId, options, false, undefined, undefined, undefined, undefined, resolvedProjectId);
 
     // Register with unified OperationRegistry for proactive swap support
     this.registerTaskWithOperationRegistry(taskId, 'task-execution', { projectPath, specId, options });
 
-    await this.processManager.spawnWorkerProcess(taskId, executorConfig, {}, 'task-execution', projectId);
+    await this.processManager.spawnWorkerProcess(taskId, executorConfig, {}, 'task-execution', resolvedProjectId);
 
     // Note (Python fallback preserved for reference):
     // const combinedEnv = this.processManager.getCombinedEnv(projectPath);
@@ -1634,6 +1687,10 @@ export class AgentManager extends EventEmitter {
 
     // Resolve the spec directory from specId
     const project = projectStore.getProjects().find((p) => p.id === projectId || p.path === projectPath);
+    const resolvedProjectId = projectId ?? project?.id;
+    if (this.shouldDeferWorkerStartForProjectCapacity(project, taskId, specId, 'qa')) {
+      return;
+    }
     const specsBaseDir = getSpecsDir(project?.autoBuildPath);
     const specDir = path.join(projectPath, specsBaseDir, specId);
 
@@ -1725,12 +1782,12 @@ export class AgentManager extends EventEmitter {
 
     const executorConfig: AgentExecutorConfig = {
       taskId,
-      projectId,
+      projectId: resolvedProjectId,
       processType: 'qa-process',
       session: sessionConfig,
     };
 
-    await this.processManager.spawnWorkerProcess(taskId, executorConfig, {}, 'qa-process', projectId);
+    await this.processManager.spawnWorkerProcess(taskId, executorConfig, {}, 'qa-process', resolvedProjectId);
 
     // Note (Python fallback preserved for reference):
     // const combinedEnv = this.processManager.getCombinedEnv(projectPath);
