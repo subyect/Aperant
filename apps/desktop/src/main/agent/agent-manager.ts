@@ -425,7 +425,7 @@ export class AgentManager extends EventEmitter {
         console.log(`[AgentManager] Startup recovery complete: No stuck subtasks found (scanned ${totalScanned} task(s))`);
       }
 
-      await this.resumeOrphanedWorkflowTasks(projects);
+      await this.resumeOrphanedWorkflowTasks(projects, 'startup-recovery');
       this.scheduleHumanReviewMerge('startup-recovery', 1000);
       this.startWorkflowRecoveryWatchdog();
     } catch (err) {
@@ -449,11 +449,24 @@ export class AgentManager extends EventEmitter {
     try {
       const projects = projectStore.getProjects();
       this.stopStaleRunningWorkers(projects, reason);
-      await this.resumeOrphanedWorkflowTasks(projects);
+      await this.resumeOrphanedWorkflowTasks(projects, reason);
       this.scheduleHumanReviewMerge(reason, 1000);
     } finally {
       this.workflowRecoveryInProgress = false;
     }
+  }
+
+  private recoverApprovedQaForTask(project: Project, task: Task, source: string): boolean {
+    if (!recoverApprovedQASignoffForSpec(project, task.specId, source)) return false;
+
+    taskStateManager.handleUiEvent(task.id, {
+      type: 'QA_PASSED',
+      iteration: 0,
+      testsRun: {},
+    }, task, project);
+    this.scheduleHumanReviewMerge(source, 1500);
+    console.warn(`[AgentManager] Workflow recovery accepted passed QA report for ${task.specId}`);
+    return true;
   }
 
   private stopStaleRunningWorkers(projects: Project[], reason: string): void {
@@ -481,7 +494,7 @@ export class AgentManager extends EventEmitter {
     }
   }
 
-  private async resumeOrphanedWorkflowTasks(projects: Project[]): Promise<void> {
+  private async resumeOrphanedWorkflowTasks(projects: Project[], reason = 'workflow-recovery'): Promise<void> {
     let totalStarted = 0;
 
     for (const project of projects) {
@@ -516,6 +529,7 @@ export class AgentManager extends EventEmitter {
         });
 
       for (const task of activeTasks) {
+        if (task.status === 'ai_review' && this.recoverApprovedQaForTask(project, task, `${reason}-qa-report`)) continue;
         if (this.countRunningProjectTasks(project) >= maxParallelTasks) break;
         if (this.isRunning(task.id)) continue;
         if (this.shouldDeferPlanningRecovery(project, task)) continue;
