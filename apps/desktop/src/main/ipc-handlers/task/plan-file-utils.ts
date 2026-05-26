@@ -30,6 +30,7 @@ import { getToolPath } from '../../cli-tool-manager';
 import { getIsolatedGitEnv } from '../../utils/git-isolation';
 import { findTaskWorktree } from '../../worktree-paths';
 import { normalizeQaFailureEvidenceContent, normalizeQaFixRequestFileSync } from '../../qa-feedback-utils';
+import { getQaReportVerdictFromContent } from '../../agent/task-review-artifacts';
 import {
   applyRuntimePhaseState,
   applyTaskEventRuntimeState,
@@ -944,11 +945,10 @@ export function readQaReportVerdictSync(specDir: string): { status: 'approved' |
   try {
     const reportPath = path.join(specDir, AUTO_BUILD_PATHS.QA_REPORT);
     const content = readFileSync(reportPath, 'utf-8');
-    const match = content.match(/(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?\s*(?:Status|Final Status|Result)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*(PASSED|PASS|APPROVED|FAILED|FAIL|REJECTED|ISSUES|ESCALATED|MAX ITERATIONS REACHED)\s*(?:\*\*)?/i);
-    if (!match) return null;
-    const normalized = match[1].toLowerCase();
+    const status = getQaReportVerdictFromContent(content);
+    if (!status) return null;
     return {
-      status: normalized === 'passed' || normalized === 'pass' || normalized === 'approved' ? 'approved' : 'failed',
+      status,
       reportPath,
       content,
     };

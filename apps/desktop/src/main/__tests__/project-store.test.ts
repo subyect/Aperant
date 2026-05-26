@@ -610,6 +610,68 @@ describe('ProjectStore', () => {
       expect(tasks[0].subtasks.filter((subtask) => subtask.status === 'completed')).toHaveLength(1);
     });
 
+    it('preserves main overview text when an active worktree plan has no description', async () => {
+      const specId = '007-worktree-empty-description';
+      const mainSpecRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');
+      const worktreeSpecDir = path.join(
+        TEST_PROJECT_PATH,
+        '.auto-claude',
+        'worktrees',
+        'tasks',
+        specId,
+        '.auto-claude',
+        'specs',
+        specId,
+      );
+
+      writeSpec(
+        mainSpecRoot,
+        specId,
+        makePlan({
+          feature: 'Main Overview Source',
+          status: 'queue',
+          subtaskStatuses: ['pending', 'pending'],
+          updatedAt: '2024-01-01T00:00:00Z',
+        }),
+      );
+      writeFileSync(
+        path.join(mainSpecRoot, specId, 'spec.md'),
+        '# Main Overview Source\n\n## Overview\n\nMain overview should remain visible.\n',
+      );
+
+      mkdirSync(worktreeSpecDir, { recursive: true });
+      writeFileSync(path.join(worktreeSpecDir, 'implementation_plan.json'), JSON.stringify({
+        feature: 'Main Overview Source',
+        workflow_type: 'feature',
+        status: 'in_progress',
+        phases: [
+          {
+            phase: 1,
+            name: 'Phase 1',
+            type: 'implementation',
+            subtasks: [
+              { id: 'subtask-1', title: 'Subtask 1', description: 'Subtask 1', status: 'completed' },
+              { id: 'subtask-2', title: 'Subtask 2', description: 'Subtask 2', status: 'pending' },
+            ],
+          },
+        ],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-02T00:00:00Z',
+        spec_file: 'spec.md',
+      }));
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].location).toBe('worktree');
+      expect(tasks[0].description).toBe('Main overview should remain visible.');
+    });
+
     it('keeps main terminal task over lingering active worktree data', async () => {
       const specId = '008-terminal-main';
       writeSpec(

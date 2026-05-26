@@ -3,10 +3,38 @@ import path from 'path';
 
 import { AUTO_BUILD_PATHS } from '../../shared/constants';
 
-const PASSING_QA_STATUS = /(?:^|\n)\s*(?:\*\*)?Status(?:\*\*)?\s*:\s*(PASSED|APPROVED)\b/i;
+const QA_STATUS_LINE = /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?\s*(?:Status|Final Status|Result)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*(PASSED|PASS|APPROVED|FAILED|FAIL|REJECTED|ISSUES|ESCALATED|MAX ITERATIONS REACHED)\s*(?:\*\*)?/i;
+const APPROVED_STATUSES = new Set(['passed', 'pass', 'approved']);
+
+const CONTRADICTORY_FAILURE_PATTERNS = [
+  /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?\s*(?:Status|Final Status|Result)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*(FAILED|FAIL|REJECTED|ISSUES|ESCALATED|MAX ITERATIONS REACHED)\b/i,
+  /\b(?:test suite|tests?)\s+(?:has|have|had)\s+(?:unrelated\s+)?failures?\b/i,
+  /\b(?:verification|verifier|command|test run|suite)\b[^\n]*(?:failed|failing|failure|did not pass|not passing)\b/i,
+  /\bverification\s+(?:could not|cannot|did not)\s+complete\b/i,
+  /\bnot ready for sign[- ]off\b/i,
+  /\bcannot be accepted\b/i,
+  /❌\s*(?:failed|fail|failing)/i,
+];
+
+export function hasContradictoryFailureEvidence(content: string): boolean {
+  return CONTRADICTORY_FAILURE_PATTERNS.some((pattern) => pattern.test(content));
+}
+
+export function getQaReportVerdictFromContent(content: string): 'approved' | 'failed' | null {
+  const match = content.match(QA_STATUS_LINE);
+  if (!match) return null;
+
+  const normalized = match[1].toLowerCase();
+  const status = APPROVED_STATUSES.has(normalized) ? 'approved' : 'failed';
+  if (status === 'approved' && hasContradictoryFailureEvidence(content)) {
+    return 'failed';
+  }
+
+  return status;
+}
 
 export function isPassingQaReportContent(content: string): boolean {
-  return PASSING_QA_STATUS.test(content);
+  return getQaReportVerdictFromContent(content) === 'approved';
 }
 
 export function findPassingQaReport(specDirs: string[]): string | null {

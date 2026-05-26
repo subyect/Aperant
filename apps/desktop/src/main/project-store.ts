@@ -383,7 +383,9 @@ export class ProjectStore {
         taskMap.set(task.id, task);
       } else {
         if (this.shouldReplaceTaskCandidate(existing, task)) {
-          taskMap.set(task.id, task);
+          taskMap.set(task.id, this.mergeTaskDisplayFields(task, existing));
+        } else {
+          taskMap.set(existing.id, this.mergeTaskDisplayFields(existing, task));
         }
       }
     }
@@ -394,6 +396,20 @@ export class ProjectStore {
     this.tasksCache.set(projectId, { tasks, timestamp: now });
 
     return tasks;
+  }
+
+  private mergeTaskDisplayFields(selected: Task, sibling: Task): Task {
+    const selectedDescription = selected.description?.trim() ?? '';
+    const siblingDescription = sibling.description?.trim() ?? '';
+
+    if (selectedDescription || !siblingDescription) {
+      return selected;
+    }
+
+    return {
+      ...selected,
+      description: sibling.description,
+    };
   }
 
   private shouldReplaceTaskCandidate(existing: Task, candidate: Task): boolean {

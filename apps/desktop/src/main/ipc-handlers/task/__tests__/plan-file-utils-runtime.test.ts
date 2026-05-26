@@ -418,6 +418,24 @@ describe('plan-file runtime guards', () => {
     expect(readFailedQaEvidenceSync(tempDir)).toBeNull();
   });
 
+  it('treats approved QA reports with unresolved verification failures as failed', () => {
+    writeFileSync(path.join(tempDir, 'qa_report.md'), [
+      '# QA Report',
+      '',
+      'Status: PASSED',
+      '',
+      'Verification executed:',
+      '- Result: test suite has unrelated failures outside this spec.',
+    ].join('\n'));
+
+    const verdict = readQaReportVerdictSync(tempDir);
+    const failure = readFailedQaEvidenceSync(tempDir);
+
+    expect(verdict?.status).toBe('failed');
+    expect(failure?.reportPath.endsWith('qa_report.md')).toBe(true);
+    expect(readApprovedQASignoffFromReportSync(tempDir)).toBeNull();
+  });
+
   it('does not treat stale escalation files as failed when the QA report is approved', () => {
     writeFileSync(path.join(tempDir, 'qa_report.md'), '**Result**: PASSED\n');
     writeFileSync(path.join(tempDir, 'QA_ESCALATION.md'), '# QA Escalation - Human Intervention Required\n');

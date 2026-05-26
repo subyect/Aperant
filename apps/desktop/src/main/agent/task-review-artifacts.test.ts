@@ -33,7 +33,19 @@ describe('task review artifacts', () => {
   it('recognizes passed and approved QA report status lines', () => {
     expect(isPassingQaReportContent('# QA\n\nStatus: PASSED\n')).toBe(true);
     expect(isPassingQaReportContent('# QA\n\n**Status**: APPROVED\n')).toBe(true);
+    expect(isPassingQaReportContent('# QA\n\n**Result**: PASSED\n')).toBe(true);
     expect(isPassingQaReportContent('# QA\n\nStatus: FAILED\n')).toBe(false);
+  });
+
+  it('rejects passing QA reports that still admit verification failures', () => {
+    expect(isPassingQaReportContent([
+      '# QA',
+      '',
+      'Status: PASSED',
+      '',
+      'Verification executed:',
+      '- Result: test suite has unrelated failures outside the narrow target.',
+    ].join('\n'))).toBe(false);
   });
 
   it('finds a passing qa_report.md across candidate spec dirs', () => {
