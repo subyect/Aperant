@@ -59,7 +59,7 @@ vi.mock('../../schema/insight-extractor', () => ({
 // Import after mocking
 // =============================================================================
 
-import { runInsightsQuery } from '../insights';
+import { formatInsightsError, runInsightsQuery } from '../insights';
 import type { InsightsConfig, InsightsStreamEvent } from '../insights';
 import { parseLLMJson } from '../../schema/structured-output';
 
@@ -302,6 +302,23 @@ describe('runInsightsQuery', () => {
     expect((errorEvents[0] as { type: 'error'; error: string }).error).toBe('tool failed');
   });
 
+  it('formats object stream errors instead of emitting [object Object]', async () => {
+    mockStreamText.mockReturnValue(
+      makeStream([{ type: 'error', error: { error: { message: 'Bad Request: invalid model' } } }]),
+    );
+
+    const events: InsightsStreamEvent[] = [];
+    await expect(runInsightsQuery(baseConfig(), (e) => events.push(e))).rejects.toThrow(
+      'Bad Request: invalid model',
+    );
+
+    const errorEvents = events.filter((e) => e.type === 'error');
+    expect(errorEvents).toHaveLength(1);
+    expect((errorEvents[0] as { type: 'error'; error: string }).error).toBe(
+      'Bad Request: invalid model',
+    );
+  });
+
   // ---------------------------------------------------------------------------
   // Error propagation
   // ---------------------------------------------------------------------------
@@ -331,6 +348,29 @@ describe('runInsightsQuery', () => {
     );
 
     expect(events.some((e) => e.type === 'error')).toBe(true);
+  });
+
+  it('normalizes non-Error iteration failures before rethrowing', async () => {
+    mockStreamText.mockReturnValue({
+      fullStream: (async function* () {
+        throw { responseBody: 'subscription token rejected' };
+      })(),
+    });
+
+    const events: InsightsStreamEvent[] = [];
+    await expect(runInsightsQuery(baseConfig(), (e) => events.push(e))).rejects.toThrow(
+      'subscription token rejected',
+    );
+
+    expect((events.find((e) => e.type === 'error') as { type: 'error'; error: string }).error).toBe(
+      'subscription token rejected',
+    );
+  });
+
+  it('stringifies unknown object errors as a last resort', () => {
+    expect(formatInsightsError({ code: 'bad_request', detail: 'missing input' })).toBe(
+      '{"code":"bad_request","detail":"missing input"}',
+    );
   });
 
   // ---------------------------------------------------------------------------

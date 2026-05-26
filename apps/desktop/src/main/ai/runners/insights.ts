@@ -88,6 +88,33 @@ export type InsightsStreamEvent =
   | { type: 'tool-end'; name: string }
   | { type: 'error'; error: string };
 
+export function formatInsightsError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  if (error === null || error === undefined) return String(error);
+
+  if (typeof error === 'object') {
+    const record = error as Record<string, unknown>;
+    for (const key of ['message', 'error', 'statusText', 'responseBody', 'body']) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) return value;
+      if (value && typeof value === 'object') {
+        const nested = formatInsightsError(value);
+        if (nested && nested !== '[object Object]') return nested;
+      }
+    }
+
+    try {
+      const json = JSON.stringify(error);
+      if (json && json !== '{}') return json.slice(0, 1200);
+    } catch {
+      // Fall through to String below.
+    }
+  }
+
+  return String(error);
+}
+
 // =============================================================================
 // Project Context Loading
 // =============================================================================
@@ -313,7 +340,7 @@ export async function runInsightsQuery(
           break;
         }
         case 'error': {
-          const errorMsg = part.error instanceof Error ? part.error.message : String(part.error);
+          const errorMsg = formatInsightsError(part.error);
           terminalStreamError = errorMsg;
           onStream?.({ type: 'error', error: errorMsg });
           throw new Error(errorMsg);
@@ -321,11 +348,11 @@ export async function runInsightsQuery(
       }
     }
   } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
+    const errorMsg = formatInsightsError(error);
     if (errorMsg !== terminalStreamError) {
       onStream?.({ type: 'error', error: errorMsg });
     }
-    throw error;
+    throw error instanceof Error ? error : new Error(errorMsg);
   }
 
   const taskSuggestion = extractTaskSuggestion(responseText);
