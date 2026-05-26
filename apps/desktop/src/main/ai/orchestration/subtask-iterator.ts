@@ -649,7 +649,11 @@ function findLatestPassingVerifier(result: SessionResult): { command: string; ou
 
 function looksLikeVerifierCommand(command: string, output: string): boolean {
   if (hasPassingTestEvidence(output)) return true;
-  return /\b(test|vitest|playwright|typecheck|tsc|lint|build)\b/i.test(command);
+  const normalized = command.replace(/\\\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+  return /(?:^|[;&|()\s])(?:pnpm|npm|yarn|bun)\s+(?:--filter\s+\S+\s+)*(?:exec\s+)?(?:run\s+)?(?:test|test:e2e|build|typecheck|lint|check)\b/i.test(normalized)
+    || /(?:^|[;&|()\s])(?:vitest|playwright|tsc|eslint|jest|pytest)\b/i.test(normalized)
+    || /(?:^|[;&|()\s])cargo\s+test\b/i.test(normalized)
+    || /(?:^|[;&|()\s])go\s+test\b/i.test(normalized);
 }
 
 function hasUnmergedFileEvidence(output: string): boolean {

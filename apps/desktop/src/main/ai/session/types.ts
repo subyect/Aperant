@@ -61,6 +61,11 @@ export interface SessionConfig {
   /** Context window limit in tokens for reactive compaction guard */
   contextWindowLimit?: number;
   /**
+   * Force the first model step to call a tool. Used for coder subtasks so a
+   * session cannot satisfy work with prose before inspecting or changing files.
+   */
+  requireInitialToolUse?: boolean;
+  /**
    * Optional Zod schema for structured output.
    *
    * Behavior depends on whether the session has tools:

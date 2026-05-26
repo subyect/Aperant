@@ -342,6 +342,7 @@ async function runSingleSession(
     subtaskId,
     contextWindowLimit,
     outputSchema,
+    requireInitialToolUse: agentType === 'coder',
   };
 
   // Start phase logging for this session (skip when orchestrator manages phases)

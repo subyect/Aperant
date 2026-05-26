@@ -828,6 +828,59 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('did not produce a passing verifier tool result or any project Edit/Write tool call');
   });
 
+  it('does not treat reading build-progress.txt as passing verification', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: 'P4-S4',
+              title: 'Implement outcome recording UI',
+              description: 'Implement outcome recording UI.',
+              status: 'pending',
+              verification: { type: 'manual', run: 'Inspect UI behavior.' },
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => sessionResult('completed', {
+        messages: [
+          {
+            role: 'assistant',
+            content: 'Implemented and verified P4-S4. I updated the subtask to completed.',
+          },
+        ],
+        toolResults: [
+          {
+            toolName: 'Bash',
+            args: { command: 'pwd && cat ./.auto-claude/specs/035-hypothesis-to-principle-lifecycle-tracking/build-progress.txt' },
+            result: '/tmp/worktree\n[P1-S2] Verification evidence\n- Result: PASS',
+            durationMs: 200,
+            isError: false,
+          },
+        ],
+      }),
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('did not produce a passing verifier tool result or any project Edit/Write tool call');
+  });
+
   it('does not auto-complete a normal subtask when the latest verifier fails', async () => {
     const plan = {
       feature: 'test',

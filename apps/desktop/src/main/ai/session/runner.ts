@@ -419,7 +419,7 @@ async function executeStream(
         } : {}),
       },
     } : {}),
-    prepareStep: async ({ stepNumber }) => {
+    prepareStep: async ({ stepNumber, steps }) => {
       // Hard abort: if we're at 90%+ of context window, stop the session
       // so the continuation wrapper can checkpoint and resume.
       if (
@@ -433,6 +433,17 @@ async function executeStream(
 
       // Collect system messages to inject between steps
       const systemParts: string[] = [];
+      const stepOverrides = config.requireInitialToolUse && steps.length === 0
+        ? { toolChoice: 'required' as const }
+        : {};
+
+      if (config.requireInitialToolUse && steps.length === 0) {
+        systemParts.push(
+          `You must start this coder session with a tool call before any prose answer. ` +
+          `Inspect the current worktree, plan, or relevant files with a tool, then continue implementation. ` +
+          `A text-only completion summary is not valid work evidence.`,
+        );
+      }
 
       // Context window guard: inject compaction warning when approaching limit
       if (
@@ -473,7 +484,7 @@ async function executeStream(
       if (memoryContext && stepMemoryState) {
         if (stepNumber < MEMORY_INJECTION_WARMUP_STEPS) {
           memoryContext.proxy.onStepComplete(stepNumber);
-          return systemMessage ? { system: systemMessage } : {};
+          return systemMessage ? { ...stepOverrides, system: systemMessage } : stepOverrides;
         }
 
         const recentContext = stepMemoryState.getRecentContext(5);
@@ -485,7 +496,7 @@ async function executeStream(
         memoryContext.proxy.onStepComplete(stepNumber);
 
         if (!injection) {
-          return systemMessage ? { system: systemMessage } : {};
+          return systemMessage ? { ...stepOverrides, system: systemMessage } : stepOverrides;
         }
 
         stepMemoryState.markInjected(injection.memoryIds);
@@ -494,11 +505,11 @@ async function executeStream(
           ? `${systemMessage}\n\n${injection.content}`
           : injection.content;
 
-        return { system: combinedSystem };
+        return { ...stepOverrides, system: combinedSystem };
       }
 
       // No memory context — just return system message if applicable
-      return systemMessage ? { system: systemMessage } : {};
+      return systemMessage ? { ...stepOverrides, system: systemMessage } : stepOverrides;
     },
     onStepFinish: (_stepResult) => {
       // onStepFinish is called after each agentic step.
