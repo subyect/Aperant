@@ -16,8 +16,21 @@ const CONTRADICTORY_FAILURE_PATTERNS = [
   /❌\s*(?:failed|fail|failing)/i,
 ];
 
+const OUT_OF_SCOPE_FAILURE_PATTERN = /\b(?:unrelated|outside (?:the )?(?:narrow )?(?:target|scope)|not scoped|not in scope|downstream suites? not scoped)\b/i;
+const SCOPED_PASS_EVIDENCE_PATTERN = /\b(?:focused|targeted|task-specific|scope-specific|refactor-specific|implementation-specific)\b[\s\S]{0,160}\b(?:pass(?:ed|es)?|green|align(?:s|ed)?|satisf(?:y|ies|ied))\b/i;
+
 export function hasContradictoryFailureEvidence(content: string): boolean {
-  return CONTRADICTORY_FAILURE_PATTERNS.some((pattern) => pattern.test(content));
+  const hasFailureEvidence = CONTRADICTORY_FAILURE_PATTERNS.some((pattern) => pattern.test(content));
+  if (!hasFailureEvidence) return false;
+
+  // A scoped QA pass may honestly mention a broader workspace/package command
+  // that fails outside the task boundary. Do not turn that into a failed QA
+  // verdict when the report also records task-scoped passing evidence.
+  if (OUT_OF_SCOPE_FAILURE_PATTERN.test(content) && SCOPED_PASS_EVIDENCE_PATTERN.test(content)) {
+    return false;
+  }
+
+  return true;
 }
 
 export function getQaReportVerdictFromContent(content: string): 'approved' | 'failed' | null {

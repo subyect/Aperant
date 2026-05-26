@@ -53,8 +53,21 @@ describe('task review artifacts', () => {
       'Status: PASSED',
       '',
       '## Verification Executed',
-      '- Result: Overall workspace test command fails due to unrelated package-resolution issues.',
+      '- Result: Overall workspace test command fails.',
     ].join('\n'))).toBe(false);
+  });
+
+  it('accepts scoped-passing reports that call out unrelated broad command failures', () => {
+    expect(isPassingQaReportContent([
+      'Status: PASSED',
+      '',
+      '## Findings',
+      '- Refactor-specific tests in this area are present and align with the decomposition behavior.',
+      '',
+      '## Verification Executed',
+      '- Result: Overall workspace test command fails due to unrelated package-resolution issues.',
+      '- Downstream suites are not scoped to this refactor.',
+    ].join('\n'))).toBe(true);
   });
 
   it('finds a passing qa_report.md across candidate spec dirs', () => {
