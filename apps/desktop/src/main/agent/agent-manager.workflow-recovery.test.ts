@@ -153,6 +153,83 @@ describe('AgentManager workflow recovery', () => {
     expect(persisted.executionPhase).toBe('qa_review');
   });
 
+  it('routes completed in-progress tasks with failed QA reports back to coding', async () => {
+    writeFileSync(planPath, JSON.stringify({
+      feature: 'Task',
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      phases: [
+        {
+          id: 'phase-1',
+          name: 'Implementation',
+          subtasks: [
+            { id: '1', title: 'Done', status: 'completed' },
+          ],
+        },
+      ],
+    }, null, 2));
+    writeFileSync(path.join(path.dirname(planPath), 'qa_report.md'), [
+      'Status: FAILED',
+      '',
+      'The task still fails focused verification.',
+    ].join('\n'));
+
+    const project = {
+      id: 'project-1',
+      path: projectPath,
+      autoBuildPath: '.auto-claude',
+      settings: { maxParallelTasks: 3, mainBranch: 'main' },
+    };
+    const task = {
+      id: 'task-id-1',
+      specId: 'task-001',
+      title: 'Task',
+      description: 'Task',
+      status: 'in_progress',
+      updatedAt: new Date('2026-05-26T10:00:00.000Z'),
+      metadata: {},
+      subtasks: [{ id: '1', title: 'Done', status: 'completed' }],
+    };
+
+    projectStoreMock.getProjects.mockReturnValue([project]);
+    projectStoreMock.getTasks.mockReturnValue([task]);
+
+    const manager = new AgentManager();
+    const startQAProcess = vi
+      .spyOn(manager as unknown as { startQAProcess: (...args: unknown[]) => Promise<void> }, 'startQAProcess')
+      .mockResolvedValue(undefined);
+    const startTaskExecution = vi
+      .spyOn(manager as unknown as { startTaskExecution: (...args: unknown[]) => Promise<void> }, 'startTaskExecution')
+      .mockResolvedValue(undefined);
+
+    await manager.runWorkflowRecoveryPass('test');
+
+    expect(startQAProcess).not.toHaveBeenCalled();
+    expect(startTaskExecution).toHaveBeenCalledWith(
+      task.id,
+      projectPath,
+      task.specId,
+      expect.objectContaining({ baseBranch: 'main', workers: 1 }),
+      project.id,
+    );
+
+    const persisted = JSON.parse(readFileSync(planPath, 'utf-8')) as {
+      status?: string;
+      xstateState?: string;
+      executionPhase?: string;
+      phases?: Array<{ subtasks?: Array<{ id?: string; status?: string }> }>;
+    };
+    const recoverySubtask = persisted.phases
+      ?.flatMap((phase) => phase.subtasks ?? [])
+      .find((subtask) => subtask.id === 'aperant-qa-report-failure');
+    expect(persisted.status).toBe('in_progress');
+    expect(persisted.xstateState).toBe('coding');
+    expect(persisted.executionPhase).toBe('coding');
+    expect(recoverySubtask?.status).toBe('pending');
+  });
+
   it('clears exited worker handles before enforcing project capacity', async () => {
     writeFileSync(planPath, JSON.stringify({
       feature: 'Task',
@@ -227,6 +304,98 @@ describe('AgentManager workflow recovery', () => {
       expect.objectContaining({ baseBranch: 'main', workers: 1 }),
       project.id,
     );
+  });
+
+  it('drops child worker handles whose exit event was missed', async () => {
+    writeFileSync(planPath, JSON.stringify({
+      feature: 'Task',
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      phases: [
+        {
+          id: 'phase-1',
+          name: 'Implementation',
+          subtasks: [
+            { id: '1', title: 'Pending', status: 'pending' },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const project = {
+      id: 'project-1',
+      path: projectPath,
+      autoBuildPath: '.auto-claude',
+      settings: { maxParallelTasks: 1, mainBranch: 'main' },
+    };
+    const task = {
+      id: 'task-id-1',
+      specId: 'task-001',
+      title: 'Task',
+      description: 'Task',
+      status: 'in_progress',
+      updatedAt: new Date('2026-05-26T10:00:00.000Z'),
+      metadata: {},
+      subtasks: [{ id: '1', title: 'Pending', status: 'pending' }],
+    };
+
+    projectStoreMock.getProjects.mockReturnValue([project]);
+    projectStoreMock.getTasks.mockReturnValue([task]);
+
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === 999999 && signal === 0) {
+        const error = new Error('No such process') as NodeJS.ErrnoException;
+        error.code = 'ESRCH';
+        throw error;
+      }
+      return true;
+    }) as typeof process.kill);
+
+    try {
+      const manager = new AgentManager();
+      const missedExitWorker = {
+        pid: 999999,
+        exitCode: null,
+        signalCode: null,
+        connected: false,
+        kill: vi.fn(),
+      };
+      (manager as unknown as {
+        state: {
+          addProcess: (taskId: string, process: unknown) => void;
+        };
+      }).state.addProcess(task.id, {
+        taskId: task.id,
+        process: null,
+        worker: missedExitWorker,
+        startedAt: new Date(),
+        lastActivityAt: new Date(),
+        spawnId: 1,
+        projectId: project.id,
+        processType: 'task-execution',
+      });
+
+      const startTaskExecution = vi
+        .spyOn(manager as unknown as { startTaskExecution: (...args: unknown[]) => Promise<void> }, 'startTaskExecution')
+        .mockResolvedValue(undefined);
+
+      await manager.runWorkflowRecoveryPass('test');
+
+      expect(killSpy).toHaveBeenCalledWith(999999, 0);
+      expect(missedExitWorker.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(startTaskExecution).toHaveBeenCalledWith(
+        task.id,
+        projectPath,
+        task.specId,
+        expect.objectContaining({ baseBranch: 'main', workers: 1 }),
+        project.id,
+      );
+      expect(manager.isRunning(task.id)).toBe(false);
+    } finally {
+      killSpy.mockRestore();
+    }
   });
 
   it('moves inactive in-progress recovery candidates back to queue when capacity is full', async () => {

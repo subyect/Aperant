@@ -66,6 +66,7 @@ import {
 
 const DEFAULT_MAX_PARALLEL_TASKS = 3;
 const MAX_CONCURRENT_PLANNING_RECOVERIES = 1;
+const STALE_SPAWN_SETUP_MS = 2 * 60_000;
 const STALE_WORKER_ACTIVITY_MS: Record<ProcessType, number> = {
   'spec-creation': 10 * 60_000,
   'task-execution': 20 * 60_000,
@@ -477,15 +478,11 @@ export class AgentManager extends EventEmitter {
     const projectsById = new Map(projects.map((project) => [project.id, project]));
     const now = Date.now();
 
-    for (const [taskId, processInfo] of this.state.getAllProcesses()) {
+    for (const [taskId, processInfo] of Array.from(this.state.getAllProcesses())) {
       if (processInfo.projectId && !projectsById.has(processInfo.projectId)) continue;
 
-      if (this.hasExitedTrackedWorker(processInfo)) {
-        const project = processInfo.projectId ? projectsById.get(processInfo.projectId) : undefined;
-        const task = project ? projectStore.getTasks(project.id).find((candidate) => candidate.id === taskId) : undefined;
-        const label = task?.specId ?? taskId;
-        console.warn(`[AgentManager] ${reason} recovery clearing exited worker handle for ${label}`);
-        this.killTask(taskId);
+      if (!this.isTrackedProcessLive(processInfo, now)) {
+        this.clearTrackedProcess(taskId, processInfo, projectsById, `${reason} recovery clearing exited worker handle`);
         continue;
       }
 
@@ -507,22 +504,66 @@ export class AgentManager extends EventEmitter {
     }
   }
 
-  private hasExitedTrackedWorker(processInfo: AgentProcess): boolean {
+  private clearTrackedProcess(
+    taskId: string,
+    processInfo: AgentProcess,
+    projectsById: Map<string, Project>,
+    reason: string,
+  ): void {
+    const project = processInfo.projectId ? projectsById.get(processInfo.projectId) : undefined;
+    const task = project ? projectStore.getTasks(project.id).find((candidate) => candidate.id === taskId) : undefined;
+    const label = task?.specId ?? taskId;
+    console.warn(`[AgentManager] ${reason} for ${label}`);
+    this.killTask(taskId);
+  }
+
+  private isTrackedProcessLive(processInfo: AgentProcess, now = Date.now()): boolean {
     const handles = [processInfo.process, processInfo.worker].filter(Boolean);
-    return handles.some((handle) => {
-      const candidate = handle as {
-        exitCode?: number | null;
-        signalCode?: NodeJS.Signals | null;
-        threadId?: number;
-      };
+    if (handles.length === 0) {
+      return now - processInfo.startedAt.getTime() < STALE_SPAWN_SETUP_MS;
+    }
+    return handles.some((handle) => this.isProcessHandleLive(handle));
+  }
 
-      if ('exitCode' in candidate || 'signalCode' in candidate) {
-        return candidate.exitCode !== null && candidate.exitCode !== undefined
-          || candidate.signalCode !== null && candidate.signalCode !== undefined;
-      }
+  private isProcessHandleLive(handle: unknown): boolean {
+    const candidate = handle as {
+      exitCode?: number | null;
+      signalCode?: NodeJS.Signals | null;
+      threadId?: number;
+      pid?: number;
+      killed?: boolean;
+      connected?: boolean;
+    };
 
-      return typeof candidate.threadId === 'number' && candidate.threadId < 0;
-    });
+    if (
+      (candidate.exitCode !== null && candidate.exitCode !== undefined)
+      || (candidate.signalCode !== null && candidate.signalCode !== undefined)
+    ) {
+      return false;
+    }
+
+    if (typeof candidate.threadId === 'number' && candidate.threadId < 0) {
+      return false;
+    }
+
+    if (typeof candidate.pid === 'number' && candidate.pid > 0) {
+      return this.isPidAlive(candidate.pid);
+    }
+
+    if (candidate.killed === true && candidate.connected === false) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private isPidAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+    }
   }
 
   private async resumeOrphanedWorkflowTasks(projects: Project[], reason = 'workflow-recovery'): Promise<void> {
@@ -754,6 +795,14 @@ export class AgentManager extends EventEmitter {
           this.scheduleHumanReviewMerge('workflow-recovery-qa-report', 1500);
           console.warn(`[AgentManager] Startup recovery accepted passed QA report for completed in-progress task ${task.specId}`);
           return true;
+        }
+
+        if (this.findFailedQaReport(project, task)) {
+          const resumedFromFailedQaReport = await this.resumeCodingForFailedQaReport(project, task);
+          if (resumedFromFailedQaReport) {
+            console.warn(`[AgentManager] Startup recovery routed completed in-progress failed QA report back to coding for ${task.specId}`);
+            return true;
+          }
         }
 
         this.persistRuntimeState(project, task, 'ai_review', 'review', 'qa_review', 'qa_review');
@@ -1067,8 +1116,14 @@ export class AgentManager extends EventEmitter {
   }
 
   private countRunningProjectWorkers(projectId: string): number {
+    const projectsById = new Map(projectStore.getProjects().map((project) => [project.id, project]));
     return Array.from(this.state.getAllProcesses())
-      .filter(([, processInfo]) => processInfo.projectId === projectId)
+      .filter(([taskId, processInfo]) => {
+        if (processInfo.projectId !== projectId) return false;
+        if (this.isTrackedProcessLive(processInfo)) return true;
+        this.clearTrackedProcess(taskId, processInfo, projectsById, 'capacity check clearing exited worker handle');
+        return false;
+      })
       .length;
   }
 
@@ -2384,14 +2439,19 @@ export class AgentManager extends EventEmitter {
    * Check if a task is running
    */
   isRunning(taskId: string): boolean {
-    return this.state.hasProcess(taskId);
+    const processInfo = this.state.getProcess(taskId);
+    if (!processInfo) return false;
+    if (this.isTrackedProcessLive(processInfo)) return true;
+    const projectsById = new Map(projectStore.getProjects().map((project) => [project.id, project]));
+    this.clearTrackedProcess(taskId, processInfo, projectsById, 'isRunning clearing exited worker handle');
+    return false;
   }
 
   /**
    * Get all running task IDs
    */
   getRunningTasks(): string[] {
-    return this.state.getRunningTaskIds();
+    return this.state.getRunningTaskIds().filter((taskId) => this.isRunning(taskId));
   }
 
   /**
