@@ -69,7 +69,7 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { AgentManager, isZombieProcessStat } from './agent-manager';
+import { AgentManager, getProcessStatCommand, isZombieProcessStat } from './agent-manager';
 
 describe('process liveness helpers', () => {
   it('treats zombie ps stat values as not live', () => {
@@ -77,6 +77,10 @@ describe('process liveness helpers', () => {
     expect(isZombieProcessStat('Z+')).toBe(true);
     expect(isZombieProcessStat('R')).toBe(false);
     expect(isZombieProcessStat('Ss')).toBe(false);
+  });
+
+  it('uses an absolute ps path when available for packaged app process checks', () => {
+    expect(getProcessStatCommand()).toBe('/bin/ps');
   });
 });
 
@@ -568,5 +572,103 @@ describe('AgentManager workflow recovery', () => {
       project.id,
     );
     expect(manager.isRunning(task.id)).toBe(false);
+  });
+
+  it('prioritizes queued implementation work over queued planning work with older timestamps', async () => {
+    const implementationSpecId = 'task-010';
+    const implementationSpecDir = path.join(projectPath, '.auto-claude', 'specs', implementationSpecId);
+    const implementationPlanPath = path.join(implementationSpecDir, 'implementation_plan.json');
+    mkdirSync(implementationSpecDir, { recursive: true });
+    writeFileSync(path.join(implementationSpecDir, 'spec.md'), '# Implementation task\n');
+    writeFileSync(implementationPlanPath, JSON.stringify({
+      feature: 'Implementation task',
+      status: 'queue',
+      planStatus: 'queued',
+      xstateState: 'queue',
+      executionPhase: 'idle',
+      phases: [
+        {
+          id: 'phase-1',
+          name: 'Implementation',
+          subtasks: [
+            { id: '1', title: 'Done', status: 'completed' },
+            { id: '2', title: 'Pending', status: 'pending' },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const planningSpecId = 'task-002';
+    const planningSpecDir = path.join(projectPath, '.auto-claude', 'specs', planningSpecId);
+    mkdirSync(planningSpecDir, { recursive: true });
+
+    const project = {
+      id: 'project-1',
+      path: projectPath,
+      autoBuildPath: '.auto-claude',
+      settings: { maxParallelTasks: 1, mainBranch: 'main' },
+    };
+    const implementationTask = {
+      id: 'task-id-implementation',
+      specId: implementationSpecId,
+      title: 'Implementation task',
+      description: 'Implementation task',
+      status: 'queue',
+      createdAt: new Date('invalid'),
+      updatedAt: new Date('2026-05-26T10:00:00.000Z'),
+      metadata: {},
+      subtasks: [
+        { id: '1', title: 'Done', status: 'completed' },
+        { id: '2', title: 'Pending', status: 'pending' },
+      ],
+    };
+    const planningTask = {
+      id: 'task-id-planning',
+      specId: planningSpecId,
+      title: 'Planning task',
+      description: 'Planning task',
+      status: 'queue',
+      createdAt: new Date('2026-05-20T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-20T10:00:00.000Z'),
+      metadata: {},
+      subtasks: [],
+    };
+
+    projectStoreMock.getProjects.mockReturnValue([project]);
+    projectStoreMock.getTasks.mockReturnValue([planningTask, implementationTask]);
+
+    const manager = new AgentManager();
+    const startTaskExecution = vi
+      .spyOn(manager as unknown as { startTaskExecution: (...args: unknown[]) => Promise<void> }, 'startTaskExecution')
+      .mockImplementation(async () => {
+        (manager as unknown as {
+          state: {
+            addProcess: (taskId: string, process: unknown) => void;
+          };
+        }).state.addProcess(implementationTask.id, {
+          taskId: implementationTask.id,
+          process: null,
+          worker: { pid: process.pid },
+          startedAt: new Date(),
+          lastActivityAt: new Date(),
+          spawnId: 1,
+          projectId: project.id,
+          processType: 'task-execution',
+        });
+      });
+    const startSpecCreation = vi
+      .spyOn(manager as unknown as { startSpecCreation: (...args: unknown[]) => Promise<void> }, 'startSpecCreation')
+      .mockResolvedValue(undefined);
+
+    await manager.runWorkflowRecoveryPass('test');
+
+    expect(startTaskExecution).toHaveBeenCalledWith(
+      implementationTask.id,
+      projectPath,
+      implementationSpecId,
+      expect.objectContaining({ baseBranch: 'main', workers: 1 }),
+      project.id,
+    );
+    expect(startSpecCreation).not.toHaveBeenCalled();
   });
 });

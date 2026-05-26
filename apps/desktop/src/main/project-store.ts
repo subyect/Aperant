@@ -731,6 +731,10 @@ export class ProjectStore {
         const finalDescription = hasJsonError
           ? `${JSON_ERROR_PREFIX}${jsonErrorMessage}`
           : description;
+        if (!hasJsonError) {
+          this.recoverMissingRuntimeStateForExecutablePlan(plan, planPath, specPath, dir.name);
+          this.recoverUnstartedInProgressPlan(plan, planPath, specPath, dir.name, basePath);
+        }
         // Tasks with JSON errors go to human_review with errors reason
         const { status: finalStatus, reviewReason: finalReviewReason } = hasJsonError
           ? { status: 'human_review' as TaskStatus, reviewReason: 'errors' as ReviewReason }
@@ -1363,6 +1367,123 @@ export class ProjectStore {
     const reviewReason = storedStatus === 'human_review' ? plan.reviewReason : undefined;
 
     return { status: storedStatus, reviewReason };
+  }
+
+  private recoverMissingRuntimeStateForExecutablePlan(
+    plan: ImplementationPlan | null,
+    planPath: string,
+    specPath: string,
+    taskName: string,
+  ): void {
+    if (!plan) return;
+
+    const mutablePlan = plan as unknown as Record<string, unknown>;
+    if (
+      mutablePlan.status !== undefined
+      || mutablePlan.planStatus !== undefined
+      || mutablePlan.xstateState !== undefined
+      || mutablePlan.executionPhase !== undefined
+    ) {
+      return;
+    }
+
+    const completion = checkSubtasksCompletion(mutablePlan);
+    if (completion.totalCount === 0 || completion.allCompleted) return;
+    if (!this.hasCompletedPlanningLog(specPath)) return;
+
+    if (!applyRuntimePhaseState(mutablePlan, 'idle')) return;
+
+    const now = new Date().toISOString();
+    mutablePlan.updated_at = now;
+    mutablePlan.recoveryNote = 'Recovered executable plan with completed planning logs and missing runtime state; queued for coding.';
+    mutablePlan.lastEvent = {
+      eventId: `missing-runtime-recovery-${Date.now()}`,
+      sequence: 0,
+      type: 'PLANNING_COMPLETED',
+      timestamp: now,
+    };
+
+    try {
+      writeFileAtomicSync(planPath, JSON.stringify(mutablePlan, null, 2));
+      console.warn(`[ProjectStore] Recovered missing runtime state for ${taskName}; queued for coding.`);
+    } catch (writeError) {
+      console.error(`[ProjectStore] Failed to persist missing runtime recovery for ${taskName}:`, writeError);
+    }
+  }
+
+  private hasCompletedPlanningLog(specPath: string): boolean {
+    const taskLogsPath = path.join(specPath, 'task_logs.json');
+    if (!existsSync(taskLogsPath)) return false;
+
+    try {
+      const logs = safeParseJson<{
+        phases?: {
+          planning?: { status?: string };
+        };
+      }>(readFileSync(taskLogsPath, 'utf-8'));
+      return logs?.phases?.planning?.status === 'completed';
+    } catch {
+      return false;
+    }
+  }
+
+  private recoverUnstartedInProgressPlan(
+    plan: ImplementationPlan | null,
+    planPath: string,
+    specPath: string,
+    taskName: string,
+    basePath: string,
+  ): void {
+    if (!plan) return;
+
+    const mutablePlan = plan as unknown as Record<string, unknown>;
+    if (mutablePlan.status !== 'in_progress') return;
+    if (mutablePlan.xstateState !== 'coding' && mutablePlan.executionPhase !== 'coding') return;
+
+    const completion = checkSubtasksCompletion(mutablePlan);
+    if (completion.totalCount === 0 || completion.completedCount > 0) return;
+
+    const lastEvent = mutablePlan.lastEvent as { type?: string } | undefined;
+    if (lastEvent?.type === 'CODING_STARTED') return;
+    if (!this.hasCompletedPlanningLog(specPath)) return;
+    if (this.hasStartedCodingLog(specPath)) return;
+    if (existsSync(path.join(getTaskWorktreeDir(basePath), taskName))) return;
+
+    if (!applyRuntimePhaseState(mutablePlan, 'idle')) return;
+
+    const now = new Date().toISOString();
+    mutablePlan.updated_at = now;
+    mutablePlan.recoveryNote = 'Recovered unstarted in-progress plan without coding logs or a task worktree; queued for coding.';
+    mutablePlan.lastEvent = {
+      eventId: `unstarted-coding-recovery-${Date.now()}`,
+      sequence: 0,
+      type: 'PLANNING_COMPLETED',
+      timestamp: now,
+    };
+
+    try {
+      writeFileAtomicSync(planPath, JSON.stringify(mutablePlan, null, 2));
+      console.warn(`[ProjectStore] Recovered unstarted in-progress task ${taskName}; queued for coding.`);
+    } catch (writeError) {
+      console.error(`[ProjectStore] Failed to persist unstarted in-progress recovery for ${taskName}:`, writeError);
+    }
+  }
+
+  private hasStartedCodingLog(specPath: string): boolean {
+    const taskLogsPath = path.join(specPath, 'task_logs.json');
+    if (!existsSync(taskLogsPath)) return false;
+
+    try {
+      const logs = safeParseJson<{
+        phases?: {
+          coding?: { status?: string; started_at?: string | null };
+        };
+      }>(readFileSync(taskLogsPath, 'utf-8'));
+      const coding = logs?.phases?.coding;
+      return Boolean(coding?.started_at) || (coding?.status !== undefined && coding.status !== 'pending');
+    } catch {
+      return false;
+    }
   }
 
   /**

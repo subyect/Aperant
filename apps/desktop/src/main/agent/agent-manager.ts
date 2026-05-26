@@ -78,6 +78,10 @@ export function isZombieProcessStat(stat: string): boolean {
   return stat.trim().startsWith('Z');
 }
 
+export function getProcessStatCommand(): string {
+  return existsSync('/bin/ps') ? '/bin/ps' : 'ps';
+}
+
 const APERANT_WORKFLOW_GUARD = `
 
 Aperant workflow guard:
@@ -577,7 +581,7 @@ export class AgentManager extends EventEmitter {
     try {
       if (process.platform !== 'win32') {
         try {
-          const stat = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {
+          const stat = execFileSync(getProcessStatCommand(), ['-o', 'stat=', '-p', String(pid)], {
             encoding: 'utf-8',
             stdio: ['ignore', 'pipe', 'ignore'],
           }).trim();
@@ -640,7 +644,7 @@ export class AgentManager extends EventEmitter {
 
       const queuedTasks = projectStore.getTasks(project.id)
         .filter((task) => task.status === 'queue' && !task.metadata?.archivedAt)
-        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        .sort((a, b) => this.compareQueuedWorkflowTasks(project, a, b));
 
       for (const task of queuedTasks) {
         if (this.countRunningProjectTasks(project) >= maxParallelTasks) break;
@@ -669,6 +673,53 @@ export class AgentManager extends EventEmitter {
 
     if (task.status === 'human_review' || task.status === 'error') return 3;
     return 4;
+  }
+
+  private compareQueuedWorkflowTasks(project: Project, a: Task, b: Task): number {
+    const priorityDiff = this.getQueuedWorkflowPriority(project, a) - this.getQueuedWorkflowPriority(project, b);
+    if (priorityDiff !== 0) return priorityDiff;
+
+    const timeDiff = this.getTaskQueueTimestamp(a) - this.getTaskQueueTimestamp(b);
+    if (timeDiff !== 0) return timeDiff;
+
+    return a.specId.localeCompare(b.specId, undefined, { numeric: true, sensitivity: 'base' });
+  }
+
+  private getQueuedWorkflowPriority(project: Project, task: Task): number {
+    if (!this.taskHasPlanSubtasks(project, task)) return 2;
+    return this.getCompletedPlanSubtaskCount(project, task) > 0 ? 0 : 1;
+  }
+
+  private getCompletedPlanSubtaskCount(project: Project, task: Task): number {
+    if (task.subtasks.length > 0) {
+      return task.subtasks.filter((subtask) => subtask.status === 'completed').length;
+    }
+
+    for (const planPath of getPlanPathsForSpec(project, task.specId)) {
+      if (!existsSync(planPath)) continue;
+      try {
+        const plan = safeParseJson<Record<string, unknown>>(readFileSync(planPath, 'utf-8'));
+        if (!plan) continue;
+        return checkSubtasksCompletion(plan).completedCount;
+      } catch {
+        // Ignore unreadable plans; the task will keep its normal queue ordering.
+      }
+    }
+
+    return 0;
+  }
+
+  private getTaskQueueTimestamp(task: Task): number {
+    const createdAt = this.getSafeTimestamp(task.createdAt);
+    if (createdAt !== Number.POSITIVE_INFINITY) return createdAt;
+    return this.getSafeTimestamp(task.updatedAt);
+  }
+
+  private getSafeTimestamp(value: unknown): number {
+    const timestamp = value instanceof Date
+      ? value.getTime()
+      : new Date(value as string | number).getTime();
+    return Number.isFinite(timestamp) ? timestamp : Number.POSITIVE_INFINITY;
   }
 
   private hasPendingHumanFeedbackRework(project: Project, task: Task): boolean {

@@ -548,6 +548,191 @@ describe('ProjectStore', () => {
       expect(tasks[0].status).toBe('backlog');
     });
 
+    it('queues executable plans that lost runtime state after completed planning', async () => {
+      const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '002-runtime-lost');
+      mkdirSync(specsDir, { recursive: true });
+
+      const plan = {
+        feature: 'Runtime Lost Feature',
+        workflow_type: 'feature',
+        services_involved: [],
+        phases: [
+          {
+            phase: 1,
+            name: 'Phase 1',
+            type: 'implementation',
+            subtasks: [
+              { id: 'subtask-1', description: 'Subtask 1', status: 'pending' },
+              { id: 'subtask-2', description: 'Subtask 2', status: 'pending' }
+            ]
+          }
+        ],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+        spec_file: 'spec.md'
+      };
+
+      writeFileSync(
+        path.join(specsDir, 'implementation_plan.json'),
+        JSON.stringify(plan)
+      );
+      writeFileSync(
+        path.join(specsDir, 'task_logs.json'),
+        JSON.stringify({ phases: { planning: { status: 'completed' } } })
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(path.join(specsDir, 'implementation_plan.json'), 'utf-8'));
+
+      expect(tasks[0].status).toBe('queue');
+      expect(tasks[0].executionProgress?.phase).toBe('idle');
+      expect(persistedPlan.status).toBe('queue');
+      expect(persistedPlan.planStatus).toBe('queued');
+      expect(persistedPlan.xstateState).toBe('queue');
+      expect(persistedPlan.executionPhase).toBe('idle');
+      expect(persistedPlan.recoveryNote).toContain('missing runtime state');
+    });
+
+    it('does not auto-queue missing-status plans without completed planning evidence', async () => {
+      const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '002-runtime-missing-no-log');
+      mkdirSync(specsDir, { recursive: true });
+
+      writeFileSync(path.join(specsDir, 'implementation_plan.json'), JSON.stringify({
+        feature: 'Runtime Missing Without Log',
+        workflow_type: 'feature',
+        services_involved: [],
+        phases: [
+          {
+            phase: 1,
+            name: 'Phase 1',
+            type: 'implementation',
+            subtasks: [
+              { id: 'subtask-1', description: 'Subtask 1', status: 'pending' }
+            ]
+          }
+        ],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+        spec_file: 'spec.md'
+      }));
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(path.join(specsDir, 'implementation_plan.json'), 'utf-8'));
+
+      expect(tasks[0].status).toBe('backlog');
+      expect(persistedPlan.status).toBeUndefined();
+    });
+
+    it('queues in-progress coding plans that never started a worker', async () => {
+      const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '002-unstarted-coding');
+      mkdirSync(specsDir, { recursive: true });
+
+      writeFileSync(path.join(specsDir, 'implementation_plan.json'), JSON.stringify({
+        feature: 'Unstarted Coding Feature',
+        workflow_type: 'feature',
+        services_involved: [],
+        status: 'in_progress',
+        planStatus: 'in_progress',
+        xstateState: 'coding',
+        executionPhase: 'coding',
+        phases: [
+          {
+            phase: 1,
+            name: 'Phase 1',
+            type: 'implementation',
+            subtasks: [
+              { id: 'subtask-1', description: 'Subtask 1', status: 'pending' }
+            ]
+          }
+        ],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+        spec_file: 'spec.md'
+      }));
+      writeFileSync(
+        path.join(specsDir, 'task_logs.json'),
+        JSON.stringify({
+          phases: {
+            planning: { status: 'completed' },
+            coding: { status: 'pending', started_at: null },
+          },
+        })
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(path.join(specsDir, 'implementation_plan.json'), 'utf-8'));
+
+      expect(tasks[0].status).toBe('queue');
+      expect(persistedPlan.status).toBe('queue');
+      expect(persistedPlan.xstateState).toBe('queue');
+      expect(persistedPlan.recoveryNote).toContain('unstarted in-progress plan');
+    });
+
+    it('keeps in-progress coding plans when coding has already started', async () => {
+      const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '002-started-coding');
+      mkdirSync(specsDir, { recursive: true });
+
+      writeFileSync(path.join(specsDir, 'implementation_plan.json'), JSON.stringify({
+        feature: 'Started Coding Feature',
+        workflow_type: 'feature',
+        services_involved: [],
+        status: 'in_progress',
+        planStatus: 'in_progress',
+        xstateState: 'coding',
+        executionPhase: 'coding',
+        lastEvent: { type: 'CODING_STARTED', timestamp: '2024-01-01T00:00:00Z' },
+        phases: [
+          {
+            phase: 1,
+            name: 'Phase 1',
+            type: 'implementation',
+            subtasks: [
+              { id: 'subtask-1', description: 'Subtask 1', status: 'pending' }
+            ]
+          }
+        ],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+        spec_file: 'spec.md'
+      }));
+      writeFileSync(
+        path.join(specsDir, 'task_logs.json'),
+        JSON.stringify({
+          phases: {
+            planning: { status: 'completed' },
+            coding: { status: 'active', started_at: '2024-01-01T00:00:01Z' },
+          },
+        })
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(path.join(specsDir, 'implementation_plan.json'), 'utf-8'));
+
+      expect(tasks[0].status).toBe('in_progress');
+      expect(persistedPlan.status).toBe('in_progress');
+      expect(persistedPlan.xstateState).toBe('coding');
+    });
+
     it('should determine status as ai_review when all subtasks completed', async () => {
       const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '003-complete');
       mkdirSync(specsDir, { recursive: true });

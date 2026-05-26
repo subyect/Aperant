@@ -33,6 +33,8 @@ import {
 import type { ZodSchema } from 'zod';
 import type { SessionResult } from '../session/types';
 
+type MutablePlan = Record<string, unknown>;
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -477,7 +479,11 @@ export class SpecOrchestrator extends EventEmitter {
         if (isPlanningPhase && result.structuredOutput) {
           const planPath = join(this.config.specDir, 'implementation_plan.json');
           try {
-            await writeFile(planPath, JSON.stringify(result.structuredOutput, null, 2));
+            const plan = await this.prepareStructuredImplementationPlan(
+              planPath,
+              result.structuredOutput as MutablePlan,
+            );
+            await writeFile(planPath, JSON.stringify(plan, null, 2));
             this.emitTyped('log', `Wrote implementation plan from structured output (schema-guaranteed)`);
           } catch (writeErr) {
             this.emitTyped('log', `Failed to write structured output plan: ${writeErr}`);
@@ -565,6 +571,43 @@ export class SpecOrchestrator extends EventEmitter {
     const failResult: SpecPhaseResult = { phase, success: false, errors, retries: MAX_PHASE_RETRIES };
     this.emitTyped('phase-complete', phase, failResult);
     return failResult;
+  }
+
+  private async prepareStructuredImplementationPlan(
+    planPath: string,
+    structuredOutput: MutablePlan,
+  ): Promise<MutablePlan> {
+    const plan: MutablePlan = { ...structuredOutput };
+    let existingPlan: MutablePlan | null = null;
+
+    try {
+      existingPlan = JSON.parse(await readFile(planPath, 'utf-8')) as MutablePlan;
+    } catch {
+      existingPlan = null;
+    }
+
+    for (const key of ['status', 'planStatus', 'reviewReason', 'xstateState', 'executionPhase', 'lastEvent', 'recoveryNote'] as const) {
+      if (existingPlan?.[key] !== undefined) {
+        plan[key] = existingPlan[key];
+      }
+    }
+
+    if (!plan.status) {
+      const now = new Date().toISOString();
+      plan.status = 'in_progress';
+      plan.planStatus = 'in_progress';
+      plan.xstateState = 'planning';
+      plan.executionPhase = 'planning';
+      plan.lastEvent = {
+        eventId: `structured-plan-runtime-${Date.now()}`,
+        sequence: 0,
+        type: 'PLANNING_STARTED',
+        timestamp: now,
+      };
+      plan.updated_at = now;
+    }
+
+    return plan;
   }
 
   /**
