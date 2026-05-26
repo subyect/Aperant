@@ -1111,11 +1111,15 @@ export class AgentManager extends EventEmitter {
         } else {
           recoverySubtask.title = 'Resolve failed QA report';
           recoverySubtask.description = recoveryDescription;
-          recoverySubtask.status = recoverySubtask.status === 'completed'
-            ? 'completed'
-            : recoverySubtask.status === 'in_progress'
-              ? 'in_progress'
-              : 'pending';
+          recoverySubtask.status = recoverySubtask.status === 'in_progress'
+            ? 'in_progress'
+            : 'pending';
+          delete recoverySubtask.completed_at;
+          delete recoverySubtask.completion_note;
+          delete recoverySubtask.qa_signoff;
+          delete recoverySubtask.last_error;
+          delete recoverySubtask.last_attempt_outcome;
+          delete recoverySubtask.last_attempt_at;
           recoverySubtask.verification = {
             type: 'command',
             run: 'Run the focused verification named in qa_report.md, then rerun QA.',
