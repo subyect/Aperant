@@ -15,12 +15,15 @@ import { streamText, stepCountIs } from 'ai';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { buildDefaultQueueConfig } from '../auth/resolver';
 import { createSimpleClient } from '../client/factory';
+import { resolveModelId } from '../config/phase-config';
 import { shouldUseOpenAIInstructions } from '../providers/openai-instructions';
 import { buildToolRegistry } from '../tools/build-registry';
 import type { ToolContext } from '../tools/types';
 import type { ModelShorthand, ThinkingLevel } from '../config/types';
 import type { SecurityProfile } from '../security/bash-validator';
+import type { ProviderAccount } from '../../../shared/types/provider-account';
 import { safeParseJson } from '../../utils/json-repair';
 import { parseLLMJson } from '../schema/structured-output';
 import { TaskSuggestionSchema } from '../schema/insight-extractor';
@@ -43,8 +46,8 @@ export interface InsightsConfig {
   message: string;
   /** Previous conversation history */
   history?: InsightsMessage[];
-  /** Model shorthand (defaults to 'sonnet') */
-  modelShorthand?: ModelShorthand;
+  /** Model shorthand or full model ID (defaults to 'sonnet') */
+  modelShorthand?: ModelShorthand | string;
   /** Thinking level (defaults to 'medium') */
   thinkingLevel?: ThinkingLevel;
   /** Abort signal for cancellation */
@@ -89,32 +92,88 @@ export type InsightsStreamEvent =
   | { type: 'error'; error: string };
 
 const MAX_TRANSIENT_STREAM_RETRIES = 2;
+const ERROR_DETAIL_KEYS = ['responseBody', 'body', 'error', 'detail', 'details', 'cause', 'statusText', 'message'];
 
-export function formatInsightsError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
-  if (error === null || error === undefined) return String(error);
+function redactSecrets(message: string): string {
+  return message
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, '[redacted-api-key]');
+}
 
-  if (typeof error === 'object') {
-    const record = error as Record<string, unknown>;
-    for (const key of ['message', 'error', 'statusText', 'responseBody', 'body']) {
-      const value = record[key];
-      if (typeof value === 'string' && value.trim()) return value;
-      if (value && typeof value === 'object') {
-        const nested = formatInsightsError(value);
-        if (nested && nested !== '[object Object]') return nested;
-      }
-    }
+function formatStringError(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
 
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
     try {
-      const json = JSON.stringify(error);
-      if (json && json !== '{}') return json.slice(0, 1200);
+      const parsed = JSON.parse(trimmed);
+      const nested = formatInsightsError(parsed);
+      if (nested && nested !== '[object Object]') return nested;
     } catch {
-      // Fall through to String below.
+      // Use the raw string below.
     }
   }
 
+  return redactSecrets(trimmed).slice(0, 1200);
+}
+
+function formatObjectError(error: Record<string, unknown>): string {
+  for (const key of ERROR_DETAIL_KEYS) {
+    const value = error[key];
+    if (typeof value === 'string') {
+      const formatted = formatStringError(value);
+      if (formatted) return formatted;
+    }
+    if (value && typeof value === 'object') {
+      const nested = formatInsightsError(value);
+      if (nested && nested !== '[object Object]') return nested;
+    }
+  }
+
+  try {
+    const json = JSON.stringify(error);
+    if (json && json !== '{}') return redactSecrets(json).slice(0, 1200);
+  } catch {
+    // Fall through to String below.
+  }
+
+  return '';
+}
+
+export function formatInsightsError(error: unknown): string {
+  if (typeof error === 'string') return formatStringError(error);
+  if (error === null || error === undefined) return String(error);
+
+  if (typeof error === 'object') {
+    const objectMessage = formatObjectError(error as Record<string, unknown>);
+    if (error instanceof Error) {
+      const baseMessage = formatStringError(error.message);
+      if (objectMessage && objectMessage !== baseMessage) {
+        return baseMessage && !objectMessage.includes(baseMessage)
+          ? `${baseMessage}: ${objectMessage}`
+          : objectMessage;
+      }
+      return baseMessage || error.name;
+    }
+    if (objectMessage) return objectMessage;
+  }
+
   return String(error);
+}
+
+function isSubscriptionAccount(account: ProviderAccount): boolean {
+  return account.billingModel === 'subscription' || account.authType === 'oauth';
+}
+
+function buildInsightsSubscriptionQueueConfig(modelShorthand: string) {
+  const queueConfig = buildDefaultQueueConfig(resolveModelId(modelShorthand));
+  if (!queueConfig) return undefined;
+
+  const subscriptionQueue = queueConfig.queue.filter(isSubscriptionAccount);
+  return {
+    ...queueConfig,
+    queue: subscriptionQueue,
+  };
 }
 
 function isRetryableInsightsError(errorMessage: string): boolean {
@@ -308,6 +367,7 @@ export async function runInsightsQuery(
     thinkingLevel,
     maxSteps: 30, // Allow sufficient turns for codebase exploration
     tools,
+    queueConfig: buildInsightsSubscriptionQueueConfig(modelShorthand),
   });
 
   const toolCalls: ToolCallInfo[] = [];

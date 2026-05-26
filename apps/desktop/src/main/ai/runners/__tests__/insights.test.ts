@@ -17,6 +17,12 @@ vi.mock('../../client/factory', () => ({
   createSimpleClient: (...args: unknown[]) => mockCreateSimpleClient(...args),
 }));
 
+const mockBuildDefaultQueueConfig = vi.fn();
+
+vi.mock('../../auth/resolver', () => ({
+  buildDefaultQueueConfig: (...args: unknown[]) => mockBuildDefaultQueueConfig(...args),
+}));
+
 // Filesystem mocks — project context files are absent by default
 const mockExistsSync = vi.fn().mockReturnValue(false);
 const mockReadFileSync = vi.fn();
@@ -104,6 +110,7 @@ describe('runInsightsQuery', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCreateSimpleClient.mockResolvedValue(makeMockClient());
+    mockBuildDefaultQueueConfig.mockReturnValue(undefined);
     mockExistsSync.mockReturnValue(false);
     mockReaddirSync.mockReturnValue([]);
     vi.mocked(parseLLMJson).mockReturnValue(null);
@@ -388,10 +395,24 @@ describe('runInsightsQuery', () => {
     );
   });
 
-  it('stringifies unknown object errors as a last resort', () => {
+  it('returns detail fields from object errors', () => {
     expect(formatInsightsError({ code: 'bad_request', detail: 'missing input' })).toBe(
-      '{"code":"bad_request","detail":"missing input"}',
+      'missing input',
     );
+  });
+
+  it('stringifies unknown object errors as a last resort', () => {
+    expect(formatInsightsError({ code: 'bad_request', reason: 'missing input' })).toBe(
+      '{"code":"bad_request","reason":"missing input"}',
+    );
+  });
+
+  it('keeps provider response details from Error objects', () => {
+    const error = Object.assign(new Error('Bad Request'), {
+      responseBody: '{"error":{"message":"model does not support tools"}}',
+    });
+
+    expect(formatInsightsError(error)).toBe('Bad Request: model does not support tools');
   });
 
   // ---------------------------------------------------------------------------
@@ -416,6 +437,59 @@ describe('runInsightsQuery', () => {
     const clientArgs = mockCreateSimpleClient.mock.calls[0][0];
     expect(clientArgs.modelShorthand).toBe('haiku');
     expect(clientArgs.thinkingLevel).toBe('low');
+  });
+
+  it('constrains insights chat to subscription accounts when a settings queue exists', async () => {
+    const subscriptionAccount = {
+      id: 'openai-sub',
+      provider: 'openai',
+      authType: 'oauth',
+      billingModel: 'subscription',
+      isActive: true,
+    };
+    const apiKeyAccount = {
+      id: 'openai-api',
+      provider: 'openai',
+      authType: 'api-key',
+      billingModel: 'pay-per-use',
+      isActive: true,
+    };
+    mockBuildDefaultQueueConfig.mockReturnValue({
+      requestedModel: 'gpt-5.3-codex',
+      queue: [apiKeyAccount, subscriptionAccount],
+    });
+    mockStreamText.mockReturnValue(makeStream([]));
+
+    await runInsightsQuery(baseConfig({ modelShorthand: 'gpt-5.3-codex' }));
+
+    const clientArgs = mockCreateSimpleClient.mock.calls[0][0];
+    expect(clientArgs.queueConfig).toEqual({
+      requestedModel: 'gpt-5.3-codex',
+      queue: [subscriptionAccount],
+    });
+  });
+
+  it('fails closed to an empty queue instead of falling back to API-key accounts', async () => {
+    const apiKeyAccount = {
+      id: 'openai-api',
+      provider: 'openai',
+      authType: 'api-key',
+      billingModel: 'pay-per-use',
+      isActive: true,
+    };
+    mockBuildDefaultQueueConfig.mockReturnValue({
+      requestedModel: 'gpt-5.3-codex',
+      queue: [apiKeyAccount],
+    });
+    mockStreamText.mockReturnValue(makeStream([]));
+
+    await runInsightsQuery(baseConfig({ modelShorthand: 'gpt-5.3-codex' }));
+
+    const clientArgs = mockCreateSimpleClient.mock.calls[0][0];
+    expect(clientArgs.queueConfig).toEqual({
+      requestedModel: 'gpt-5.3-codex',
+      queue: [],
+    });
   });
 
   // ---------------------------------------------------------------------------
