@@ -24,6 +24,7 @@ import { safeParseJson } from './utils/json-repair';
 import { getIsolatedGitEnv } from './utils/git-isolation';
 import { BASE_SYNC_RECOVERY_NOTE, BASE_SYNC_RECOVERY_SUBTASK_ID } from './agent/base-sync-recovery';
 import { getQaReportVerdictFromContent } from './agent/task-review-artifacts';
+import { findReachableTaskMergeEvidence, type TaskMergeEvidence } from './task-merge-evidence';
 import {
   applyRuntimePhaseState,
   checkSubtasksCompletion,
@@ -1042,17 +1043,31 @@ export class ProjectStore {
     }
 
     const doneGuard = doneStatusHasIncompleteSubtasks(plan as unknown as Record<string, unknown>);
+    const terminalStatus = finalStatus === 'done' || finalStatus === 'pr_created';
+    const planMergeEvidence = planHasMergeCompletionEvidence(plan as unknown as Record<string, unknown>);
+    const reachableMergeEvidence = terminalStatus
+      ? findReachableTaskMergeEvidence({
+        projectPath: basePath,
+        specId: taskName,
+        plan: plan as unknown as Record<string, unknown>,
+      })
+      : null;
+    const recordedMergeUnreachable = terminalStatus && this.hasUnreachableMergeCommit(plan as unknown as Record<string, unknown>, basePath);
     const missingMergeEvidence = (
-      finalStatus === 'done'
-      || finalStatus === 'pr_created'
-    ) && !planHasMergeCompletionEvidence(plan as unknown as Record<string, unknown>);
-    const unreachableMergeCommit = (
-      finalStatus === 'done'
-      || finalStatus === 'pr_created'
-    ) && this.hasUnreachableMergeCommit(plan as unknown as Record<string, unknown>, basePath);
+      terminalStatus
+    ) && !planMergeEvidence && !reachableMergeEvidence;
+    const unreachableMergeCommit = terminalStatus && recordedMergeUnreachable && !reachableMergeEvidence;
     const failedQaReport = this.hasFailedQaReportVerdict(planPath);
 
     if (!doneGuard.incomplete && !missingMergeEvidence && !unreachableMergeCommit && !failedQaReport) {
+      if (reachableMergeEvidence && (!planMergeEvidence || recordedMergeUnreachable)) {
+        this.persistRecoveredMergeEvidence(
+          plan as unknown as Record<string, unknown>,
+          planPath,
+          taskName,
+          reachableMergeEvidence
+        );
+      }
       const recoveryNote = (plan as unknown as { recoveryNote?: unknown }).recoveryNote;
       if (typeof recoveryNote === 'string' && /^Blocked terminal (event|phase|status)\b/.test(recoveryNote)) {
         const correctedPlan = plan as unknown as Record<string, unknown>;
@@ -1135,6 +1150,29 @@ export class ProjectStore {
     } catch (writeError) {
       console.error(`[ProjectStore] Failed to persist incomplete terminal correction for ${taskName}:`, writeError);
       return { status: finalStatus, reviewReason: finalReviewReason };
+    }
+  }
+
+  private persistRecoveredMergeEvidence(
+    plan: Record<string, unknown>,
+    planPath: string,
+    taskName: string,
+    evidence: TaskMergeEvidence
+  ): void {
+    plan.mergeCommit = evidence.commitSha;
+    plan.mergedAt = evidence.mergedAt;
+    if (
+      typeof plan.recoveryNote === 'string'
+      && /^Recovered terminal status\b/.test(plan.recoveryNote)
+    ) {
+      delete plan.recoveryNote;
+    }
+    plan.updated_at = new Date().toISOString();
+    try {
+      writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+      console.warn(`[ProjectStore] Recovered merge evidence for ${taskName} from ${evidence.source}.`);
+    } catch (writeError) {
+      console.error(`[ProjectStore] Failed to persist recovered merge evidence for ${taskName}:`, writeError);
     }
   }
 

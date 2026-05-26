@@ -42,6 +42,7 @@ import { getIsolatedGitEnv } from '../utils/git-isolation';
 import { cleanupWorktree } from '../utils/worktree-cleanup';
 import { writeFileAtomicSync } from '../utils/atomic-file';
 import { safeParseJson } from '../utils/json-repair';
+import { findReachableTaskMergeEvidence, type TaskMergeEvidence } from '../task-merge-evidence';
 import {
   checkSubtasksCompletion,
   clearResolvedRecoveryState,
@@ -2276,6 +2277,8 @@ export class AgentManager extends EventEmitter {
 
     const mergedFilePaths = orchestrator.getApplicableFilePaths(report);
     if (mergedFilePaths.length === 0) {
+      const alreadyMerged = await this.finalizeAlreadyMergedHumanReviewTask(project, task, worktreePath, 'Merge produced no files to apply');
+      if (alreadyMerged) return alreadyMerged;
       return { success: false, message: 'Merge produced no files to apply' };
     }
 
@@ -2285,6 +2288,8 @@ export class AgentManager extends EventEmitter {
 
     const stageableFilePaths = orchestrator.getStageableFilePaths(report);
     if (stageableFilePaths.length === 0) {
+      const alreadyMerged = await this.finalizeAlreadyMergedHumanReviewTask(project, task, worktreePath, 'Merge applied but produced no stageable file changes');
+      if (alreadyMerged) return alreadyMerged;
       return { success: false, message: 'Merge applied but produced no stageable file changes' };
     }
 
@@ -2300,6 +2305,8 @@ export class AgentManager extends EventEmitter {
       env: getIsolatedGitEnv(),
     }).trim();
     if (!stagedNames) {
+      const alreadyMerged = await this.finalizeAlreadyMergedHumanReviewTask(project, task, worktreePath, 'Merge applied but produced no staged changes');
+      if (alreadyMerged) return alreadyMerged;
       return { success: false, message: 'Merge applied but produced no staged changes' };
     }
 
@@ -2349,6 +2356,59 @@ export class AgentManager extends EventEmitter {
 
     projectStore.invalidateTasksCache(project.id);
     return { success: true, message: 'Merged successfully', commitSha };
+  }
+
+  private async finalizeAlreadyMergedHumanReviewTask(
+    project: Project,
+    task: Task,
+    worktreePath: string,
+    reason: string,
+  ): Promise<{ success: boolean; message: string; commitSha?: string } | null> {
+    const evidence = this.findExistingMergeEvidenceForTask(project, task);
+    if (!evidence) return null;
+
+    const specDir = path.join(project.path, getSpecsDir(project.autoBuildPath), task.specId);
+    const planPaths = [
+      path.join(specDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN),
+      path.join(worktreePath, getSpecsDir(project.autoBuildPath), task.specId, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN),
+    ];
+    for (const planPath of planPaths) {
+      if (existsSync(planPath)) updatePlanAfterAppMerge(planPath, 'done', 'completed', evidence.commitSha);
+    }
+
+    const cleanupResult = await cleanupWorktree({
+      worktreePath,
+      projectPath: project.path,
+      specId: task.specId,
+      logPrefix: '[AgentManager:auto-merge]',
+      deleteBranch: true,
+    });
+    if (!cleanupResult.success) {
+      console.warn(`[AgentManager] Already-merged cleanup for ${task.specId} reported warnings:`, cleanupResult.warnings);
+    }
+
+    projectStore.invalidateTasksCache(project.id);
+    return {
+      success: true,
+      message: `${reason}; existing reachable merge evidence found from ${evidence.source}`,
+      commitSha: evidence.commitSha,
+    };
+  }
+
+  private findExistingMergeEvidenceForTask(project: Project, task: Task): TaskMergeEvidence | null {
+    for (const plan of this.readHumanReviewPlanCandidates(project, task)) {
+      const evidence = findReachableTaskMergeEvidence({
+        projectPath: project.path,
+        specId: task.specId,
+        plan,
+      });
+      if (evidence) return evidence;
+    }
+
+    return findReachableTaskMergeEvidence({
+      projectPath: project.path,
+      specId: task.specId,
+    });
   }
 
   private pushMergedBaseBranch(project: Project, task: Task, baseBranch: string): { success: boolean; message: string } {
