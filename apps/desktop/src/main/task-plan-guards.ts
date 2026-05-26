@@ -67,6 +67,49 @@ export function planHasFailedTerminalEvent(plan: MutablePlan | null | undefined)
   return eventType === 'CODING_FAILED' || /^QA_(?:FAILED|AGENT_ERROR|MAX_ITERATIONS|FIX_FAILED|REJECTED)/.test(eventType);
 }
 
+const STALE_COMPLETION_EVENT_TYPES = new Set([
+  'ALL_SUBTASKS_DONE',
+  'QA_PASSED',
+  'HUMAN_REVIEW_COMPLETED',
+  'MERGED',
+  'MERGE_PUSH_FAILED',
+]);
+
+export function clearStaleCompletionMetadataForActivePlan(plan: MutablePlan | null | undefined): boolean {
+  if (!plan) return false;
+
+  const { totalCount, allCompleted } = checkSubtasksCompletion(plan);
+  const status = typeof plan.status === 'string' ? plan.status : '';
+  const executionPhase = typeof plan.executionPhase === 'string' ? plan.executionPhase : '';
+  const isIncomplete = totalCount > 0 && !allCompleted;
+  const isQueuedOrActive = status === 'queue'
+    || status === 'queued'
+    || status === 'in_progress'
+    || executionPhase === 'idle'
+    || executionPhase === 'queue'
+    || executionPhase === 'queued'
+    || executionPhase === 'coding'
+    || executionPhase === 'planning';
+
+  if (!isIncomplete && !isQueuedOrActive) return false;
+
+  let changed = false;
+  for (const key of ['final_acceptance', 'mergeCommit', 'mergedAt', 'qa_signoff', 'reviewReason'] as const) {
+    if (plan[key] !== undefined) {
+      delete plan[key];
+      changed = true;
+    }
+  }
+
+  const eventType = typeof plan.lastEvent?.type === 'string' ? plan.lastEvent.type : '';
+  if (plan.lastEvent !== undefined && ((isQueuedOrActive && status !== 'in_progress') || STALE_COMPLETION_EVENT_TYPES.has(eventType))) {
+    delete plan.lastEvent;
+    changed = true;
+  }
+
+  return changed;
+}
+
 export function completedSubtasksHaveBlockingErrors(plan: MutablePlan | null | undefined): boolean {
   const subtasks = Array.isArray(plan?.phases)
     ? plan.phases.flatMap((phase: MutablePlan) => Array.isArray(phase.subtasks) ? phase.subtasks : [])

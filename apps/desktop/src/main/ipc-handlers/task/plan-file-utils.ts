@@ -37,6 +37,7 @@ import {
   applyTaskEventRuntimeState,
   checkSubtasksCompletion,
   clearCompletedSubtaskDiagnostics,
+  clearStaleCompletionMetadataForActivePlan,
   copyRuntimeStateFromSourcePlan,
   createApprovedQASignoffFromReport,
   doneStatusHasIncompleteSubtasks,
@@ -1454,6 +1455,7 @@ export async function repairFalseCompletedSubtasks(
 
       const { allSubtasks, completedCount, totalCount } = checkSubtasksCompletion(plan);
       if (totalCount === 0) return { success: true, resetCount: 0 };
+      const cleanedTerminalMetadata = clearStaleCompletionMetadataForActivePlan(plan);
       if (completedCount === 0) {
         const prunedStaleRecovery = removeStaleQaRecoverySubtasks(plan);
         const syncedFeedbackVerifiers = syncHumanFeedbackVerifierSubtasks(allSubtasks as Record<string, unknown>[]);
@@ -1475,6 +1477,10 @@ export async function repairFalseCompletedSubtasks(
             : prunedStaleRecovery
               ? `Cleared empty stale QA recovery phase for reopened pending subtasks at ${new Date().toISOString()}`
               : `Recovered human-feedback verifier command for pending subtasks at ${new Date().toISOString()}`;
+          plan.updated_at = new Date().toISOString();
+          writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+          if (projectId) projectStore.invalidateTasksCache(projectId);
+        } else if (cleanedTerminalMetadata) {
           plan.updated_at = new Date().toISOString();
           writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
           if (projectId) projectStore.invalidateTasksCache(projectId);
@@ -1540,6 +1546,10 @@ export async function repairFalseCompletedSubtasks(
       plan.executionPhase = 'coding';
       delete plan.reviewReason;
       delete plan.qa_signoff;
+      delete plan.final_acceptance;
+      delete plan.mergeCommit;
+      delete plan.mergedAt;
+      delete plan.lastEvent;
       clearStaleQaRecoveryForPendingPlan(plan, allSubtasks as Record<string, unknown>[], path.dirname(planPath));
       plan.recoveryNote = resetReason === 'invalid-auto-completion'
         ? `Reset ${resetCount} invalid auto-completed subtask(s) at ${new Date().toISOString()}`

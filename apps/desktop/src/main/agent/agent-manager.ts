@@ -45,6 +45,7 @@ import { safeParseJson } from '../utils/json-repair';
 import { findReachableTaskMergeEvidence, type TaskMergeEvidence } from '../task-merge-evidence';
 import {
   checkSubtasksCompletion,
+  clearStaleCompletionMetadataForActivePlan,
   clearResolvedRecoveryState,
   hasResolvedRecoverySubtasks,
 } from '../task-plan-guards';
@@ -1327,6 +1328,9 @@ export class AgentManager extends EventEmitter {
           delete plan.qa_signoff;
           delete plan.final_acceptance;
           delete plan.lastEvent;
+        }
+        if (status === 'queue' || status === 'in_progress') {
+          clearStaleCompletionMetadataForActivePlan(plan);
         }
         const hasResolvedRecovery = hasResolvedRecoverySubtasks(plan);
         clearResolvedRecoveryState(plan);
