@@ -110,6 +110,14 @@ describe('createOrGetWorktree local env sync', () => {
         false,
       );
 
+      const worktreePlan = join(
+        first.worktreePath,
+        '.auto-claude/specs',
+        specId,
+        'implementation_plan.json',
+      );
+      expect(readFileSync(worktreePlan, 'utf8')).toContain('"phases"');
+
       const worktreeFixRequest = join(
         first.worktreePath,
         '.auto-claude/specs',

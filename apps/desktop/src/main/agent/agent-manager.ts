@@ -954,6 +954,17 @@ export class AgentManager extends EventEmitter {
       return this.confirmRecoveredWorkerStarted(project, task, 'coding recovery');
     } catch (error) {
       console.warn(`[AgentManager] Startup recovery could not resume ${task.specId}:`, error);
+      if (!this.isRunning(task.id)) {
+        this.persistRuntimeState(
+          project,
+          task,
+          'queue',
+          'queued',
+          'queue',
+          'idle',
+          `Startup recovery could not launch ${task.specId}; queued for retry: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
       return false;
     }
   }

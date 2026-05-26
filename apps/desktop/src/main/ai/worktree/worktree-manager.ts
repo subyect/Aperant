@@ -415,8 +415,16 @@ async function syncSpecDirectoryIntoWorktree(
       await cp(sourceSpecDir, destSpecDir, { recursive: true });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(
-        `[WorktreeManager] Warning: Could not copy spec directory to worktree: ${message}`,
+      throw new Error(
+        `[WorktreeManager] Could not copy spec directory to worktree for ${specId}: ${message}`,
+      );
+    }
+
+    const sourcePlanPath = join(sourceSpecDir, 'implementation_plan.json');
+    const destPlanPath = join(destSpecDir, 'implementation_plan.json');
+    if (existsSync(sourcePlanPath) && !existsSync(destPlanPath)) {
+      throw new Error(
+        `[WorktreeManager] Spec directory copy for ${specId} did not produce implementation_plan.json in the worktree`,
       );
     }
     return;

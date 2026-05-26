@@ -293,6 +293,10 @@ describe('plan-file runtime guards', () => {
       xstateState: 'done',
       executionPhase: 'complete',
       qa_signoff: { status: 'approved', issues_found: [] },
+      final_acceptance: { status: 'accepted' },
+      mergeCommit: 'abc123',
+      mergedAt: '2026-05-26T10:30:00.000Z',
+      lastEvent: { type: 'QA_PASSED', timestamp: '2026-05-26T10:29:00.000Z' },
       phases: [
         {
           name: 'Implementation',
@@ -341,6 +345,10 @@ describe('plan-file runtime guards', () => {
     expect(plan.status).toBe('in_progress');
     expect(plan.executionPhase).toBe('coding');
     expect(plan.qa_signoff).toBeUndefined();
+    expect(plan.final_acceptance).toBeUndefined();
+    expect(plan.mergeCommit).toBeUndefined();
+    expect(plan.mergedAt).toBeUndefined();
+    expect(plan.lastEvent).toBeUndefined();
     expect(reworkSubtask.status).toBe('pending');
     expect(reworkSubtask.verification).toEqual({
       type: 'command',

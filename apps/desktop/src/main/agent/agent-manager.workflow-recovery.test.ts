@@ -415,6 +415,65 @@ describe('AgentManager workflow recovery', () => {
     expect(persisted.recoveryNote).toContain('no live worker was registered');
   });
 
+  it('queues recovered in-progress tasks when worker launch throws before registration', async () => {
+    writeFileSync(planPath, JSON.stringify({
+      feature: 'Task',
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      phases: [
+        {
+          id: 'phase-1',
+          name: 'Implementation',
+          subtasks: [
+            { id: '1', title: 'Pending', status: 'pending' },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const project = {
+      id: 'project-1',
+      path: projectPath,
+      autoBuildPath: '.auto-claude',
+      settings: { maxParallelTasks: 3, mainBranch: 'main' },
+    };
+    const task = {
+      id: 'task-id-1',
+      specId: 'task-001',
+      title: 'Task',
+      description: 'Task',
+      status: 'in_progress',
+      updatedAt: new Date('2026-05-26T10:00:00.000Z'),
+      metadata: {},
+      subtasks: [{ id: '1', title: 'Pending', status: 'pending' }],
+    };
+
+    projectStoreMock.getProjects.mockReturnValue([project]);
+    projectStoreMock.getTasks.mockReturnValue([task]);
+
+    const manager = new AgentManager();
+    vi.spyOn(manager as unknown as { startTaskExecution: (...args: unknown[]) => Promise<void> }, 'startTaskExecution')
+      .mockRejectedValue(new Error('worktree spec copy failed'));
+
+    await manager.runWorkflowRecoveryPass('test');
+
+    const persisted = JSON.parse(readFileSync(planPath, 'utf-8')) as {
+      status?: string;
+      planStatus?: string;
+      xstateState?: string;
+      executionPhase?: string;
+      recoveryNote?: string;
+    };
+    expect(persisted.status).toBe('queue');
+    expect(persisted.planStatus).toBe('queued');
+    expect(persisted.xstateState).toBe('queue');
+    expect(persisted.executionPhase).toBe('idle');
+    expect(persisted.recoveryNote).toContain('queued for retry');
+    expect(persisted.recoveryNote).toContain('worktree spec copy failed');
+  });
+
   it('clears exited worker handles before enforcing project capacity', async () => {
     writeFileSync(planPath, JSON.stringify({
       feature: 'Task',

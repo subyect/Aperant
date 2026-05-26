@@ -1333,6 +1333,10 @@ function resetInvalidAutoCompletedSubtasks(plan: Record<string, unknown>, allSub
     plan.executionPhase = 'coding';
     delete plan.reviewReason;
     delete plan.qa_signoff;
+    delete plan.final_acceptance;
+    delete plan.mergeCommit;
+    delete plan.mergedAt;
+    delete plan.lastEvent;
     plan.recoveryNote = `Reset ${resetCount} invalid auto-completed subtask(s) at ${new Date().toISOString()}`;
   }
 
