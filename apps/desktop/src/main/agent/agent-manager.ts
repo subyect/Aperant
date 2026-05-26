@@ -1307,18 +1307,6 @@ export class AgentManager extends EventEmitter {
     const recoverySubtaskId = 'aperant-qa-report-failure';
     const fallbackFailureContent = this.collectQaFailureFallback(project, task, reportPath);
     const reportExcerpt = normalizeQaFailureEvidenceContent(reportContent, fallbackFailureContent).slice(0, 8000);
-    const recoveryDescription = [
-      'Resolve the failed QA report and return this task to a passing review state.',
-      '',
-      `QA report source: ${reportPath}`,
-      '',
-      'Failed QA report:',
-      '```markdown',
-      reportExcerpt || '(empty qa_report.md)',
-      '```',
-      '',
-      'Do not mark this subtask complete until the reported issues are addressed, focused verification is recorded, and the next QA run can pass.',
-    ].join('\n');
     let persisted = false;
 
     for (const planPath of getPlanPathsForSpec(project, task.specId)) {
@@ -1341,6 +1329,25 @@ export class AgentManager extends EventEmitter {
           phases.push(phase);
         }
 
+        const specDir = path.dirname(planPath);
+        const fixRequestPath = path.join(specDir, 'QA_FIX_REQUEST.md');
+        const recoveryDescription = [
+          'Resolve the failed QA report and return this task to a passing review state.',
+          '',
+          `QA evidence source: ${reportPath}`,
+          `Active fix request: ${fixRequestPath}`,
+          '',
+          'Read QA_FIX_REQUEST.md first. Read qa_report.md only if it exists in this spec directory.',
+          '',
+          'Failed QA report:',
+          '```markdown',
+          reportExcerpt || '(empty qa_report.md)',
+          '```',
+          '',
+          'Do not mark this subtask complete until the reported issues are addressed, focused verification is recorded, and the next QA run can pass.',
+        ].join('\n');
+        const recoveryVerification = 'Read QA_FIX_REQUEST.md first, run focused verification for the reported failures, then rerun QA.';
+
         const subtasks = Array.isArray(phase.subtasks) ? phase.subtasks : [];
         let recoverySubtask = subtasks.find((subtask: Record<string, any>) => subtask?.id === recoverySubtaskId);
         if (!recoverySubtask) {
@@ -1351,7 +1358,7 @@ export class AgentManager extends EventEmitter {
             status: 'pending',
             verification: {
               type: 'command',
-              run: 'Run the focused verification named in qa_report.md, then rerun QA.',
+              run: recoveryVerification,
             },
           };
           subtasks.push(recoverySubtask);
@@ -1369,7 +1376,7 @@ export class AgentManager extends EventEmitter {
           delete recoverySubtask.last_attempt_at;
           recoverySubtask.verification = {
             type: 'command',
-            run: 'Run the focused verification named in qa_report.md, then rerun QA.',
+            run: recoveryVerification,
           };
         }
 
@@ -1397,10 +1404,9 @@ export class AgentManager extends EventEmitter {
         delete plan.qa_signoff;
         delete plan.final_acceptance;
 
-        const specDir = path.dirname(planPath);
         writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
         writeFileAtomicSync(
-          path.join(specDir, 'QA_FIX_REQUEST.md'),
+          fixRequestPath,
           buildQaFixRequestContent(reportExcerpt, now, fallbackFailureContent),
         );
         persisted = true;

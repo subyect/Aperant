@@ -376,7 +376,7 @@ export async function generateSubtaskPrompt(config: SubtaskPromptConfig): Promis
     sections.push(
       `\n## APERANT RECOVERY SUBTASK\n\n` +
       `This subtask exists because the workflow already failed once. The failure text is the implementation target, not a reason to stop. ` +
-      `Read QA_FIX_REQUEST.md, qa_report.md, implementation_plan.json, and the current git diff before acting. ` +
+      `Read QA_FIX_REQUEST.md first, then read qa_report.md only if it exists, plus implementation_plan.json and the current git diff before acting. ` +
       `Do not complete this subtask after only reading files or rerunning the same failing command. ` +
       `If verification exposes repo-local failures such as unresolved imports, failed assertions, TypeScript errors, stale generated files, or missing workspace packages, fix those failures in this worktree immediately. ` +
       `Package-resolution, typecheck, test-harness, and generated-dist failures inside this repository are in scope for this recovery subtask even when the original subtask was narrower. ` +

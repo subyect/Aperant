@@ -219,7 +219,7 @@ describe('AgentManager workflow recovery', () => {
       status?: string;
       xstateState?: string;
       executionPhase?: string;
-      phases?: Array<{ subtasks?: Array<{ id?: string; status?: string }> }>;
+      phases?: Array<{ subtasks?: Array<{ id?: string; status?: string; description?: string; verification?: { run?: string } }> }>;
     };
     const recoverySubtask = persisted.phases
       ?.flatMap((phase) => phase.subtasks ?? [])
@@ -228,6 +228,9 @@ describe('AgentManager workflow recovery', () => {
     expect(persisted.xstateState).toBe('coding');
     expect(persisted.executionPhase).toBe('coding');
     expect(recoverySubtask?.status).toBe('pending');
+    expect(recoverySubtask?.description).toContain('Active fix request:');
+    expect(recoverySubtask?.description).toContain('Read QA_FIX_REQUEST.md first');
+    expect(recoverySubtask?.verification?.run).toContain('Read QA_FIX_REQUEST.md first');
   });
 
   it('clears exited worker handles before enforcing project capacity', async () => {

@@ -126,6 +126,7 @@ describe('generateSubtaskPrompt', () => {
 
       expect(prompt).toContain('Fix the local layer1-db query-helper module resolution failure.');
       expect(prompt).not.toContain('## Failed QA Report\n\n```markdown\n# QA Fix Request');
+      expect(prompt).toContain('Read QA_FIX_REQUEST.md first, then read qa_report.md only if it exists');
 
       const normalizedFile = await readFile(join(specDir, 'QA_FIX_REQUEST.md'), 'utf-8');
       expect(normalizedFile.match(/^# QA Fix Request/gm)).toHaveLength(1);
