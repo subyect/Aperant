@@ -487,6 +487,7 @@ export class BuildOrchestrator extends EventEmitter {
       onSubtaskStuck: (subtask, reason) => {
         this.emitTyped('log', `Subtask ${subtask.id} stuck: ${reason}`);
       },
+      extractInsights: true,
     };
 
     const iteratorResult = await iterateSubtasks(iteratorConfig);

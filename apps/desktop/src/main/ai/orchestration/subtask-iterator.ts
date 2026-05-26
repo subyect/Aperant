@@ -7,7 +7,7 @@
  * the coder agent session, and tracks completion/retry/stuck state.
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { safeParseJson } from '../../utils/json-repair';
@@ -333,8 +333,10 @@ export async function iterateSubtasks(
     // Extract insights only when the plan itself proves completion. A finished
     // session, max_steps, or context_window is not proof that the subtask is done.
     if (subtaskCompleted && config.extractInsights) {
-      extractInsightsAfterSession(config, subtask, result).then((insights) => {
-        if (insights) config.onInsightsExtracted?.(subtask.id, insights);
+      extractInsightsAfterSession(config, subtask, result).then(async (insights) => {
+        if (!insights) return;
+        await persistSessionInsights(config, subtask, insights);
+        config.onInsightsExtracted?.(subtask.id, insights);
       }).catch(() => { /* insight extraction is non-blocking */ });
     }
 
@@ -1090,6 +1092,32 @@ async function extractInsightsAfterSession(
   } catch {
     return null;
   }
+}
+
+async function persistSessionInsights(
+  config: SubtaskIteratorConfig,
+  subtask: PlanSubtask,
+  insights: ExtractedInsights,
+): Promise<void> {
+  const capturedAt = new Date().toISOString();
+  const safeSubtaskId = subtask.id.replace(/[^a-zA-Z0-9._-]/g, '-');
+  const fileName = `${Date.now()}-${safeSubtaskId}.json`;
+  const payload = {
+    ...insights,
+    subtask_description: subtask.description,
+    captured_at: capturedAt,
+  };
+
+  const targetDirs = [config.specDir];
+  if (config.sourceSpecDir && config.sourceSpecDir !== config.specDir) {
+    targetDirs.push(config.sourceSpecDir);
+  }
+
+  await Promise.all(targetDirs.map(async (specDir) => {
+    const outDir = join(specDir, 'memory', 'session_insights');
+    await mkdir(outDir, { recursive: true });
+    await writeFile(join(outDir, fileName), JSON.stringify(payload, null, 2), 'utf-8');
+  }));
 }
 
 // =============================================================================
