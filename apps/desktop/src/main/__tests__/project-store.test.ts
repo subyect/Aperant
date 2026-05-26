@@ -368,6 +368,73 @@ describe('ProjectStore', () => {
       expect(tasks[0].specId).toBe('001-test-feature');
       expect(tasks[0].subtasks).toHaveLength(2);
       expect(tasks[0].status).toBe('in_progress'); // Some completed, some pending
+      expect(tasks[0].description).toBe('This is a test feature description.');
+    });
+
+    it('uses numbered Goal sections as task overview fallback', async () => {
+      const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '001-goal-description');
+      mkdirSync(specsDir, { recursive: true });
+      writeFileSync(path.join(specsDir, 'implementation_plan.json'), JSON.stringify({
+        feature: 'Goal Description',
+        workflow_type: 'feature',
+        services_involved: [],
+        status: 'in_progress',
+        phases: [],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+        spec_file: 'spec.md',
+      }));
+      writeFileSync(path.join(specsDir, 'spec.md'), [
+        '# Goal Description',
+        '',
+        '## 1) Goal',
+        '',
+        'Use this goal text in the task overview.',
+        '',
+        '## 2) Scope',
+        '',
+        'Scope details.',
+      ].join('\n'));
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+
+      expect(tasks[0].description).toBe('Use this goal text in the task overview.');
+    });
+
+    it('uses the introductory paragraph after the spec title as task overview fallback', async () => {
+      const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '001-intro-description');
+      mkdirSync(specsDir, { recursive: true });
+      writeFileSync(path.join(specsDir, 'implementation_plan.json'), JSON.stringify({
+        feature: 'Intro Description',
+        workflow_type: 'feature',
+        services_involved: [],
+        status: 'in_progress',
+        phases: [],
+        final_acceptance: [],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+        spec_file: 'spec.md',
+      }));
+      writeFileSync(path.join(specsDir, 'spec.md'), [
+        '# Intro Description',
+        '',
+        'Use this intro paragraph in the task overview.',
+        '',
+        '## Rationale',
+        '',
+        'Rationale details.',
+      ].join('\n'));
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+
+      expect(tasks[0].description).toBe('Use this intro paragraph in the task overview.');
     });
 
     it('should determine status as backlog when no subtasks completed', async () => {

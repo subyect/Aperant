@@ -398,6 +398,23 @@ export class ProjectStore {
     return tasks;
   }
 
+  private extractSpecDescription(content: string): string {
+    const withoutTitle = content.replace(/^#\s+.*(?:\r?\n|$)/, '').trim();
+    const introMatch = withoutTitle.match(/^([\s\S]*?)(?=\n#{1,6}\s|$)/);
+    if (introMatch?.[1]?.trim() && !introMatch[1].trim().startsWith('#')) {
+      return introMatch[1].trim();
+    }
+
+    const preferredSection = content.match(
+      /^##\s+(?:\d+[.)]\s*)?(?:Overview|Goal|Rationale|Summary|Revised Specification)\b[^\n]*\n+([\s\S]*?)(?=\n#{1,6}\s|$)/im
+    );
+    if (preferredSection?.[1]?.trim()) {
+      return preferredSection[1].trim();
+    }
+
+    return '';
+  }
+
   private mergeTaskDisplayFields(selected: Task, sibling: Task): Task {
     const selectedDescription = selected.description?.trim() ?? '';
     const siblingDescription = sibling.description?.trim() ?? '';
@@ -642,17 +659,11 @@ export class ProjectStore {
           description = plan.description;
         }
 
-        // PRIORITY 3: Final fallback to spec.md Overview (AI-synthesized content)
+        // PRIORITY 3: Final fallback to spec.md summary content.
         if (!description && existsSync(specFilePath)) {
           try {
             const content = readFileSync(specFilePath, 'utf-8');
-            // Extract full Overview section until next heading or end of file
-            // Use \n#{1,6}\s to match valid markdown headings (# to ######) with required space
-            // This avoids truncating at # in code blocks (e.g., Python comments)
-            const overviewMatch = content.match(/## Overview\s*\n+([\s\S]*?)(?=\n#{1,6}\s|$)/);
-            if (overviewMatch) {
-              description = overviewMatch[1].trim();
-            }
+            description = this.extractSpecDescription(content);
           } catch {
             // Ignore read errors
           }
