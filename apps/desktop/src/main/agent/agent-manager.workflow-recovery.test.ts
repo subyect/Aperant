@@ -69,7 +69,16 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { AgentManager } from './agent-manager';
+import { AgentManager, isZombieProcessStat } from './agent-manager';
+
+describe('process liveness helpers', () => {
+  it('treats zombie ps stat values as not live', () => {
+    expect(isZombieProcessStat('Z')).toBe(true);
+    expect(isZombieProcessStat('Z+')).toBe(true);
+    expect(isZombieProcessStat('R')).toBe(false);
+    expect(isZombieProcessStat('Ss')).toBe(false);
+  });
+});
 
 describe('AgentManager workflow recovery', () => {
   let rootDir: string;

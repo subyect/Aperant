@@ -74,6 +74,10 @@ const STALE_WORKER_ACTIVITY_MS: Record<ProcessType, number> = {
   'qa-process': 15 * 60_000,
 };
 
+export function isZombieProcessStat(stat: string): boolean {
+  return stat.trim().startsWith('Z');
+}
+
 const APERANT_WORKFLOW_GUARD = `
 
 Aperant workflow guard:
@@ -571,6 +575,17 @@ export class AgentManager extends EventEmitter {
 
   private isPidAlive(pid: number): boolean {
     try {
+      if (process.platform !== 'win32') {
+        try {
+          const stat = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+          }).trim();
+          if (stat && isZombieProcessStat(stat)) return false;
+        } catch {
+          // Fall back to kill(0); ps can fail for races or unsupported flags.
+        }
+      }
       process.kill(pid, 0);
       return true;
     } catch (error) {
