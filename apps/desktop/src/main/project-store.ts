@@ -990,6 +990,7 @@ export class ProjectStore {
     const allCompleted = completedCount === subtasks.length;
     const qaReportApproved = this.hasApprovedQaReportVerdict(planPath);
     const qaApproved = qaReportApproved;
+    const incompleteWorkflowStatus = finalStatus === 'backlog' || finalStatus === 'queue' || finalStatus === 'in_progress';
 
     if (allCompleted && qaApproved && finalStatus !== 'done' && finalStatus !== 'pr_created' && plan) {
       const mergeEvidence = findReachableTaskMergeEvidence({
@@ -1034,6 +1035,49 @@ export class ProjectStore {
           console.error(`[ProjectStore] Failed to persist merged done recovery for ${taskName}:`, writeError);
           return { status: finalStatus, reviewReason: finalReviewReason };
         }
+      }
+    }
+
+    if (allCompleted && !qaApproved && incompleteWorkflowStatus && plan) {
+      if (plan.updated_at) {
+        const updatedAt = new Date(plan.updated_at).getTime();
+        const ageMs = Date.now() - updatedAt;
+        if (ageMs < 30_000) {
+          return { status: finalStatus, reviewReason: finalReviewReason };
+        }
+      }
+
+      const correctedPlan = plan as unknown as Record<string, unknown>;
+      if (Array.isArray(correctedPlan.phases)) {
+        for (const phase of correctedPlan.phases as Array<{ status?: string; subtasks?: Array<{ status?: string }> }>) {
+          if (Array.isArray(phase.subtasks) && phase.subtasks.length > 0 && phase.subtasks.every((subtask) => subtask.status === 'completed')) {
+            phase.status = 'completed';
+          }
+        }
+      }
+      correctedPlan.status = 'ai_review';
+      correctedPlan.planStatus = 'review';
+      correctedPlan.xstateState = 'qa_review';
+      correctedPlan.executionPhase = 'qa_review';
+      correctedPlan.lastEvent = {
+        type: 'ALL_SUBTASKS_DONE',
+        timestamp: new Date().toISOString(),
+        source: 'project-store-completed-subtasks-recovery',
+      };
+      correctedPlan.recoveryNote = `Recovered completed subtask state for ${taskName}: all ${completedCount}/${subtasks.length} subtasks are complete but QA has not passed; routing to AI review.`;
+      delete correctedPlan.reviewReason;
+      delete correctedPlan.qa_signoff;
+      delete correctedPlan.final_acceptance;
+      correctedPlan.updated_at = new Date().toISOString();
+
+      try {
+        writeFileAtomicSync(planPath, JSON.stringify(correctedPlan, null, 2));
+        Object.assign(plan, correctedPlan);
+        console.warn(`[ProjectStore] Routed completed task ${taskName} to AI review because QA has not passed.`);
+        return { status: 'ai_review', reviewReason: undefined };
+      } catch (writeError) {
+        console.error(`[ProjectStore] Failed to persist AI review recovery for ${taskName}:`, writeError);
+        return { status: finalStatus, reviewReason: finalReviewReason };
       }
     }
 

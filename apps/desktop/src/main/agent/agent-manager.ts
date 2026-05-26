@@ -238,7 +238,7 @@ export class AgentManager extends EventEmitter {
     });
 
     // Listen for task completion to clean up context (prevent memory leak)
-    this.on('exit', (taskId: string, code: number | null, _processType?: string, _projectId?: string) => {
+    this.on('exit', (taskId: string, code: number | null, processType?: string, _projectId?: string) => {
       // Clean up context when:
       // 1. Task completed successfully (code === 0), or
       // 2. Task failed and won't be restarted (handled by auto-swap logic)
@@ -275,6 +275,14 @@ export class AgentManager extends EventEmitter {
         }
         // Otherwise keep context for potential restart
       }, 1000); // Delay to allow restart logic to run first
+
+      if (processType === 'task-execution' || processType === 'qa-process' || processType === 'spec-creation') {
+        setTimeout(() => {
+          this.runWorkflowRecoveryPass(`worker-exit:${processType}`).catch((error) => {
+            console.warn('[AgentManager] Worker-exit workflow recovery failed:', error);
+          });
+        }, 1500);
+      }
     });
   }
 

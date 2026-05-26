@@ -117,7 +117,21 @@ describe('AgentManager workflow recovery', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  it('runs a workflow recovery pass after a worker exits', async () => {
+    vi.useFakeTimers();
+    const manager = new AgentManager();
+    const recoverySpy = vi
+      .spyOn(manager, 'runWorkflowRecoveryPass')
+      .mockResolvedValue(undefined);
+
+    manager.emit('exit', 'task-id-1', 0, 'task-execution', 'project-1');
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recoverySpy).toHaveBeenCalledWith('worker-exit:task-execution');
   });
 
   it('reroutes completed in-progress tasks to QA instead of restarting coding', async () => {

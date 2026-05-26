@@ -1132,6 +1132,45 @@ describe('ProjectStore', () => {
       expect(persistedPlan.recoveryNote).toContain('Recovered done status');
     });
 
+    it('routes all-completed queued tasks without QA approval to AI review', async () => {
+      const specRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');
+      const specId = '006-complete-no-qa';
+      writeSpec(
+        specRoot,
+        specId,
+        {
+          ...makePlan({
+            feature: 'Complete Without QA',
+            status: 'queue',
+            subtaskStatuses: ['completed', 'completed'],
+            updatedAt: '2024-01-01T00:00:00Z',
+          }),
+          planStatus: 'queued',
+          xstateState: 'queue',
+          executionPhase: 'idle',
+        },
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const task = tasks.find((candidate) => candidate.specId === specId);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(specRoot, specId, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(task?.status).toBe('ai_review');
+      expect(persistedPlan.status).toBe('ai_review');
+      expect(persistedPlan.planStatus).toBe('review');
+      expect(persistedPlan.xstateState).toBe('qa_review');
+      expect(persistedPlan.executionPhase).toBe('qa_review');
+      expect(persistedPlan.lastEvent.type).toBe('ALL_SUBTASKS_DONE');
+      expect(persistedPlan.recoveryNote).toContain('QA has not passed');
+    });
+
     it('reopens terminal done tasks when qa_report.md has a failed verdict', async () => {
       const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '006-done-failed-qa-report');
       mkdirSync(specsDir, { recursive: true });
