@@ -438,6 +438,45 @@ describe('plan-file runtime guards', () => {
     expect(plan.lastEvent).toBeUndefined();
   });
 
+  it('persists stale terminal metadata cleanup for partially completed queued plans with repo changes', async () => {
+    execFileSync('/usr/bin/git', ['init'], { cwd: tempDir, stdio: 'ignore' });
+    writeFileSync(path.join(tempDir, 'project-change.ts'), 'export const changed = true;\n');
+    writeFileSync(planPath, JSON.stringify({
+      status: 'queue',
+      planStatus: 'queued',
+      xstateState: 'queue',
+      executionPhase: 'idle',
+      lastEvent: { type: 'ALL_SUBTASKS_DONE', timestamp: '2026-05-26T10:00:00.000Z' },
+      qa_signoff: { status: 'approved' },
+      final_acceptance: { status: 'accepted' },
+      mergeCommit: 'abc123',
+      mergedAt: '2026-05-26T10:30:00.000Z',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            { id: 'P1-S1', status: 'completed' },
+            { id: 'P1-S2', status: 'pending' },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const result = await repairFalseCompletedSubtasks(planPath, tempDir, 'example', 'project-1');
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+
+    expect(result).toEqual({ success: true, resetCount: 0 });
+    expect(plan.status).toBe('queue');
+    expect(plan.planStatus).toBe('queued');
+    expect(plan.phases[0].subtasks[0].status).toBe('completed');
+    expect(plan.phases[0].subtasks[1].status).toBe('pending');
+    expect(plan.qa_signoff).toBeUndefined();
+    expect(plan.final_acceptance).toBeUndefined();
+    expect(plan.mergeCommit).toBeUndefined();
+    expect(plan.mergedAt).toBeUndefined();
+    expect(plan.lastEvent).toBeUndefined();
+  });
+
   it('clears stale QA recovery artifacts from already reopened pending plans', async () => {
     writeFileSync(path.join(tempDir, 'QA_FIX_REQUEST.md'), '# stale QA');
     writeFileSync(path.join(tempDir, 'qa_report.md'), '# stale report');

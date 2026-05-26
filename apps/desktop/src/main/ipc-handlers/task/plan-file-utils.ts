@@ -1509,6 +1509,12 @@ export async function repairFalseCompletedSubtasks(
         if (projectId) projectStore.invalidateTasksCache(projectId);
       }
 
+      if (cleanedTerminalMetadata) {
+        plan.updated_at = new Date().toISOString();
+        writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+        if (projectId) projectStore.invalidateTasksCache(projectId);
+      }
+
       if (isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined) || plan.status === 'done' || plan.status === 'pr_created') {
         return { success: true, resetCount: 0 };
       }
