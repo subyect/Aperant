@@ -96,11 +96,35 @@ function postMessage(message: WorkerMessage): void {
   process.send?.(message);
 }
 
+function defaultLogPhase(): Phase {
+  switch (config.session.agentType) {
+    case 'spec_orchestrator':
+      return 'spec';
+    case 'qa_reviewer':
+      return 'qa';
+    case 'build_orchestrator':
+      return 'coding';
+    default:
+      return config.session.phase ?? 'coding';
+  }
+}
+
+function writeWorkerLog(data: string, entryType: 'text' | 'error' = 'text'): void {
+  if (!logWriter) return;
+  try {
+    logWriter.logText(data, defaultLogPhase(), entryType);
+  } catch {
+    // Logging is best-effort; worker execution should surface the original result.
+  }
+}
+
 function postLog(data: string): void {
+  writeWorkerLog(data);
   postMessage({ type: 'log', taskId: config.taskId, data, projectId: config.projectId });
 }
 
 function postError(data: string): void {
+  writeWorkerLog(data, 'error');
   postMessage({ type: 'error', taskId: config.taskId, data, projectId: config.projectId });
 }
 
@@ -123,6 +147,13 @@ function postTaskEvent(eventType: string, extra?: Record<string, unknown>): void
 }
 
 function postFailureResult(message: string): void {
+  writeWorkerLog(`Agent failed before completing the session: ${message}`, 'error');
+  try {
+    logWriter?.flush();
+  } catch {
+    // Best-effort failure evidence write.
+  }
+
   postMessage({
     type: 'result',
     taskId: config.taskId,
