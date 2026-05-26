@@ -213,6 +213,7 @@ export async function iterateSubtasks(
     config.onSubtaskStart?.(subtaskInfo, currentAttempt);
 
     await cleanupStaleForegroundCommands(config.specDir);
+    const changedFilesBeforeSession = await collectChangedProjectFiles(config.projectDir);
 
     // Run the session
     const result = await config.runSubtaskSession(subtaskInfo, currentAttempt);
@@ -298,6 +299,7 @@ export async function iterateSubtasks(
       const unprovenCompletionReason = await buildUnprovenCompletionRetryReason(
         config.projectDir,
         result,
+        changedFilesBeforeSession,
       );
       if (unprovenCompletionReason) {
         subtaskCompleted = false;
@@ -460,11 +462,12 @@ function buildRetryReason(
 async function buildUnprovenCompletionRetryReason(
   projectDir: string,
   result: SessionResult,
+  changedFilesBeforeSession: string[],
 ): Promise<string | null> {
   if (hasConcreteCompletionEvidence(result)) return null;
 
   const changedFiles = await collectChangedProjectFiles(projectDir);
-  if (changedFiles.length > 0) return null;
+  if (hasNewChangedProjectFile(changedFilesBeforeSession, changedFiles)) return null;
 
   const finalMessage = getLastAssistantMessage(result);
   if (!finalMessage && (result.toolResults ?? []).length === 0) return null;
@@ -475,6 +478,11 @@ async function buildUnprovenCompletionRetryReason(
     `Implement the requested repository change or run targeted passing verification, then update only this subtask to "completed".` +
     (finalMessage ? `\n\nLast assistant message:\n${compactForPlan(finalMessage, 1_200)}` : '')
   );
+}
+
+function hasNewChangedProjectFile(before: string[], after: string[]): boolean {
+  const beforeSet = new Set(before);
+  return after.some((filePath) => !beforeSet.has(filePath));
 }
 
 function getPersistedVerifierFailureContext(subtask?: PlanSubtask): string | null {

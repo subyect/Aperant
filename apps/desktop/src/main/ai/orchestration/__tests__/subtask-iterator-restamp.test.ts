@@ -197,6 +197,52 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('produced no project file changes and no passing verifier');
   });
 
+  it('does not use pre-existing dirty worktree files as completion proof', async () => {
+    const projectDir = join(tmpDir, 'project');
+    const srcDir = join(projectDir, 'packages/layer1/src');
+    await mkdir(srcDir, { recursive: true });
+    await execFileAsync('git', ['init'], { cwd: projectDir });
+    await writeFile(join(srcDir, 'already-dirty.ts'), 'export const alreadyDirty = true;\n');
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => {
+        await writeFile(planPath, JSON.stringify(planWithStatus('completed'), null, 2));
+        return sessionResult('completed', {
+          messages: [
+            {
+              role: 'assistant',
+              content: 'Implemented and verified the subtask. I marked the subtask completed in implementation_plan.json.',
+            },
+          ],
+          toolResults: [
+            {
+              toolName: 'Read',
+              args: { file_path: 'packages/layer1/src/already-dirty.ts' },
+              result: 'file contents',
+              durationMs: 20,
+              isError: false,
+            },
+          ],
+        });
+      },
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(0);
+    expect(result.stuckSubtasks).toEqual(['1.1']);
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('produced no project file changes and no passing verifier');
+  });
+
   it('accepts a plan completion when git status shows project file changes', async () => {
     const projectDir = join(tmpDir, 'project');
     const srcDir = join(projectDir, 'packages/layer1/src');
