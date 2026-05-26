@@ -1237,10 +1237,12 @@ function isRecoverySubtask(subtask: Record<string, unknown>): boolean {
 }
 
 function removeStaleQaRecoverySubtasks(plan: Record<string, unknown>): boolean {
-  if (!Array.isArray(plan.phases)) return false;
+  const phases = plan.phases;
+  if (!Array.isArray(phases)) return false;
 
   let removed = false;
-  plan.phases = plan.phases
+  const originalPhaseCount = phases.length;
+  const nextPhases = phases
     .map((phase) => {
       if (!phase || typeof phase !== 'object') return phase;
       const mutablePhase = phase as Record<string, unknown>;
@@ -1263,11 +1265,20 @@ function removeStaleQaRecoverySubtasks(plan: Record<string, unknown>): boolean {
     .filter((phase) => {
       if (!phase || typeof phase !== 'object') return true;
       const mutablePhase = phase as Record<string, unknown>;
-      if (mutablePhase.id !== 'aperant-qa-report-failure' && mutablePhase.type !== 'qa_report_failure') {
+      if (
+        mutablePhase.id !== 'aperant-qa-report-failure'
+        && mutablePhase.id !== 'aperant-qa-report-recovery'
+        && mutablePhase.type !== 'qa_report_failure'
+        && mutablePhase.type !== 'qa_report_recovery'
+      ) {
         return true;
       }
       return Array.isArray(mutablePhase.subtasks) && mutablePhase.subtasks.length > 0;
     });
+  plan.phases = nextPhases;
+  if (nextPhases.length !== originalPhaseCount) {
+    removed = true;
+  }
 
   return removed;
 }
@@ -1333,17 +1344,23 @@ export async function repairFalseCompletedSubtasks(
       const { allSubtasks, completedCount, totalCount } = checkSubtasksCompletion(plan);
       if (totalCount === 0) return { success: true, resetCount: 0 };
       if (completedCount === 0) {
+        const prunedStaleRecovery = removeStaleQaRecoverySubtasks(plan);
         const cleaned = clearStaleQaRecoveryForPendingPlan(
           plan,
           allSubtasks as Record<string, unknown>[],
           path.dirname(planPath),
         );
-        if (cleaned) {
+        if (cleaned || prunedStaleRecovery) {
           plan.status = 'in_progress';
           plan.planStatus = 'in_progress';
           plan.xstateState = 'coding';
           plan.executionPhase = 'coding';
-          plan.recoveryNote = `Cleared stale QA recovery artifacts for reopened pending subtasks at ${new Date().toISOString()}`;
+          if ((plan.lastEvent as { type?: unknown } | undefined)?.type === 'CODING_FAILED') {
+            delete plan.lastEvent;
+          }
+          plan.recoveryNote = cleaned
+            ? `Cleared stale QA recovery artifacts for reopened pending subtasks at ${new Date().toISOString()}`
+            : `Cleared empty stale QA recovery phase for reopened pending subtasks at ${new Date().toISOString()}`;
           plan.updated_at = new Date().toISOString();
           writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
           if (projectId) projectStore.invalidateTasksCache(projectId);

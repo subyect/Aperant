@@ -341,7 +341,8 @@ describe('plan-file runtime guards', () => {
           subtasks: [{ id: 'P1-S1', status: 'pending' }],
         },
         {
-          id: 'aperant-qa-report-failure',
+          id: 'aperant-qa-report-recovery',
+          type: 'qa_report_recovery',
           name: 'QA recovery',
           subtasks: [{ id: 'aperant-qa-report-failure', status: 'pending' }],
         },
@@ -358,6 +359,39 @@ describe('plan-file runtime guards', () => {
     expect(plan.recoveryNote).toMatch(/Cleared stale QA recovery artifacts/);
     expect(plan.executionPhase).toBe('coding');
     expect(plan.phases.flatMap((phase: { subtasks?: Array<{ id?: string }> }) => phase.subtasks ?? []).map((subtask: { id?: string }) => subtask.id)).not.toContain('aperant-qa-report-failure');
+    expect(plan.phases.map((phase: { id?: string }) => phase.id)).not.toContain('aperant-qa-report-recovery');
+  });
+
+  it('clears empty stale QA recovery phases from reopened pending plans', async () => {
+    writeFileSync(planPath, JSON.stringify({
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      recoveryNote: 'Cleared stale QA recovery artifacts for reopened pending subtasks at 2026-05-26T14:38:27.568Z',
+      lastEvent: { type: 'CODING_FAILED', timestamp: '2026-05-26T14:50:20.174Z' },
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [{ id: 'P1-S1', status: 'pending' }],
+        },
+        {
+          id: 'aperant-qa-report-recovery',
+          type: 'qa_report_recovery',
+          name: 'QA recovery',
+          subtasks: [],
+        },
+      ],
+    }, null, 2));
+
+    const result = await repairFalseCompletedSubtasks(planPath, tempDir, 'example', 'project-1');
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+
+    expect(result).toEqual({ success: true, resetCount: 0 });
+    expect(plan.executionPhase).toBe('coding');
+    expect(plan.lastEvent).toBeUndefined();
+    expect(plan.recoveryNote).toMatch(/Cleared empty stale QA recovery phase/);
+    expect(plan.phases.map((phase: { id?: string }) => phase.id)).not.toContain('aperant-qa-report-recovery');
   });
 
   it('keeps active QA recovery when completed implementation subtasks remain', async () => {
