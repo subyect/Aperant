@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
 
-import { iterateSubtasks, restampExecutionPhase } from '../subtask-iterator';
+import { iterateSubtasks, parseGitStatusChangedFiles, restampExecutionPhase } from '../subtask-iterator';
 import type { SessionResult } from '../../session/types';
+
+const execFileAsync = promisify(execFile);
 
 function sessionResult(
   outcome: SessionResult['outcome'],
@@ -115,6 +119,18 @@ describe('iterateSubtasks completion proof', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
+  it('parses git status output while ignoring Aperant metadata files', () => {
+    expect(parseGitStatusChangedFiles([
+      ' M packages/layer1/src/worker.ts',
+      '?? .auto-claude/specs/task/build-progress.txt',
+      'R  packages/old.ts -> packages/new.ts',
+      '?? node_modules/.vite/cache.json',
+    ].join('\n'))).toEqual([
+      'packages/layer1/src/worker.ts',
+      'packages/new.ts',
+    ]);
+  });
+
   it('does not mark a subtask completed only because the session completed', async () => {
     await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
 
@@ -135,6 +151,87 @@ describe('iterateSubtasks completion proof', () => {
     expect(result.stuckSubtasks).toEqual(['1.1']);
     expect(subtask.status).toBe('pending');
     expect(subtask.last_error).toContain('without marking the subtask completed');
+  });
+
+  it('rejects a plan completion after the session only read files', async () => {
+    const projectDir = join(tmpDir, 'project');
+    await mkdir(projectDir, { recursive: true });
+    await execFileAsync('git', ['init'], { cwd: projectDir });
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => {
+        await writeFile(planPath, JSON.stringify(planWithStatus('completed'), null, 2));
+        return sessionResult('completed', {
+          messages: [
+            {
+              role: 'assistant',
+              content: 'Implemented and verified the subtask. I marked the subtask completed in implementation_plan.json.',
+            },
+          ],
+          toolResults: [
+            {
+              toolName: 'Read',
+              args: { file_path: 'packages/layer1/src/worker.ts' },
+              result: 'file contents',
+              durationMs: 20,
+              isError: false,
+            },
+          ],
+        });
+      },
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(0);
+    expect(result.stuckSubtasks).toEqual(['1.1']);
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('produced no project file changes and no passing verifier');
+  });
+
+  it('accepts a plan completion when git status shows project file changes', async () => {
+    const projectDir = join(tmpDir, 'project');
+    const srcDir = join(projectDir, 'packages/layer1/src');
+    await mkdir(srcDir, { recursive: true });
+    await execFileAsync('git', ['init'], { cwd: projectDir });
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => {
+        await writeFile(join(srcDir, 'worker.ts'), 'export const done = true;\n');
+        await writeFile(planPath, JSON.stringify(planWithStatus('completed'), null, 2));
+        return sessionResult('completed', {
+          messages: [
+            {
+              role: 'assistant',
+              content: 'Implemented and verified the subtask. I marked the subtask completed in implementation_plan.json.',
+            },
+          ],
+        });
+      },
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(1);
+    expect(result.stuckSubtasks).toEqual([]);
+    expect(subtask.status).toBe('completed');
+    expect(subtask.last_error).toBeUndefined();
   });
 
   it('records the final assistant message when a session ends without a plan marker', async () => {

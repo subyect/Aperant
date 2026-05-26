@@ -8,7 +8,9 @@
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 
 import { safeParseJson } from '../../utils/json-repair';
 import { preserveCompletedSubtasks } from '../../task-plan-guards';
@@ -27,6 +29,8 @@ import {
   waitForAuthResume,
   waitForRateLimitResume,
 } from './pause-handler';
+
+const execFileAsync = promisify(execFile);
 
 // =============================================================================
 // Types
@@ -290,6 +294,24 @@ export async function iterateSubtasks(
       }
     }
 
+    if (subtaskCompleted && !retryReasonWritten) {
+      const unprovenCompletionReason = await buildUnprovenCompletionRetryReason(
+        config.projectDir,
+        result,
+      );
+      if (unprovenCompletionReason) {
+        subtaskCompleted = false;
+        await markSubtaskRetryRequired(
+          config.specDir,
+          subtask.id,
+          unprovenCompletionReason,
+          result.outcome,
+          true,
+        );
+        retryReasonWritten = true;
+      }
+    }
+
     if (!subtaskCompleted && subtask.id === 'aperant-qa-report-failure') {
       const verificationNote = buildSuccessfulQaRecoveryVerificationNote(result);
       if (verificationNote) {
@@ -435,6 +457,26 @@ function buildRetryReason(
   return result.error?.message ?? `Agent session ended with outcome "${result.outcome}". Retrying the subtask.`;
 }
 
+async function buildUnprovenCompletionRetryReason(
+  projectDir: string,
+  result: SessionResult,
+): Promise<string | null> {
+  if (hasConcreteCompletionEvidence(result)) return null;
+
+  const changedFiles = await collectChangedProjectFiles(projectDir);
+  if (changedFiles.length > 0) return null;
+
+  const finalMessage = getLastAssistantMessage(result);
+  if (!finalMessage && (result.toolResults ?? []).length === 0) return null;
+
+  return (
+    `Subtask was marked completed, but the session produced no project file changes and no passing verifier. ` +
+    `Do not mark implementation_plan.json complete after only reading or analyzing files. ` +
+    `Implement the requested repository change or run targeted passing verification, then update only this subtask to "completed".` +
+    (finalMessage ? `\n\nLast assistant message:\n${compactForPlan(finalMessage, 1_200)}` : '')
+  );
+}
+
 function getPersistedVerifierFailureContext(subtask?: PlanSubtask): string | null {
   const parts = [
     typeof subtask?.notes === 'string' ? subtask.notes : '',
@@ -472,6 +514,62 @@ function getLastAssistantMessage(result: SessionResult): string | null {
 
 function hasConcreteCompletionEvidence(result: SessionResult): boolean {
   return findLatestPassingVerifier(result) !== null || findProjectWriteLikeToolResult(result) !== null;
+}
+
+const MAX_GIT_STATUS_BUFFER_BYTES = 200_000;
+
+export async function collectChangedProjectFiles(projectDir: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', projectDir, 'status', '--short', '--untracked-files=all'],
+      { maxBuffer: MAX_GIT_STATUS_BUFFER_BYTES },
+    );
+    return parseGitStatusChangedFiles(String(stdout));
+  } catch {
+    return [];
+  }
+}
+
+export function parseGitStatusChangedFiles(stdout: string): string[] {
+  return stdout
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => parseGitStatusPath(line))
+    .filter((filePath): filePath is string => Boolean(filePath))
+    .filter(isProjectChangedPath);
+}
+
+function parseGitStatusPath(line: string): string | null {
+  const rawPath = line.length > 3 ? line.slice(3).trim() : '';
+  if (!rawPath) return null;
+
+  const renameSeparator = ' -> ';
+  const separatorIndex = rawPath.indexOf(renameSeparator);
+  const path = separatorIndex >= 0
+    ? rawPath.slice(separatorIndex + renameSeparator.length)
+    : rawPath;
+
+  return stripGitStatusQuotes(path.trim());
+}
+
+function stripGitStatusQuotes(filePath: string): string {
+  if (filePath.length >= 2 && filePath.startsWith('"') && filePath.endsWith('"')) {
+    return filePath.slice(1, -1);
+  }
+  return filePath;
+}
+
+function isProjectChangedPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!normalized) return false;
+  if (normalized === '.auto-claude' || normalized.startsWith('.auto-claude/')) return false;
+  if (normalized.includes('/.auto-claude/')) return false;
+  if (normalized === '.git' || normalized.startsWith('.git/')) return false;
+  if (normalized === 'node_modules' || normalized.startsWith('node_modules/')) return false;
+  return true;
 }
 
 function findProjectWriteLikeToolResult(result: SessionResult): NonNullable<SessionResult['toolResults']>[number] | null {
@@ -1067,13 +1165,14 @@ async function extractInsightsAfterSession(
   result: SessionResult,
 ): Promise<ExtractedInsights | null> {
   try {
+    const changedFiles = await collectChangedProjectFiles(config.projectDir);
     const insightConfig: InsightExtractionConfig = {
       subtaskId: subtask.id,
       subtaskDescription: subtask.description,
       sessionNum: 1,
       success: result.outcome === 'completed' || result.outcome === 'max_steps' || result.outcome === 'context_window',
-      diff: '',           // Diff gathering requires git; left empty for now
-      changedFiles: [],   // Populated by future git integration
+      diff: '',
+      changedFiles,
       commitMessages: '',
       attemptHistory: [],
     };
