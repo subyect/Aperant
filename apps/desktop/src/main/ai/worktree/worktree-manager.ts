@@ -16,7 +16,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { cp, rm, writeFile } from 'fs/promises';
 import { dirname, join, resolve } from 'path';
 import { promisify } from 'util';
@@ -33,6 +33,13 @@ const LOCAL_ENV_FILES_TO_SYNC = [
   '.env',
   '.env.test',
   '.env.development.local',
+];
+const SPEC_SUPPORT_PATHS_TO_SYNC = [
+  'QA_FIX_REQUEST.md',
+  'QA_ESCALATION.md',
+  'BASE_SYNC_CONFLICT.md',
+  'qa_report.md',
+  'feedback_images',
 ];
 const YECT_LOCAL_TEST_DB_URL = 'postgresql://yect:yect@localhost:54329/yect_dev';
 const DB_ENV_KEYS = new Set([
@@ -431,6 +438,47 @@ async function syncSpecDirectoryIntoWorktree(
         `[WorktreeManager] Warning: Could not repair worktree plan for ${specId}: ${message}`,
       );
     }
+  }
+
+  await syncSpecSupportArtifactsIntoWorktree(sourceSpecDir, destSpecDir, specId);
+}
+
+async function syncSpecSupportArtifactsIntoWorktree(
+  sourceSpecDir: string,
+  destSpecDir: string,
+  specId: string,
+): Promise<void> {
+  for (const relativePath of SPEC_SUPPORT_PATHS_TO_SYNC) {
+    const sourcePath = join(sourceSpecDir, relativePath);
+    if (!existsSync(sourcePath)) continue;
+
+    const destPath = join(destSpecDir, relativePath);
+    if (!shouldCopySpecSupportArtifact(sourcePath, destPath)) continue;
+
+    try {
+      mkdirSync(dirname(destPath), { recursive: true });
+      await cp(sourcePath, destPath, { recursive: true, force: true });
+      console.warn(
+        `[WorktreeManager] Synced spec support artifact into worktree for ${specId}: ${relativePath}`,
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[WorktreeManager] Warning: Could not sync spec support artifact ${relativePath} for ${specId}: ${message}`,
+      );
+    }
+  }
+}
+
+function shouldCopySpecSupportArtifact(sourcePath: string, destPath: string): boolean {
+  if (!existsSync(destPath)) return true;
+
+  try {
+    const sourceStat = statSync(sourcePath);
+    const destStat = statSync(destPath);
+    return sourceStat.mtimeMs > destStat.mtimeMs + 1;
+  } catch {
+    return false;
   }
 }
 

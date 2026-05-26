@@ -83,6 +83,58 @@ describe('syncWorktreeWithBaseBranch', () => {
 });
 
 describe('createOrGetWorktree local env sync', () => {
+  it('syncs newly created QA recovery artifacts into an existing task worktree', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'worktree-spec-artifacts-'));
+    const projectDir = join(root, 'project');
+    const specId = '004-qa-artifact-sync';
+
+    try {
+      git(root, ['init', '-b', 'main', projectDir]);
+      git(projectDir, ['config', 'user.email', 'test@example.com']);
+      git(projectDir, ['config', 'user.name', 'Test User']);
+
+      await writeFile(join(projectDir, 'README.md'), '# test\n');
+      git(projectDir, ['add', 'README.md']);
+      git(projectDir, ['commit', '-m', 'initial']);
+
+      const mainSpecDir = join(projectDir, '.auto-claude/specs', specId);
+      await mkdir(mainSpecDir, { recursive: true });
+      await writeFile(join(mainSpecDir, 'spec.md'), '# Spec\n');
+      await writeFile(join(mainSpecDir, 'implementation_plan.json'), JSON.stringify({ phases: [] }, null, 2));
+
+      const first = await createOrGetWorktree(
+        projectDir,
+        specId,
+        'main',
+        true,
+        false,
+      );
+
+      const worktreeFixRequest = join(
+        first.worktreePath,
+        '.auto-claude/specs',
+        specId,
+        'QA_FIX_REQUEST.md',
+      );
+      expect(existsSync(worktreeFixRequest)).toBe(false);
+
+      await writeFile(join(mainSpecDir, 'QA_FIX_REQUEST.md'), '# QA Fix Request\n\nFix the failing verifier.\n');
+
+      const second = await createOrGetWorktree(
+        projectDir,
+        specId,
+        'main',
+        true,
+        false,
+      );
+
+      expect(second.worktreePath).toBe(first.worktreePath);
+      expect(readFileSync(worktreeFixRequest, 'utf8')).toContain('Fix the failing verifier');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('copies root local env files into a new task worktree', async () => {
     const root = await mkdtemp(join(tmpdir(), 'worktree-env-'));
     const projectDir = join(root, 'project');
