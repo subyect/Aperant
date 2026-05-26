@@ -102,6 +102,9 @@ describe('InsightsService error persistence', () => {
       ['user', 'Hi'],
       ['assistant', 'Insights request failed: Bad Request: model does not support tools'],
     ]);
-    expect(sessionUpdates).toHaveLength(1);
+    expect(sessionUpdates).toHaveLength(2);
+    expect((sessionUpdates[0] as { messages: InsightsChatMessage[] }).messages.map((m) => [m.role, m.content])).toEqual([
+      ['user', 'Hi'],
+    ]);
   });
 });

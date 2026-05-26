@@ -503,6 +503,42 @@ describe('plan-file runtime guards', () => {
     expect(reworkPhase.subtasks[0].description).toContain('Use the server-side query');
   });
 
+  it('stores a verifier command from human feedback on the rework subtask', () => {
+    const plan = {
+      status: 'human_review',
+      planStatus: 'review',
+      phases: [
+        {
+          name: 'Implementation',
+          status: 'completed',
+          subtasks: [{ id: '1.1', title: 'Done', status: 'completed' }],
+        },
+      ],
+      qa_signoff: { status: 'approved', issues_found: [] },
+    };
+
+    const verifier = 'pnpm --filter @yect/obyect typecheck && pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts';
+
+    expect(ensureHumanFeedbackReworkSubtask(plan, [
+      'Please fix the server-side query.',
+      '',
+      'Run this before marking done:',
+      '```bash',
+      verifier,
+      '```',
+    ].join('\n'))).toBe(true);
+
+    const reworkPhase = plan.phases.find((phase: any) => phase.id === 'aperant-human-feedback-rework') as any;
+    const subtask = reworkPhase.subtasks[0];
+
+    expect(subtask.description).toContain('Required verifier before completion');
+    expect(subtask.description).toContain(verifier);
+    expect(subtask.verification).toEqual({
+      type: 'command',
+      run: verifier,
+    });
+  });
+
   it('does not let transient idle progress overwrite an active runtime phase', () => {
     expect(persistPlanPhaseSync(planPath, 'idle', 'project-1')).toBe(false);
 

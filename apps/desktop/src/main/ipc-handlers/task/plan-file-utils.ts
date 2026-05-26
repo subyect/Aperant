@@ -62,6 +62,7 @@ export function ensureHumanFeedbackReworkSubtask(
   const feedbackPreview = feedback?.trim()
     ? feedback.trim().slice(0, 1500)
     : 'No text feedback provided. Check QA_FIX_REQUEST.md and any feedback_images references.';
+  const verifierCommand = extractVerifierCommandFromFeedback(feedback ?? '');
 
   if (!Array.isArray(plan.phases)) {
     plan.phases = [];
@@ -91,8 +92,11 @@ export function ensureHumanFeedbackReworkSubtask(
   const description = [
     'Address the latest human review feedback recorded in QA_FIX_REQUEST.md.',
     'Read QA_FIX_REQUEST.md first, inspect the current implementation, make the required code, docs, or test changes, and run focused verification before marking this subtask completed.',
+    verifierCommand
+      ? `Required verifier before completion:\n${verifierCommand}`
+      : null,
     `Latest feedback preview:\n${feedbackPreview}`,
-  ].join('\n\n');
+  ].filter((part): part is string => Boolean(part)).join('\n\n');
 
   let subtask = phase.subtasks.find((candidate: Record<string, any>) => {
     return candidate?.id === HUMAN_FEEDBACK_REWORK_SUBTASK_ID;
@@ -130,14 +134,56 @@ export function ensureHumanFeedbackReworkSubtask(
   }
 
   subtask.feedback_requested_at = now;
-  subtask.verification = {
-    type: 'manual',
-    instructions: 'Verify the feedback is addressed, then rerun QA.',
-  };
+  subtask.verification = verifierCommand
+    ? {
+      type: 'command',
+      run: verifierCommand,
+    }
+    : {
+      type: 'manual',
+      instructions: 'Verify the feedback is addressed, then rerun QA.',
+    };
   phase.status = 'in_progress';
   plan.updated_at = now;
 
   return true;
+}
+
+function extractVerifierCommandFromFeedback(feedback: string): string | null {
+  const normalized = feedback.replace(/\r\n/g, '\n').trim();
+  if (!normalized) return null;
+
+  const fencedMatches = normalized.match(/```(?:bash|sh|shell|zsh)?\s*([\s\S]*?)```/gi) ?? [];
+  for (const match of fencedMatches) {
+    const content = match
+      .replace(/^```(?:bash|sh|shell|zsh)?\s*/i, '')
+      .replace(/```\s*$/i, '')
+      .trim();
+    const command = extractVerifierCommandFromCandidate(content);
+    if (command) return command;
+  }
+
+  const inlineMatches = normalized.match(/`([^`]+)`/g) ?? [];
+  for (const match of inlineMatches) {
+    const command = extractVerifierCommandFromCandidate(match.slice(1, -1));
+    if (command) return command;
+  }
+
+  return extractVerifierCommandFromCandidate(normalized);
+}
+
+function extractVerifierCommandFromCandidate(candidate: string): string | null {
+  const trimmed = candidate.trim();
+  if (!trimmed) return null;
+
+  if (looksLikeVerifierCommand(trimmed)) return trimmed;
+
+  for (const line of trimmed.split(/\n/)) {
+    const command = line.trim().replace(/^(?:[$>]\s*)/, '');
+    if (looksLikeVerifierCommand(command)) return command;
+  }
+
+  return null;
 }
 
 /**

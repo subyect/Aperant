@@ -80,6 +80,7 @@ export function useTaskDetail({ task }: UseTaskDetailOptions) {
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [expandedPhases, setExpandedPhases] = useState<Set<TaskLogPhase>>(new Set());
   const [isLoadingPlan, setIsLoadingPlan] = useState(false);
+  const [planReloadRetryTick, setPlanReloadRetryTick] = useState(0);
   const lastPlanReloadAttemptRef = useRef<string | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const logsContainerRef = useRef<HTMLDivElement>(null);
@@ -514,7 +515,23 @@ export function useTaskDetail({ task }: UseTaskDetailOptions) {
     if (lastPlanReloadAttemptRef.current === reloadKey) return;
     lastPlanReloadAttemptRef.current = reloadKey;
 
-    void reloadPlanForIncompleteTask();
+    let cancelled = false;
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    void reloadPlanForIncompleteTask().then((loaded) => {
+      if (cancelled || loaded) return;
+      retryTimeout = setTimeout(() => {
+        if (lastPlanReloadAttemptRef.current === reloadKey) {
+          lastPlanReloadAttemptRef.current = null;
+        }
+        setPlanReloadRetryTick((tick) => tick + 1);
+      }, 5_000);
+    });
+
+    return () => {
+      cancelled = true;
+      if (retryTimeout) clearTimeout(retryTimeout);
+    };
   }, [
     task,
     task.id,
@@ -525,6 +542,7 @@ export function useTaskDetail({ task }: UseTaskDetailOptions) {
     hasActiveExecution,
     isLoadingPlan,
     reloadPlanForIncompleteTask,
+    planReloadRetryTick,
   ]);
 
   return {

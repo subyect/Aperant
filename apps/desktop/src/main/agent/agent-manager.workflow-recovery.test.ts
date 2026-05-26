@@ -267,6 +267,73 @@ describe('AgentManager workflow recovery', () => {
     expect(recoverySubtask?.verification?.run).toContain('Read QA_FIX_REQUEST.md first');
   });
 
+  it('keeps scanning later projects when one project task scan throws', async () => {
+    writeFileSync(planPath, JSON.stringify({
+      feature: 'Task',
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      phases: [
+        {
+          id: 'phase-1',
+          name: 'Implementation',
+          subtasks: [
+            { id: '1', title: 'Pending', status: 'pending' },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const brokenProject = {
+      id: 'broken-project',
+      name: 'Broken project',
+      path: path.join(rootDir, 'broken'),
+      autoBuildPath: '.auto-claude',
+      settings: { maxParallelTasks: 3, mainBranch: 'main' },
+    };
+    const project = {
+      id: 'project-1',
+      name: 'Project',
+      path: projectPath,
+      autoBuildPath: '.auto-claude',
+      settings: { maxParallelTasks: 3, mainBranch: 'main' },
+    };
+    const task = {
+      id: 'task-id-1',
+      specId: 'task-001',
+      title: 'Task',
+      description: 'Task',
+      status: 'in_progress',
+      updatedAt: new Date('2026-05-26T10:00:00.000Z'),
+      metadata: {},
+      subtasks: [{ id: '1', title: 'Pending', status: 'pending' }],
+    };
+
+    projectStoreMock.getProjects.mockReturnValue([brokenProject, project]);
+    projectStoreMock.getTasks.mockImplementation((projectId: string) => {
+      if (projectId === brokenProject.id) throw new Error('task scan failed');
+      return [task];
+    });
+
+    const manager = new AgentManager();
+    const startTaskExecution = vi
+      .spyOn(manager as unknown as { startTaskExecution: (...args: unknown[]) => Promise<void> }, 'startTaskExecution')
+      .mockImplementation(async () => {
+        registerLiveWorker(manager, task.id, project.id);
+      });
+
+    await manager.runWorkflowRecoveryPass('test');
+
+    expect(startTaskExecution).toHaveBeenCalledWith(
+      task.id,
+      projectPath,
+      task.specId,
+      expect.objectContaining({ baseBranch: 'main', workers: 1 }),
+      project.id,
+    );
+  });
+
   it('queues recovered in-progress tasks when worker start returns without a live worker', async () => {
     writeFileSync(planPath, JSON.stringify({
       feature: 'Task',
@@ -758,5 +825,20 @@ describe('AgentManager workflow recovery', () => {
       project.id,
     );
     expect(startSpecCreation).not.toHaveBeenCalled();
+  });
+
+  it('starts the workflow watchdog even if startup recovery fails', async () => {
+    projectStoreMock.getProjects.mockImplementation(() => {
+      throw new Error('project store unavailable');
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const manager = new AgentManager();
+    await manager.runStartupRecoveryScan();
+
+    const timer = (manager as unknown as { workflowRecoveryTimer: NodeJS.Timeout | null }).workflowRecoveryTimer;
+    expect(timer).not.toBeNull();
+    if (timer) clearInterval(timer);
+    errorSpy.mockRestore();
   });
 });

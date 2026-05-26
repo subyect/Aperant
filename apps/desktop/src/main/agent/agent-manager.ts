@@ -448,9 +448,10 @@ export class AgentManager extends EventEmitter {
 
       await this.resumeOrphanedWorkflowTasks(projects, 'startup-recovery');
       this.scheduleHumanReviewMerge('startup-recovery', 1000);
-      this.startWorkflowRecoveryWatchdog();
     } catch (err) {
       console.error('[AgentManager] Startup recovery scan failed:', err);
+    } finally {
+      this.startWorkflowRecoveryWatchdog();
     }
   }
 
@@ -600,56 +601,60 @@ export class AgentManager extends EventEmitter {
     let totalStarted = 0;
 
     for (const project of projects) {
-      const maxParallelTasks = this.getMaxParallelTasks(project);
-      let tasks = projectStore.getTasks(project.id)
-        .filter((task) => !task.metadata?.archivedAt);
+      try {
+        const maxParallelTasks = this.getMaxParallelTasks(project);
+        let tasks = projectStore.getTasks(project.id)
+          .filter((task) => !task.metadata?.archivedAt);
 
-      for (const task of tasks) {
-        if (!this.isRecoverableTaskStatus(task.status)) continue;
-        const conflictFiles = this.getTaskWorktreeConflictFiles(project, task);
-        if (conflictFiles.length === 0) {
-          this.clearResolvedBaseSyncConflictForTask(project, task);
-          continue;
+        for (const task of tasks) {
+          if (!this.isRecoverableTaskStatus(task.status)) continue;
+          const conflictFiles = this.getTaskWorktreeConflictFiles(project, task);
+          if (conflictFiles.length === 0) {
+            this.clearResolvedBaseSyncConflictForTask(project, task);
+            continue;
+          }
+          this.persistBaseSyncConflictForCoding(project, task, conflictFiles, 'worktree_has_unmerged_conflicts');
         }
-        this.persistBaseSyncConflictForCoding(project, task, conflictFiles, 'worktree_has_unmerged_conflicts');
-      }
-      tasks = projectStore.getTasks(project.id)
-        .filter((task) => !task.metadata?.archivedAt);
+        tasks = projectStore.getTasks(project.id)
+          .filter((task) => !task.metadata?.archivedAt);
 
-      const activeTasks = tasks
-        .filter((task) =>
-          task.status === 'in_progress'
-          || task.status === 'ai_review'
-          || this.shouldResumePlanningFailure(project, task)
-          || this.shouldResumeIncompleteTerminalTask(project, task)
-          || this.shouldRetryTerminalAgentError(project, task)
-        )
-        .sort((a, b) => {
-          const priorityDiff = this.getWorkflowRecoveryPriority(project, a) - this.getWorkflowRecoveryPriority(project, b);
-          if (priorityDiff !== 0) return priorityDiff;
-          return new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
-        });
+        const activeTasks = tasks
+          .filter((task) =>
+            task.status === 'in_progress'
+            || task.status === 'ai_review'
+            || this.shouldResumePlanningFailure(project, task)
+            || this.shouldResumeIncompleteTerminalTask(project, task)
+            || this.shouldRetryTerminalAgentError(project, task)
+          )
+          .sort((a, b) => {
+            const priorityDiff = this.getWorkflowRecoveryPriority(project, a) - this.getWorkflowRecoveryPriority(project, b);
+            if (priorityDiff !== 0) return priorityDiff;
+            return new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
+          });
 
-      for (const task of activeTasks) {
-        if (task.status === 'ai_review' && this.recoverApprovedQaForTask(project, task, `${reason}-qa-report`)) continue;
-        if (this.countRunningProjectTasks(project) >= maxParallelTasks) {
-          this.deferInactiveInProgressTaskForCapacity(project, task, reason);
-          continue;
+        for (const task of activeTasks) {
+          if (task.status === 'ai_review' && this.recoverApprovedQaForTask(project, task, `${reason}-qa-report`)) continue;
+          if (this.countRunningProjectTasks(project) >= maxParallelTasks) {
+            this.deferInactiveInProgressTaskForCapacity(project, task, reason);
+            continue;
+          }
+          if (this.isRunning(task.id)) continue;
+          if (this.shouldDeferPlanningRecovery(project, task)) continue;
+          if (await this.resumePersistedWorkflowTask(project, task)) totalStarted++;
         }
-        if (this.isRunning(task.id)) continue;
-        if (this.shouldDeferPlanningRecovery(project, task)) continue;
-        if (await this.resumePersistedWorkflowTask(project, task)) totalStarted++;
-      }
 
-      const queuedTasks = projectStore.getTasks(project.id)
-        .filter((task) => task.status === 'queue' && !task.metadata?.archivedAt)
-        .sort((a, b) => this.compareQueuedWorkflowTasks(project, a, b));
+        const queuedTasks = projectStore.getTasks(project.id)
+          .filter((task) => task.status === 'queue' && !task.metadata?.archivedAt)
+          .sort((a, b) => this.compareQueuedWorkflowTasks(project, a, b));
 
-      for (const task of queuedTasks) {
-        if (this.countRunningProjectTasks(project) >= maxParallelTasks) break;
-        if (this.isRunning(task.id)) continue;
-        if (this.shouldDeferPlanningRecovery(project, task)) continue;
-        if (await this.resumePersistedWorkflowTask(project, task)) totalStarted++;
+        for (const task of queuedTasks) {
+          if (this.countRunningProjectTasks(project) >= maxParallelTasks) break;
+          if (this.isRunning(task.id)) continue;
+          if (this.shouldDeferPlanningRecovery(project, task)) continue;
+          if (await this.resumePersistedWorkflowTask(project, task)) totalStarted++;
+        }
+      } catch (error) {
+        console.warn(`[AgentManager] Workflow recovery could not scan project ${project.name ?? project.id}:`, error);
       }
     }
 

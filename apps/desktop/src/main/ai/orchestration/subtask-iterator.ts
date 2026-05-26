@@ -491,8 +491,9 @@ async function buildUnprovenCompletionRetryReason(
 ): Promise<string | null> {
   const declaredVerifier = getDeclaredVerifierCommand(subtask);
   if (declaredVerifier) {
-    const latestVerifier = findLatestPassingVerifier(result);
-    if (!latestVerifier || !verifierCommandSatisfiesDeclared(latestVerifier.command, declaredVerifier)) {
+    const declaredVerifierEvidence = findPassingDeclaredVerifier(result, declaredVerifier);
+    if (!declaredVerifierEvidence) {
+      const latestVerifier = findLatestPassingVerifier(result);
       return (
         `Subtask was marked completed, but its declared verifier did not pass in this session. ` +
         `Declared verifier: \`${declaredVerifier}\`. ` +
@@ -638,14 +639,6 @@ function extractVerifierCommandCandidate(value: string): string | null {
   }
 
   return null;
-}
-
-function verifierCommandSatisfiesDeclared(actualCommand: string, declaredCommand: string): boolean {
-  const actualSegments = splitCommandSegments(actualCommand);
-  const declaredSegments = splitCommandSegments(declaredCommand);
-  if (actualSegments.length === 0 || declaredSegments.length === 0) return false;
-
-  return declaredSegments.every((declaredSegment) => actualSegments.includes(declaredSegment));
 }
 
 function getPersistedVerifierFailureContext(subtask?: PlanSubtask): string | null {
@@ -886,8 +879,15 @@ function buildSuccessfulSubtaskVerificationNote(
   const verifier = findLatestPassingVerifier(result);
   if (verifier) {
     const declaredVerifier = getDeclaredVerifierCommand(subtask);
-    if (declaredVerifier && !verifierCommandSatisfiesDeclared(verifier.command, declaredVerifier)) {
-      return null;
+    if (declaredVerifier) {
+      const declaredVerifierEvidence = findPassingDeclaredVerifier(result, declaredVerifier);
+      if (!declaredVerifierEvidence) return null;
+
+      return (
+        `Auto-completed subtask after the agent reported completion and the declared verifier passed.\n` +
+        `Command: ${declaredVerifierEvidence.command}\n` +
+        `Result: ${compactForPlan(declaredVerifierEvidence.output, 1_200)}`
+      );
     }
 
     return (
@@ -909,6 +909,59 @@ function buildSuccessfulSubtaskVerificationNote(
   return null;
 }
 
+function findPassingDeclaredVerifier(
+  result: SessionResult,
+  declaredCommand: string,
+): { command: string; output: string } | null {
+  const declaredSegments = splitCommandSegments(declaredCommand);
+  if (declaredSegments.length === 0) return null;
+
+  const missingSegments = new Set(declaredSegments);
+  const matchedCommands: string[] = [];
+  const matchedOutputs: string[] = [];
+  const bashResults = (result.toolResults ?? [])
+    .filter((toolResult) => toolResult.toolName === 'Bash');
+
+  for (let i = bashResults.length - 1; i >= 0; i--) {
+    const toolResult = bashResults[i];
+    const command = typeof toolResult.args?.command === 'string'
+      ? toolResult.args.command
+      : '';
+    if (!looksLikeVerifierCommand(command)) continue;
+
+    const output = toolResult.result;
+    if (!isPassingVerifierOutput(output)) return null;
+
+    let matchedThisCommand = false;
+    const actualSegments = splitCommandSegments(command);
+    for (const declaredSegment of declaredSegments) {
+      if (!missingSegments.has(declaredSegment)) continue;
+      if (!actualSegments.includes(declaredSegment)) continue;
+      missingSegments.delete(declaredSegment);
+      matchedThisCommand = true;
+    }
+
+    if (matchedThisCommand) {
+      matchedCommands.unshift(command);
+      matchedOutputs.unshift(output);
+    }
+
+    if (missingSegments.size === 0) {
+      return {
+        command: matchedCommands.join(' && '),
+        output: matchedOutputs.join('\n\n'),
+      };
+    }
+  }
+
+  return null;
+}
+
+function isPassingVerifierOutput(output: string): boolean {
+  return !isFailedBashOutput(output)
+    && (!/\bfailed\b/i.test(output) || /\b0\s+failed\b/i.test(output));
+}
+
 function isManualVerificationSubtask(subtask?: PlanSubtask): boolean {
   return (subtask?.verification as { type?: string } | undefined)?.type === 'manual';
 }
@@ -924,8 +977,7 @@ function findLatestPassingVerifier(result: SessionResult): { command: string; ou
       : '';
     const output = toolResult.result;
     if (!looksLikeVerifierCommand(command)) continue;
-    if (isFailedBashOutput(output)) return null;
-    if (/\bfailed\b/i.test(output) && !/\b0\s+failed\b/i.test(output)) return null;
+    if (!isPassingVerifierOutput(output)) return null;
     return { command, output };
   }
 

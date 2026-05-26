@@ -56,6 +56,20 @@ const initialStatus: InsightsChatStatus = {
   message: ''
 };
 
+const PENDING_INSIGHTS_SESSION_PREFIX = 'pending-insights-session-';
+
+export function shouldAdoptInsightsSessionUpdate(
+  currentSession: InsightsSession | null,
+  projectId: string,
+  updatedSession: InsightsSession,
+): boolean {
+  if (!currentSession) return true;
+  if (currentSession.id === updatedSession.id) return true;
+  return currentSession.projectId === projectId
+    && currentSession.id.startsWith(PENDING_INSIGHTS_SESSION_PREFIX)
+    && updatedSession.projectId === projectId;
+}
+
 export const useInsightsStore = create<InsightsState>((set, _get) => ({
   // Initial state
   session: null,
@@ -252,6 +266,17 @@ export async function loadInsightsSession(projectId: string, includeArchived?: b
 export function sendMessage(projectId: string, message: string, modelConfig?: InsightsModelConfig, images?: ImageAttachment[]): void {
   const store = useInsightsStore.getState();
   const session = store.session;
+
+  if (!session) {
+    store.setSession({
+      id: `${PENDING_INSIGHTS_SESSION_PREFIX}${Date.now()}`,
+      projectId,
+      title: 'New Conversation',
+      messages: [],
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+  }
 
   // Add user message to session (strip data to keep memory usage low)
   const displayImages = images?.map(img => ({
@@ -478,10 +503,11 @@ export function setupInsightsListeners(): () => void {
 
   // Listen for session updates (e.g., after assistant message saved with auto-generated title)
   const unsubSessionUpdated = window.electronAPI.onInsightsSessionUpdated(
-    (_projectId, session: InsightsSession) => {
-      // Update current session if it matches
+    (projectId, session: InsightsSession) => {
+      // Update current session if it matches, or if this replaces the local
+      // optimistic session created before the persisted session ID was known.
       const currentSession = store().session;
-      if (currentSession?.id === session.id) {
+      if (shouldAdoptInsightsSessionUpdate(currentSession, projectId, session)) {
         store().setSession(session);
       }
       // Also refresh sessions list for sidebar

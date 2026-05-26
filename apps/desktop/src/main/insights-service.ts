@@ -57,6 +57,25 @@ export function buildInsightsConversationHistory(
     });
 }
 
+function snapshotInsightsSession(session: InsightsSession): InsightsSession {
+  return {
+    ...session,
+    createdAt: new Date(session.createdAt),
+    updatedAt: new Date(session.updatedAt),
+    archivedAt: session.archivedAt ? new Date(session.archivedAt) : undefined,
+    messages: session.messages.map((message) => ({
+      ...message,
+      timestamp: new Date(message.timestamp),
+      images: message.images?.map((image) => ({ ...image })),
+      suggestedTasks: message.suggestedTasks?.map((task) => ({ ...task })),
+      toolsUsed: message.toolsUsed?.map((tool) => ({
+        ...tool,
+        timestamp: new Date(tool.timestamp),
+      })),
+    })),
+  };
+}
+
 /**
  * Service for AI-powered codebase insights chat
  *
@@ -227,6 +246,7 @@ export class InsightsService extends EventEmitter {
     session.messages.push(userMessage);
     session.updatedAt = new Date();
     this.sessionManager.saveSession(projectPath, session);
+    this.emit('session-updated', projectId, snapshotInsightsSession(session));
 
     const conversationHistory = buildInsightsConversationHistory(session.messages);
 
@@ -259,7 +279,7 @@ export class InsightsService extends EventEmitter {
       this.sessionManager.saveSession(projectPath, session);
 
       // Emit session-updated event for real-time UI updates
-      this.emit('session-updated', projectId, session);
+      this.emit('session-updated', projectId, snapshotInsightsSession(session));
     } catch (error) {
       // Error already emitted by executor
       console.error('[InsightsService] Error executing insights:', error);
@@ -273,7 +293,7 @@ export class InsightsService extends EventEmitter {
       session.messages.push(assistantMessage);
       session.updatedAt = new Date();
       this.sessionManager.saveSession(projectPath, session);
-      this.emit('session-updated', projectId, session);
+      this.emit('session-updated', projectId, snapshotInsightsSession(session));
     }
   }
 

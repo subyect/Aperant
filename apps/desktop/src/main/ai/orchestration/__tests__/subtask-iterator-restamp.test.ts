@@ -685,6 +685,130 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('useLibraryFeed.tag-filtering.test.ts');
   });
 
+  it('rejects human feedback completion when only the test segment of a chained verifier passed', async () => {
+    const declaredVerifier = 'pnpm --filter @yect/obyect typecheck && pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts';
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Human review feedback',
+          subtasks: [
+            {
+              id: 'aperant-human-feedback-rework',
+              title: 'Address human review feedback',
+              description: 'Address human review feedback.',
+              status: 'pending',
+              verification: {
+                type: 'command',
+                run: declaredVerifier,
+              },
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => {
+        const completedPlan = structuredClone(plan);
+        completedPlan.phases[0].subtasks[0].status = 'completed';
+        await writeFile(planPath, JSON.stringify(completedPlan, null, 2));
+        return sessionResult('completed', {
+          toolResults: [
+            {
+              toolName: 'Bash',
+              args: { command: 'pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts' },
+              result: 'Test Files 1 passed (1)\nTests 8 passed (8)',
+              durationMs: 8_000,
+              isError: false,
+            },
+          ],
+        });
+      },
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(0);
+    expect(result.stuckSubtasks).toEqual(['aperant-human-feedback-rework']);
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('declared verifier did not pass');
+    expect(subtask.last_error).toContain('pnpm --filter @yect/obyect typecheck');
+  });
+
+  it('accepts a declared chained verifier when its segments passed separately', async () => {
+    const declaredVerifier = 'pnpm --filter @yect/obyect typecheck && pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts';
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Human review feedback',
+          subtasks: [
+            {
+              id: 'aperant-human-feedback-rework',
+              title: 'Address human review feedback',
+              description: 'Address human review feedback.',
+              status: 'pending',
+              verification: {
+                type: 'command',
+                run: declaredVerifier,
+              },
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => {
+        const completedPlan = structuredClone(plan);
+        completedPlan.phases[0].subtasks[0].status = 'completed';
+        await writeFile(planPath, JSON.stringify(completedPlan, null, 2));
+        return sessionResult('completed', {
+          toolResults: [
+            {
+              toolName: 'Bash',
+              args: { command: 'pnpm --filter @yect/obyect typecheck' },
+              result: 'Exit code: 0',
+              durationMs: 8_000,
+              isError: false,
+            },
+            {
+              toolName: 'Bash',
+              args: { command: 'pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts' },
+              result: 'Test Files 1 passed (1)\nTests 8 passed (8)',
+              durationMs: 8_000,
+              isError: false,
+            },
+          ],
+        });
+      },
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(1);
+    expect(result.stuckSubtasks).toEqual([]);
+    expect(subtask.status).toBe('completed');
+    expect(subtask.last_error).toBeUndefined();
+  });
+
   it('reopens a completed command subtask when its retry context says the verifier failed', async () => {
     const plan = {
       feature: 'test',
