@@ -217,6 +217,7 @@ interface PlanPhase {
   id?: string;
   phase?: number;
   name: string;
+  status?: string;
   subtasks: PlanSubtask[];
 }
 
@@ -577,6 +578,7 @@ export class BuildOrchestrator extends EventEmitter {
       const qaStatus = await this.readQAStatus();
 
       if (qaStatus === 'passed') {
+        await this.persistQAPassedState();
         this.markPhaseCompleted('qa_review');
         this.transitionPhase('complete', 'Build complete - QA passed');
         return { success: true };
@@ -815,6 +817,79 @@ export class BuildOrchestrator extends EventEmitter {
       return 'unknown';
     } catch {
       return 'unknown';
+    }
+  }
+
+  private async persistQAPassedState(): Promise<void> {
+    const specDirs = Array.from(new Set(
+      [this.config.specDir, this.config.sourceSpecDir].filter((value): value is string => Boolean(value))
+    ));
+    const now = new Date().toISOString();
+
+    for (const specDir of specDirs) {
+      const planPath = join(specDir, 'implementation_plan.json');
+      try {
+        const raw = await readFile(planPath, 'utf-8');
+        const plan = safeParseJson<ImplementationPlan & Record<string, unknown>>(raw);
+        if (!plan) continue;
+
+        let changed = false;
+        if (Array.isArray(plan.phases)) {
+          for (const phase of plan.phases) {
+            if (
+              Array.isArray(phase.subtasks)
+              && phase.subtasks.length > 0
+              && phase.subtasks.every((subtask) => subtask.status === 'completed')
+              && phase.status !== 'completed'
+            ) {
+              phase.status = 'completed';
+              changed = true;
+            }
+          }
+        }
+
+        if (!isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined)) {
+          plan.qa_signoff = {
+            status: 'approved',
+            issues_found: [],
+            timestamp: now,
+            source: 'build-orchestrator-qa-report',
+          };
+          changed = true;
+        }
+
+        const nextState: Record<string, unknown> = {
+          status: 'human_review',
+          planStatus: 'review',
+          reviewReason: 'completed',
+          xstateState: 'human_review',
+          executionPhase: 'complete',
+          lastEvent: {
+            type: 'QA_PASSED',
+            timestamp: now,
+            source: 'build-orchestrator-qa-report',
+          },
+        };
+
+        for (const [key, value] of Object.entries(nextState)) {
+          if (JSON.stringify(plan[key]) !== JSON.stringify(value)) {
+            plan[key] = value;
+            changed = true;
+          }
+        }
+
+        changed = clearResolvedRecoveryState(plan) || changed;
+        if (!changed) continue;
+
+        plan.updated_at = now;
+        await writeFile(planPath, JSON.stringify(plan, null, 2));
+      } catch {
+        // Event persistence and startup recovery can still reconcile this state.
+      }
+    }
+
+    if (this.config.sourceSpecDir && this.config.syncSpecToSource) {
+      await this.config.syncSpecToSource(this.config.specDir, this.config.sourceSpecDir);
     }
   }
 

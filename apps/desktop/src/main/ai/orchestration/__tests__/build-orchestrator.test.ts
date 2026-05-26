@@ -111,10 +111,20 @@ describe('BuildOrchestrator coding phase', () => {
     });
 
     const result = await orchestrator.run();
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as Record<string, unknown>;
 
     expect(result).toEqual(expect.objectContaining({ success: true }));
     expect(runSession).toHaveBeenCalledWith(expect.objectContaining({
       agentType: 'qa_reviewer',
+    }));
+    expect(written).toEqual(expect.objectContaining({
+      status: 'human_review',
+      planStatus: 'review',
+      reviewReason: 'completed',
+      xstateState: 'human_review',
+      executionPhase: 'complete',
+      qa_signoff: expect.objectContaining({ status: 'approved' }),
+      lastEvent: expect.objectContaining({ type: 'QA_PASSED' }),
     }));
   }, 20_000);
 });
