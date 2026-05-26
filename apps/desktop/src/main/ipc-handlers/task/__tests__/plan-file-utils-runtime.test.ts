@@ -283,6 +283,72 @@ describe('plan-file runtime guards', () => {
     expect(plan.recoveryNote).toMatch(/Reset 1 invalid auto-completed subtask/);
   });
 
+  it('reopens completed human feedback when only part of the required verifier ran', async () => {
+    const requiredVerifier = 'pnpm --filter @yect/obyect typecheck && pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts';
+    const partialVerifier = 'pwd && pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts';
+
+    writeFileSync(planPath, JSON.stringify({
+      status: 'done',
+      planStatus: 'completed',
+      xstateState: 'done',
+      executionPhase: 'complete',
+      qa_signoff: { status: 'approved', issues_found: [] },
+      phases: [
+        {
+          name: 'Implementation',
+          status: 'completed',
+          subtasks: [
+            { id: 'P1-S1', status: 'completed' },
+          ],
+        },
+        {
+          id: 'aperant-human-feedback-rework',
+          name: 'Human review feedback',
+          type: 'human_feedback_rework',
+          status: 'completed',
+          subtasks: [
+            {
+              id: 'aperant-human-feedback-rework',
+              title: 'Address human review feedback',
+              description: [
+                'Address the latest human review feedback recorded in QA_FIX_REQUEST.md.',
+                '',
+                'Command run from Yect main:',
+                requiredVerifier,
+              ].join('\n'),
+              status: 'completed',
+              verification: {
+                type: 'manual',
+                instructions: 'Verify the feedback is addressed, then rerun QA.',
+              },
+              completed_at: '2026-05-26T10:00:00.000Z',
+              completion_note: [
+                'Auto-completed subtask after the agent reported completion and the latest verifier passed.',
+                `Command: ${partialVerifier}`,
+                'Result: Test Files 1 passed (1)',
+              ].join('\n'),
+            },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const result = await repairFalseCompletedSubtasks(planPath, tempDir, 'example', 'project-1');
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+    const reworkSubtask = plan.phases[1].subtasks[0];
+
+    expect(result).toEqual({ success: true, resetCount: 1 });
+    expect(plan.status).toBe('in_progress');
+    expect(plan.executionPhase).toBe('coding');
+    expect(plan.qa_signoff).toBeUndefined();
+    expect(reworkSubtask.status).toBe('pending');
+    expect(reworkSubtask.verification).toEqual({
+      type: 'command',
+      run: requiredVerifier,
+    });
+    expect(reworkSubtask.last_error).toContain('required verifier');
+  });
+
   it('clears stale QA recovery artifacts when false completion reset reopens normal subtasks', async () => {
     writeFileSync(path.join(tempDir, 'QA_FIX_REQUEST.md'), '# stale QA');
     writeFileSync(path.join(tempDir, 'qa_report.md'), '# stale report');

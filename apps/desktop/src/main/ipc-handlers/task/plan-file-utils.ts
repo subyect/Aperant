@@ -31,7 +31,7 @@ import { getIsolatedGitEnv } from '../../utils/git-isolation';
 import { findTaskWorktree } from '../../worktree-paths';
 import { normalizeQaFailureEvidenceContent, normalizeQaFixRequestFileSync } from '../../qa-feedback-utils';
 import { getQaReportVerdictFromContent } from '../../agent/task-review-artifacts';
-import { looksLikeVerifierCommand } from '../../ai/orchestration/verifier-evidence';
+import { looksLikeVerifierCommand, splitCommandSegments } from '../../ai/orchestration/verifier-evidence';
 import {
   applyRuntimePhaseState,
   applyTaskEventRuntimeState,
@@ -176,9 +176,10 @@ function extractVerifierCommandFromCandidate(candidate: string): string | null {
   const trimmed = candidate.trim();
   if (!trimmed) return null;
 
-  if (looksLikeVerifierCommand(trimmed)) return trimmed;
+  const lines = trimmed.split(/\n/);
+  if (lines.length === 1 && looksLikeVerifierCommand(trimmed)) return trimmed;
 
-  for (const line of trimmed.split(/\n/)) {
+  for (const line of lines) {
     const command = line.trim().replace(/^(?:[$>]\s*)/, '');
     if (looksLikeVerifierCommand(command)) return command;
   }
@@ -1234,10 +1235,18 @@ function extractManualAutoCompletionFile(note: unknown): string | null {
 }
 
 function getInvalidAutoCompletionReason(subtask: Record<string, unknown>): string | null {
+  const expectedVerifierCommand = getExpectedVerifierCommand(subtask);
   const command = extractAutoCompletionCommand(subtask.completion_note);
   if (command !== null) {
+    if (expectedVerifierCommand && !commandSatisfiesDeclaredVerifier(command, expectedVerifierCommand)) {
+      return `prior auto-completion did not run the required verifier: ${compactRecoveryCommand(expectedVerifierCommand)}`;
+    }
     if (looksLikeVerifierCommand(command)) return null;
     return `prior auto-completion used a non-verifier command: ${compactRecoveryCommand(command) || '(empty command)'}`;
+  }
+
+  if (expectedVerifierCommand) {
+    return `prior auto-completion did not record the required verifier command: ${compactRecoveryCommand(expectedVerifierCommand)}`;
   }
 
   const filePath = extractManualAutoCompletionFile(subtask.completion_note);
@@ -1246,6 +1255,58 @@ function getInvalidAutoCompletionReason(subtask: Record<string, unknown>): strin
   }
 
   return null;
+}
+
+function getExpectedVerifierCommand(subtask: Record<string, unknown>): string | null {
+  const verification = subtask.verification as Record<string, unknown> | undefined;
+  if (verification?.type === 'command') {
+    const command = typeof verification.run === 'string'
+      ? verification.run
+      : typeof verification.command === 'string'
+        ? verification.command
+        : '';
+    if (looksLikeVerifierCommand(command)) return command.trim();
+  }
+
+  if (subtask.id !== HUMAN_FEEDBACK_REWORK_SUBTASK_ID) return null;
+  return extractVerifierCommandFromFeedback(
+    [
+      typeof subtask.description === 'string' ? subtask.description : '',
+      typeof subtask.last_error === 'string' ? subtask.last_error : '',
+      typeof subtask.completion_note === 'string' ? subtask.completion_note : '',
+    ].filter(Boolean).join('\n\n'),
+  );
+}
+
+function commandSatisfiesDeclaredVerifier(actualCommand: string, declaredCommand: string): boolean {
+  const actualSegments = new Set(splitCommandSegments(actualCommand));
+  const declaredSegments = splitCommandSegments(declaredCommand);
+  return declaredSegments.length > 0 && declaredSegments.every((segment) => actualSegments.has(segment));
+}
+
+function syncHumanFeedbackVerifierSubtasks(allSubtasks: Record<string, unknown>[]): boolean {
+  let changed = false;
+
+  for (const subtask of allSubtasks) {
+    if (subtask.id !== HUMAN_FEEDBACK_REWORK_SUBTASK_ID) continue;
+
+    const verifierCommand = getExpectedVerifierCommand(subtask);
+    if (!verifierCommand) continue;
+
+    const verification = subtask.verification as Record<string, unknown> | undefined;
+    if (
+      verification?.type !== 'command'
+      || verification.run !== verifierCommand
+    ) {
+      subtask.verification = {
+        type: 'command',
+        run: verifierCommand,
+      };
+      changed = true;
+    }
+  }
+
+  return changed;
 }
 
 function resetInvalidAutoCompletedSubtasks(plan: Record<string, unknown>, allSubtasks: Record<string, unknown>[]): number {
@@ -1391,12 +1452,13 @@ export async function repairFalseCompletedSubtasks(
       if (totalCount === 0) return { success: true, resetCount: 0 };
       if (completedCount === 0) {
         const prunedStaleRecovery = removeStaleQaRecoverySubtasks(plan);
+        const syncedFeedbackVerifiers = syncHumanFeedbackVerifierSubtasks(allSubtasks as Record<string, unknown>[]);
         const cleaned = clearStaleQaRecoveryForPendingPlan(
           plan,
           allSubtasks as Record<string, unknown>[],
           path.dirname(planPath),
         );
-        if (cleaned || prunedStaleRecovery) {
+        if (cleaned || prunedStaleRecovery || syncedFeedbackVerifiers) {
           plan.status = 'in_progress';
           plan.planStatus = 'in_progress';
           plan.xstateState = 'coding';
@@ -1406,20 +1468,40 @@ export async function repairFalseCompletedSubtasks(
           }
           plan.recoveryNote = cleaned
             ? `Cleared stale QA recovery artifacts for reopened pending subtasks at ${new Date().toISOString()}`
-            : `Cleared empty stale QA recovery phase for reopened pending subtasks at ${new Date().toISOString()}`;
+            : prunedStaleRecovery
+              ? `Cleared empty stale QA recovery phase for reopened pending subtasks at ${new Date().toISOString()}`
+              : `Recovered human-feedback verifier command for pending subtasks at ${new Date().toISOString()}`;
           plan.updated_at = new Date().toISOString();
           writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
           if (projectId) projectStore.invalidateTasksCache(projectId);
         }
         return { success: true, resetCount: 0 };
       }
-      if (isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined) || plan.status === 'done' || plan.status === 'pr_created') {
-        return { success: true, resetCount: 0 };
-      }
 
+      const syncedFeedbackVerifiers = syncHumanFeedbackVerifierSubtasks(allSubtasks as Record<string, unknown>[]);
       let resetCount = resetInvalidAutoCompletedSubtasks(plan, allSubtasks as Record<string, unknown>[]);
       let resetReason: 'invalid-auto-completion' | 'no-repo-evidence' | null =
         resetCount > 0 ? 'invalid-auto-completion' : null;
+
+      if (resetCount > 0) {
+        clearStaleQaRecoveryForPendingPlan(plan, allSubtasks as Record<string, unknown>[], path.dirname(planPath));
+        plan.recoveryNote = `Reset ${resetCount} invalid auto-completed subtask(s) at ${new Date().toISOString()}`;
+        plan.updated_at = new Date().toISOString();
+        writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+        if (projectId) projectStore.invalidateTasksCache(projectId);
+        console.warn(`[plan-file-utils] Repaired ${resetCount} invalid auto completed subtask(s) in ${planPath}`);
+        return { success: true, resetCount };
+      }
+
+      if (syncedFeedbackVerifiers && (isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined) || plan.status === 'done' || plan.status === 'pr_created')) {
+        plan.updated_at = new Date().toISOString();
+        writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+        if (projectId) projectStore.invalidateTasksCache(projectId);
+      }
+
+      if (isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined) || plan.status === 'done' || plan.status === 'pr_created') {
+        return { success: true, resetCount: 0 };
+      }
 
       const worktreePath = findTaskWorktree(projectPath, specId);
       const executionPath = worktreePath || projectPath;
