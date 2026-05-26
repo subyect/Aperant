@@ -446,6 +446,7 @@ export class AgentManager extends EventEmitter {
         console.log(`[AgentManager] Startup recovery complete: No stuck subtasks found (scanned ${totalScanned} task(s))`);
       }
 
+      this.invalidateRecoveryTaskCaches(projects);
       await this.resumeOrphanedWorkflowTasks(projects, 'startup-recovery');
       this.scheduleHumanReviewMerge('startup-recovery', 1000);
     } catch (err) {
@@ -469,11 +470,19 @@ export class AgentManager extends EventEmitter {
     this.workflowRecoveryInProgress = true;
     try {
       const projects = projectStore.getProjects();
+      this.invalidateRecoveryTaskCaches(projects);
       this.stopStaleRunningWorkers(projects, reason);
+      this.invalidateRecoveryTaskCaches(projects);
       await this.resumeOrphanedWorkflowTasks(projects, reason);
       this.scheduleHumanReviewMerge(reason, 1000);
     } finally {
       this.workflowRecoveryInProgress = false;
+    }
+  }
+
+  private invalidateRecoveryTaskCaches(projects: Project[]): void {
+    for (const project of projects) {
+      projectStore.invalidateTasksCache(project.id);
     }
   }
 
