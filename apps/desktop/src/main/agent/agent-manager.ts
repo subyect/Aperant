@@ -17,7 +17,7 @@ import {
   ProcessType
 } from './types';
 import type { IdeationConfig, Project, Task } from '../../shared/types';
-import { getPlanPathsForSpec, isMetadataOnlyQaFailureContent, readFailedQaEvidenceSync, recoverApprovedQASignoffForSpec, repairFalseCompletedSubtasks, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
+import { getPlanPathsForSpec, isMetadataOnlyQaFailureContent, readFailedQaEvidenceSync, recoverApprovedQASignoffForSpec, repairFalseCompletedSubtasksForSpec, resetStuckSubtasks, updatePlanAfterAppMerge } from '../ipc-handlers/task/plan-file-utils';
 import { AUTO_BUILD_PATHS, getSpecsDir } from '../../shared/constants';
 import { projectStore } from '../project-store';
 import { resolveAuth, resolveAuthFromQueue } from '../ai/auth/resolver';
@@ -418,10 +418,10 @@ export class AgentManager extends EventEmitter {
               console.log(`[AgentManager] Startup recovery: Reset ${resetCount} stuck subtask(s) in ${specDirName}`);
             }
 
-            const falseCompletionResult = await repairFalseCompletedSubtasks(planPath, project.path, specDirName, project.id);
-            if (falseCompletionResult.success && falseCompletionResult.resetCount > 0) {
-              totalFalseCompletedReset += falseCompletionResult.resetCount;
-              console.log(`[AgentManager] Startup recovery: Reset ${falseCompletionResult.resetCount} false-completed subtask(s) in ${specDirName}`);
+            const falseCompletionResetCount = await repairFalseCompletedSubtasksForSpec(project, specDirName);
+            if (falseCompletionResetCount > 0) {
+              totalFalseCompletedReset += falseCompletionResetCount;
+              console.log(`[AgentManager] Startup recovery: Reset ${falseCompletionResetCount} false-completed subtask(s) in ${specDirName}`);
             }
           }
         } catch (err) {
