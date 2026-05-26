@@ -773,7 +773,8 @@ export class ProjectStore {
           doneGuardResult.reviewReason,
           plan,
           planPath,
-          dir.name
+          dir.name,
+          basePath
         );
 
         // Extract staged status from plan (set when changes are merged with --no-commit)
@@ -974,7 +975,8 @@ export class ProjectStore {
     finalReviewReason: ReviewReason | undefined,
     plan: ImplementationPlan | null,
     planPath: string,
-    taskName: string
+    taskName: string,
+    basePath: string
   ): { status: TaskStatus; reviewReason: ReviewReason | undefined } {
     if (subtasks.length === 0 || hasJsonError) {
       return { status: finalStatus, reviewReason: finalReviewReason };
@@ -982,10 +984,58 @@ export class ProjectStore {
 
     const completedCount = subtasks.filter(s => s.status === 'completed').length;
     const allCompleted = completedCount === subtasks.length;
+    const qaApproved = isQASignoffApproved((plan as unknown as { qa_signoff?: Record<string, unknown> } | null)?.qa_signoff)
+      || this.hasApprovedQaReportVerdict(planPath);
+
+    if (allCompleted && qaApproved && finalStatus !== 'done' && finalStatus !== 'pr_created' && plan) {
+      const mergeEvidence = findReachableTaskMergeEvidence({
+        projectPath: basePath,
+        specId: taskName,
+        plan: plan as unknown as Record<string, unknown>,
+      });
+
+      if (mergeEvidence) {
+        const correctedPlan = plan as unknown as Record<string, unknown>;
+        correctedPlan.status = 'done';
+        correctedPlan.planStatus = 'completed';
+        correctedPlan.xstateState = 'done';
+        correctedPlan.executionPhase = 'complete';
+        correctedPlan.qa_signoff = isQASignoffApproved((correctedPlan as { qa_signoff?: Record<string, unknown> }).qa_signoff)
+          ? correctedPlan.qa_signoff
+          : {
+            status: 'approved',
+            issues_found: [],
+            timestamp: new Date().toISOString(),
+            source: 'project-store-merged-task-recovery:qa_report',
+          };
+        correctedPlan.mergeCommit = mergeEvidence.commitSha;
+        correctedPlan.mergedAt = mergeEvidence.mergedAt;
+        correctedPlan.lastEvent = {
+          type: 'QA_PASSED',
+          timestamp: new Date().toISOString(),
+          source: `project-store-merged-task-recovery:${mergeEvidence.source}`,
+        };
+        correctedPlan.recoveryNote = `Recovered done status for ${taskName}: all subtasks are complete, QA is approved, and merge commit ${mergeEvidence.commitSha} is reachable.`;
+        delete correctedPlan.reviewReason;
+        clearResolvedRecoveryState(correctedPlan);
+        correctedPlan.updated_at = new Date().toISOString();
+
+        try {
+          writeFileAtomicSync(planPath, JSON.stringify(correctedPlan, null, 2));
+          Object.assign(plan, correctedPlan);
+          this.clearResolvedTaskMetadata(correctedPlan, planPath, taskName);
+          console.warn(`[ProjectStore] Recovered merged done status for ${taskName} at ${mergeEvidence.commitSha}.`);
+          return { status: 'done', reviewReason: undefined };
+        } catch (writeError) {
+          console.error(`[ProjectStore] Failed to persist merged done recovery for ${taskName}:`, writeError);
+          return { status: finalStatus, reviewReason: finalReviewReason };
+        }
+      }
+    }
 
     // Only auto-correct if all subtasks are done, QA already approved, and status is in an incomplete coding state.
     // Preserve ai_review (QA in progress), error (needs investigation), human_review, done, pr_created.
-    if (!allCompleted || !isQASignoffApproved((plan as unknown as { qa_signoff?: Record<string, unknown> } | null)?.qa_signoff) || finalStatus === 'human_review' || finalStatus === 'done' || finalStatus === 'pr_created' || finalStatus === 'ai_review' || finalStatus === 'error') {
+    if (!allCompleted || !qaApproved || finalStatus === 'human_review' || finalStatus === 'done' || finalStatus === 'pr_created' || finalStatus === 'ai_review' || finalStatus === 'error') {
       return { status: finalStatus, reviewReason: finalReviewReason };
     }
 
@@ -1181,6 +1231,16 @@ export class ProjectStore {
       const qaReportPath = path.join(path.dirname(planPath), AUTO_BUILD_PATHS.QA_REPORT);
       const content = readFileSync(qaReportPath, 'utf-8');
       return getQaReportVerdictFromContent(content) === 'failed';
+    } catch {
+      return false;
+    }
+  }
+
+  private hasApprovedQaReportVerdict(planPath: string): boolean {
+    try {
+      const qaReportPath = path.join(path.dirname(planPath), AUTO_BUILD_PATHS.QA_REPORT);
+      const content = readFileSync(qaReportPath, 'utf-8');
+      return getQaReportVerdictFromContent(content) === 'approved';
     } catch {
       return false;
     }

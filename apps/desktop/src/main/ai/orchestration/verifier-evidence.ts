@@ -1,4 +1,4 @@
-function normalizeShellCommand(command: string): string {
+export function normalizeShellCommand(command: string): string {
   return command.replace(/\\\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
@@ -9,7 +9,7 @@ function stripLeadingEnvAssignments(segment: string): string {
   ).trim();
 }
 
-function splitCommandSegments(command: string): string[] {
+export function splitCommandSegments(command: string): string[] {
   return normalizeShellCommand(command)
     .split(/\s*(?:&&|\|\||;|\|)\s*/)
     .map(stripLeadingEnvAssignments)

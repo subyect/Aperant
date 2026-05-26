@@ -820,6 +820,59 @@ describe('ProjectStore', () => {
       expect(persistedPlan.mergedAt).toBeTruthy();
     });
 
+    it('recovers stale in-progress tasks to done when QA is approved and merge evidence is reachable', async () => {
+      execFileSync('git', ['init'], { cwd: TEST_PROJECT_PATH, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: TEST_PROJECT_PATH });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: TEST_PROJECT_PATH });
+
+      const specId = '006-merged-but-stale-coding';
+      writeFileSync(path.join(TEST_PROJECT_PATH, 'README.md'), '# merged stale coding\n');
+      execFileSync('git', ['add', 'README.md'], { cwd: TEST_PROJECT_PATH });
+      execFileSync('git', ['commit', '-m', `Auto-merge ${specId}: Existing merge`], {
+        cwd: TEST_PROJECT_PATH,
+        stdio: 'ignore',
+      });
+
+      writeSpec(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs'),
+        specId,
+        {
+          ...makePlan({
+            feature: 'Merged But Stale Coding',
+            status: 'in_progress',
+            subtaskStatuses: ['completed', 'completed'],
+            updatedAt: '2024-01-01T00:00:00Z',
+          }),
+          planStatus: 'in_progress',
+          xstateState: 'coding',
+          executionPhase: 'coding',
+        },
+      );
+      writeFileSync(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', specId, 'qa_report.md'),
+        'Status: PASSED\n',
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', specId, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(tasks[0].status).toBe('done');
+      expect(persistedPlan.status).toBe('done');
+      expect(persistedPlan.planStatus).toBe('completed');
+      expect(persistedPlan.xstateState).toBe('done');
+      expect(persistedPlan.executionPhase).toBe('complete');
+      expect(persistedPlan.qa_signoff.status).toBe('approved');
+      expect(persistedPlan.mergeCommit).toMatch(/^[0-9a-f]{40}$/);
+      expect(persistedPlan.recoveryNote).toContain('Recovered done status');
+    });
+
     it('reopens terminal done tasks when qa_report.md has a failed verdict', async () => {
       const specsDir = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', '006-done-failed-qa-report');
       mkdirSync(specsDir, { recursive: true });

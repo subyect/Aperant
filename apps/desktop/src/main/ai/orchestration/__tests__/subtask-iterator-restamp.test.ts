@@ -471,6 +471,248 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.completed_at).toBeUndefined();
   });
 
+  it('rejects a completed subtask when its declared verifier was narrowed', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: 'P3-S1',
+              title: 'Add lifecycle transition policy',
+              description: 'Add lifecycle transition policy support.',
+              status: 'pending',
+              verification: {
+                type: 'command',
+                command: 'pnpm --filter @yect/layer1-engines test',
+              },
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => {
+        const completedPlan = structuredClone(plan);
+        completedPlan.phases[0].subtasks[0].status = 'completed';
+        await writeFile(planPath, JSON.stringify(completedPlan, null, 2));
+        return sessionResult('completed', {
+          toolResults: [
+            {
+              toolName: 'Bash',
+              args: { command: 'pwd && pnpm --filter @yect/layer1-engines test src/__tests__/lifecycle-transition-policy.test.ts' },
+              result: 'Test Files 1 passed (1)\nTests 8 passed (8)',
+              durationMs: 8_000,
+              isError: false,
+            },
+          ],
+        });
+      },
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(0);
+    expect(result.stuckSubtasks).toEqual(['P3-S1']);
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('declared verifier did not pass');
+    expect(subtask.last_error).toContain('pnpm --filter @yect/layer1-engines test');
+    expect(subtask.last_error).toContain('src/__tests__/lifecycle-transition-policy.test.ts');
+  });
+
+  it('accepts a completed subtask when its declared verifier passed exactly', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: 'P3-S1',
+              title: 'Add lifecycle transition policy',
+              description: 'Add lifecycle transition policy support.',
+              status: 'pending',
+              verification: {
+                type: 'command',
+                command: 'pnpm --filter @yect/layer1-engines test',
+              },
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => {
+        const completedPlan = structuredClone(plan);
+        completedPlan.phases[0].subtasks[0].status = 'completed';
+        await writeFile(planPath, JSON.stringify(completedPlan, null, 2));
+        return sessionResult('completed', {
+          toolResults: [
+            {
+              toolName: 'Bash',
+              args: { command: 'pwd && pnpm --filter @yect/layer1-engines test' },
+              result: 'Test Files 42 passed (42)\nTests 189 passed (189)',
+              durationMs: 18_000,
+              isError: false,
+            },
+          ],
+        });
+      },
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(result.completedSubtasks).toBe(1);
+    expect(result.stuckSubtasks).toEqual([]);
+    expect(subtask.status).toBe('completed');
+    expect(subtask.last_error).toBeUndefined();
+  });
+
+  it('reopens a completed command subtask when its retry context says the verifier failed', async () => {
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: 'P3-S1',
+              title: 'Define transition state machine',
+              description: 'Define lifecycle transitions.',
+              status: 'completed',
+              verification: {
+                type: 'command',
+                run: 'pnpm --filter @yect/layer1-engines test',
+              },
+              last_error: 'I cannot mark it completed yet because the required verifier is still failing.',
+              last_attempt_outcome: 'completed',
+            },
+          ],
+        },
+      ],
+    };
+    await writeFile(planPath, JSON.stringify(plan, null, 2));
+
+    const seen: Array<{ id: string; lastError?: string }> = [];
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 1,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async (subtask) => {
+        seen.push({ id: subtask.id, lastError: subtask.lastError });
+        const completedPlan = structuredClone(plan);
+        const completedSubtask = completedPlan.phases[0].subtasks[0] as {
+          status: string;
+          completion_note?: string;
+          last_error?: string;
+        };
+        completedSubtask.status = 'completed';
+        completedSubtask.completion_note = 'Required verifier passed.';
+        delete completedSubtask.last_error;
+        await writeFile(planPath, JSON.stringify(completedPlan, null, 2));
+        return sessionResult('completed', {
+          toolResults: [
+            {
+              toolName: 'Bash',
+              args: { command: 'pnpm --filter @yect/layer1-engines test' },
+              result: 'Test Files 42 passed (42)\nTests 189 passed (189)',
+              durationMs: 18_000,
+              isError: false,
+            },
+          ],
+        });
+      },
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string; completion_note?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual(expect.objectContaining({
+      id: 'P3-S1',
+      lastError: expect.stringContaining('Recovered false completion'),
+    }));
+    expect(result.completedSubtasks).toBe(1);
+    expect(result.stuckSubtasks).toEqual([]);
+    expect(subtask.status).toBe('completed');
+    expect(subtask.completion_note).toBe('Required verifier passed.');
+    expect(subtask.last_error).toBeUndefined();
+  });
+
+  it('syncs a reopened false completion back to the main spec instead of preserving stale completed state', async () => {
+    const mainSpecDir = await mkdtemp(join(tmpdir(), 'subtask-iterator-main-false-completion-'));
+    const mainPlanPath = join(mainSpecDir, 'implementation_plan.json');
+    const plan = {
+      feature: 'test',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: 'P3-S1',
+              title: 'Define transition state machine',
+              description: 'Define lifecycle transitions.',
+              status: 'completed',
+              verification: {
+                type: 'command',
+                run: 'pnpm --filter @yect/layer1-engines test',
+              },
+              last_error: 'I cannot mark it completed yet because the required verifier is still failing.',
+              last_attempt_outcome: 'completed',
+            },
+          ],
+        },
+      ],
+    };
+
+    try {
+      await writeFile(planPath, JSON.stringify(plan, null, 2));
+      await writeFile(mainPlanPath, JSON.stringify(plan, null, 2));
+
+      await iterateSubtasks({
+        specDir: tmpDir,
+        sourceSpecDir: mainSpecDir,
+        projectDir: tmpDir,
+        maxRetries: 0,
+        autoContinueDelayMs: 0,
+        runSubtaskSession: async () => sessionResult('completed'),
+      });
+
+      const mainPlan = JSON.parse(await readFile(mainPlanPath, 'utf-8')) as {
+        phases: Array<{ subtasks: Array<{ status: string; last_error?: string; last_attempt_outcome?: string }> }>;
+      };
+      const mainSubtask = mainPlan.phases[0].subtasks[0];
+
+      expect(mainSubtask.status).toBe('pending');
+      expect(mainSubtask.last_attempt_outcome).toBe('reopened_false_completion');
+      expect(mainSubtask.last_error).toContain('Recovered false completion');
+    } finally {
+      await rm(mainSpecDir, { recursive: true, force: true });
+    }
+  });
+
   it('retries instead of completing when the session hits max steps', async () => {
     await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
 

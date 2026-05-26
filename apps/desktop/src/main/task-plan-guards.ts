@@ -293,6 +293,9 @@ export function preserveCompletedSubtasks(targetPlan: MutablePlan | null | undef
   for (const phase of targetPlan.phases) {
     for (const subtask of Array.isArray(phase.subtasks) ? phase.subtasks : []) {
       const completed = completedById.get(String(subtask?.id));
+      if (completed && isRecoveredFalseCompletion(subtask)) {
+        continue;
+      }
       if (completed && subtask.status !== 'completed') {
         Object.assign(subtask, completed);
         changed = true;
@@ -300,6 +303,11 @@ export function preserveCompletedSubtasks(targetPlan: MutablePlan | null | undef
     }
   }
   return changed;
+}
+
+function isRecoveredFalseCompletion(subtask: MutablePlan | null | undefined): boolean {
+  return subtask?.last_attempt_outcome === 'reopened_false_completion'
+    || typeof subtask?.last_error === 'string' && /^Recovered false completion\b/.test(subtask.last_error);
 }
 
 export function restampPlanFromXState(plan: MutablePlan | null | undefined, xstateState?: string): boolean {

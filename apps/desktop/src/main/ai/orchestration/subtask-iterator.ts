@@ -20,7 +20,11 @@ import { isRateLimitError } from '../session/error-classifier';
 import type { SessionResult } from '../session/types';
 import { cleanupStaleForegroundCommands } from '../tools/builtin/bash-process-tracker';
 import type { SubtaskInfo } from './build-orchestrator';
-import { hasPassingTestEvidence, looksLikeVerifierCommand } from './verifier-evidence';
+import {
+  hasPassingTestEvidence,
+  looksLikeVerifierCommand,
+  splitCommandSegments,
+} from './verifier-evidence';
 import {
   RATE_LIMIT_PAUSE_FILE,
   removePauseFile,
@@ -163,6 +167,15 @@ export async function iterateSubtasks(
       return { totalSubtasks: 0, completedSubtasks: 0, stuckSubtasks, cancelled: false };
     }
 
+    const sourceSpecDir = resolveSourceSpecDir(config);
+    const reopenedCompletion = await reopenContradictoryCompletedSubtasks(config.specDir, plan);
+    if (reopenedCompletion) {
+      if (sourceSpecDir) {
+        await syncPhasesToMain(config.specDir, sourceSpecDir);
+      }
+      continue;
+    }
+
     // Count totals
     totalSubtasks = countTotalSubtasks(plan);
     completedSubtasks = countCompletedSubtasks(plan);
@@ -300,6 +313,7 @@ export async function iterateSubtasks(
         config.projectDir,
         result,
         changedFilesBeforeSession,
+        subtask,
       );
       if (unprovenCompletionReason) {
         subtaskCompleted = false;
@@ -351,8 +365,8 @@ export async function iterateSubtasks(
 
     // Sync updated phases to main project plan (worktree mode).
     // This keeps the main plan current during execution, not just on exit.
-    if (config.sourceSpecDir) {
-      await syncPhasesToMain(config.specDir, config.sourceSpecDir);
+    if (sourceSpecDir) {
+      await syncPhasesToMain(config.specDir, sourceSpecDir);
     }
 
     // Extract insights only when the plan itself proves completion. A finished
@@ -463,7 +477,22 @@ async function buildUnprovenCompletionRetryReason(
   projectDir: string,
   result: SessionResult,
   changedFilesBeforeSession: string[],
+  subtask?: PlanSubtask,
 ): Promise<string | null> {
+  const declaredVerifier = getDeclaredVerifierCommand(subtask);
+  if (declaredVerifier) {
+    const latestVerifier = findLatestPassingVerifier(result);
+    if (!latestVerifier || !verifierCommandSatisfiesDeclared(latestVerifier.command, declaredVerifier)) {
+      return (
+        `Subtask was marked completed, but its declared verifier did not pass in this session. ` +
+        `Declared verifier: \`${declaredVerifier}\`. ` +
+        `Latest passing verifier: \`${latestVerifier?.command ?? 'none'}\`. ` +
+        `Run the declared verifier successfully before marking this subtask completed.`
+      );
+    }
+    return null;
+  }
+
   if (hasConcreteCompletionEvidence(result)) return null;
 
   const changedFiles = await collectChangedProjectFiles(projectDir);
@@ -480,9 +509,129 @@ async function buildUnprovenCompletionRetryReason(
   );
 }
 
+async function reopenContradictoryCompletedSubtasks(
+  specDir: string,
+  plan: ImplementationPlan,
+): Promise<boolean> {
+  let updated = false;
+
+  for (const phase of plan.phases) {
+    for (const subtask of phase.subtasks) {
+      if (!shouldReopenContradictoryCompletedSubtask(subtask)) continue;
+
+      const mutableSubtask = subtask as PlanSubtask & {
+        completed_at?: string;
+        completion_note?: string;
+        last_error?: string;
+        last_attempt_outcome?: string;
+        last_attempt_at?: string;
+      };
+      const declaredVerifier = getDeclaredVerifierCommand(subtask);
+      mutableSubtask.status = 'pending';
+      mutableSubtask.last_attempt_outcome = 'reopened_false_completion';
+      mutableSubtask.last_attempt_at = new Date().toISOString();
+      mutableSubtask.last_error = (
+        `Recovered false completion: this subtask was marked completed even though its own retry context says the declared verifier did not pass. ` +
+        `Declared verifier: \`${declaredVerifier ?? 'unknown'}\`. ` +
+        `Rerun the declared verifier successfully before marking it completed.`
+      );
+      delete mutableSubtask.completed_at;
+      delete mutableSubtask.completion_note;
+      updated = true;
+    }
+  }
+
+  if (!updated) return false;
+
+  await writeFile(join(specDir, 'implementation_plan.json'), JSON.stringify(plan, null, 2));
+  return true;
+}
+
+function shouldReopenContradictoryCompletedSubtask(subtask: PlanSubtask): boolean {
+  if (subtask.status !== 'completed') return false;
+  if (!getDeclaredVerifierCommand(subtask)) return false;
+
+  const completionNote = typeof (subtask as { completion_note?: unknown }).completion_note === 'string'
+    ? String((subtask as { completion_note?: unknown }).completion_note)
+    : '';
+  if (completionNote && !looksLikeVerifierFailureContext(completionNote)) return false;
+
+  const context = [
+    subtask.last_error,
+    subtask.notes,
+    completionNote,
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).join('\n\n');
+
+  return looksLikeVerifierFailureContext(context);
+}
+
+function looksLikeVerifierFailureContext(context: string): boolean {
+  if (!context.trim()) return false;
+  return (
+    /\b(?:cannot|can't|did not|do not)\s+mark\b[\s\S]{0,120}\bcomplete(?:d)?\b/i.test(context)
+    || /\bnot\s+complete\b[\s\S]{0,120}\brequired verifier\b/i.test(context)
+    || /\brequired verifier\b[\s\S]{0,160}\b(?:fail|failed|failing|does not pass|did not pass)\b/i.test(context)
+    || /\bResult:\s*(?:\*\*)?FAIL(?:ED)?(?:\*\*)?\b/i.test(context)
+  );
+}
+
+function resolveSourceSpecDir(config: SubtaskIteratorConfig): string | undefined {
+  if (config.sourceSpecDir) return config.sourceSpecDir;
+
+  const normalizedSpecDir = config.specDir.replace(/\\/g, '/');
+  const normalizedMarker = '.auto-claude/worktrees/tasks/';
+  const markerIndex = normalizedSpecDir.indexOf(normalizedMarker);
+  if (markerIndex < 0) return undefined;
+
+  const root = config.specDir.slice(0, markerIndex);
+  const specId = config.specDir.replace(/\\/g, '/').split('/').at(-1);
+  if (!root || !specId) return undefined;
+
+  return join(root, '.auto-claude', 'specs', specId);
+}
+
 function hasNewChangedProjectFile(before: string[], after: string[]): boolean {
   const beforeSet = new Set(before);
   return after.some((filePath) => !beforeSet.has(filePath));
+}
+
+function getDeclaredVerifierCommand(subtask?: PlanSubtask): string | null {
+  const verification = subtask?.verification;
+  if (!verification) return null;
+
+  const candidates = [
+    typeof verification.command === 'string' ? verification.command : '',
+    typeof verification.run === 'string' ? verification.run : '',
+  ];
+
+  for (const candidate of candidates) {
+    const command = extractVerifierCommandCandidate(candidate);
+    if (command) return command;
+  }
+
+  return null;
+}
+
+function extractVerifierCommandCandidate(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (looksLikeVerifierCommand(trimmed)) return trimmed;
+
+  const backtickMatches = trimmed.match(/`([^`]+)`/g) ?? [];
+  for (const match of backtickMatches) {
+    const command = match.slice(1, -1).trim();
+    if (looksLikeVerifierCommand(command)) return command;
+  }
+
+  return null;
+}
+
+function verifierCommandSatisfiesDeclared(actualCommand: string, declaredCommand: string): boolean {
+  const actualSegments = splitCommandSegments(actualCommand);
+  const declaredSegments = splitCommandSegments(declaredCommand);
+  if (actualSegments.length === 0 || declaredSegments.length === 0) return false;
+
+  return declaredSegments.every((declaredSegment) => actualSegments.includes(declaredSegment));
 }
 
 function getPersistedVerifierFailureContext(subtask?: PlanSubtask): string | null {
@@ -706,6 +855,11 @@ function buildSuccessfulSubtaskVerificationNote(
 
   const verifier = findLatestPassingVerifier(result);
   if (verifier) {
+    const declaredVerifier = getDeclaredVerifierCommand(subtask);
+    if (declaredVerifier && !verifierCommandSatisfiesDeclared(verifier.command, declaredVerifier)) {
+      return null;
+    }
+
     return (
       `Auto-completed subtask after the agent reported completion and the latest verifier passed.\n` +
       `Command: ${verifier.command}\n` +
