@@ -710,6 +710,24 @@ export class AgentManager extends EventEmitter {
         }
       }
 
+      if (task.status === 'in_progress' && allSubtasksComplete) {
+        if (recoverApprovedQASignoffForSpec(project, task.specId, 'workflow-recovery-qa-report')) {
+          taskStateManager.handleUiEvent(task.id, {
+            type: 'QA_PASSED',
+            iteration: 0,
+            testsRun: {},
+          }, task, project);
+          this.scheduleHumanReviewMerge('workflow-recovery-qa-report', 1500);
+          console.warn(`[AgentManager] Startup recovery accepted passed QA report for completed in-progress task ${task.specId}`);
+          return true;
+        }
+
+        this.persistRuntimeState(project, task, 'ai_review', 'review', 'qa_review', 'qa_review');
+        console.warn(`[AgentManager] Startup recovery rerouting completed in-progress task to QA for ${task.specId}`);
+        await this.startQAProcess(task.id, project.path, task.specId, project.id);
+        return true;
+      }
+
       if ((task.status === 'ai_review' || this.shouldRetryTerminalAgentError(project, task)) && allSubtasksComplete) {
         this.persistRuntimeState(project, task, 'ai_review', 'review', 'qa_review', 'qa_review');
         console.warn(`[AgentManager] Startup recovery resuming QA for ${task.specId}`);
