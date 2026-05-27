@@ -32,6 +32,7 @@ import { findTaskWorktree } from '../../worktree-paths';
 import { normalizeQaFailureEvidenceContent, normalizeQaFixRequestFileSync } from '../../qa-feedback-utils';
 import { getQaReportVerdictFromContent } from '../../agent/task-review-artifacts';
 import { looksLikeVerifierCommand, splitCommandSegments } from '../../ai/orchestration/verifier-evidence';
+import { findReachableTaskMergeEvidence, type TaskMergeEvidence } from '../../task-merge-evidence';
 import {
   applyRuntimePhaseState,
   applyTaskEventRuntimeState,
@@ -1344,6 +1345,106 @@ function resetInvalidAutoCompletedSubtasks(plan: Record<string, unknown>, allSub
   return resetCount;
 }
 
+function recoverMergedPlanBeforeFalseCompletionReset(
+  plan: Record<string, unknown>,
+  allSubtasks: Record<string, unknown>[],
+  mergeEvidence: TaskMergeEvidence,
+  specId: string,
+): boolean {
+  let changed = false;
+  const now = new Date().toISOString();
+  const completionNote = `Recovered as completed because reachable merge commit ${mergeEvidence.commitSha} already contains ${specId}.`;
+
+  for (const subtask of allSubtasks) {
+    if (subtask.status !== 'completed') {
+      subtask.status = 'completed';
+      subtask.completed_at = subtask.completed_at || mergeEvidence.mergedAt;
+      subtask.completion_note = completionNote;
+      changed = true;
+    }
+    if (subtask.started_at === null) {
+      delete subtask.started_at;
+      changed = true;
+    }
+    if (subtask.last_error !== undefined) {
+      delete subtask.last_error;
+      changed = true;
+    }
+    if (subtask.last_attempt_outcome !== undefined) {
+      delete subtask.last_attempt_outcome;
+      changed = true;
+    }
+  }
+
+  if (Array.isArray(plan.phases)) {
+    for (const phase of plan.phases as Array<{ status?: string; subtasks?: Array<{ status?: string }> }>) {
+      if (
+        Array.isArray(phase.subtasks)
+        && phase.subtasks.length > 0
+        && phase.subtasks.every((subtask) => subtask.status === 'completed')
+        && phase.status !== 'completed'
+      ) {
+        phase.status = 'completed';
+        changed = true;
+      }
+    }
+  }
+
+  const qaApproved = isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined);
+  const nextStatus = qaApproved ? 'done' : 'ai_review';
+  const nextPlanStatus = qaApproved ? 'completed' : 'review';
+  const nextXstateState = qaApproved ? 'done' : 'qa_review';
+  const nextExecutionPhase = qaApproved ? 'complete' : 'qa_review';
+  const nextLastEventType = qaApproved ? 'QA_PASSED' : 'ALL_SUBTASKS_DONE';
+  const nextLastEventSource = `merged-task-startup-recovery:${mergeEvidence.source}`;
+
+  const assign = (key: string, value: unknown) => {
+    if (plan[key] !== value) {
+      plan[key] = value;
+      changed = true;
+    }
+  };
+  const remove = (key: string) => {
+    if (plan[key] !== undefined) {
+      delete plan[key];
+      changed = true;
+    }
+  };
+
+  assign('status', nextStatus);
+  assign('planStatus', nextPlanStatus);
+  assign('xstateState', nextXstateState);
+  assign('executionPhase', nextExecutionPhase);
+  assign('mergeCommit', mergeEvidence.commitSha);
+  assign('mergedAt', mergeEvidence.mergedAt);
+
+  const currentLastEvent = plan.lastEvent as Record<string, unknown> | undefined;
+  if (currentLastEvent?.type !== nextLastEventType || currentLastEvent?.source !== nextLastEventSource) {
+    plan.lastEvent = {
+      type: nextLastEventType,
+      timestamp: now,
+      source: nextLastEventSource,
+    };
+    changed = true;
+  }
+
+  const nextRecoveryNote = qaApproved
+    ? `Recovered done status for ${specId}: all subtasks are complete, QA is approved, and merge commit ${mergeEvidence.commitSha} is reachable.`
+    : `Recovered merged task ${specId}: reachable merge commit ${mergeEvidence.commitSha} exists, so startup false-completion repair must not reopen implementation subtasks; routing to AI review.`;
+  assign('recoveryNote', nextRecoveryNote);
+  remove('reviewReason');
+  if (!qaApproved) {
+    remove('qa_signoff');
+    remove('final_acceptance');
+  }
+
+  if (changed) {
+    plan.updated_at = now;
+  }
+
+  return changed;
+}
+
 function isRecoverySubtask(subtask: Record<string, unknown>): boolean {
   return typeof subtask.id === 'string' && subtask.id.startsWith('aperant-');
 }
@@ -1456,6 +1557,28 @@ export async function repairFalseCompletedSubtasks(
       const { allSubtasks, completedCount, totalCount } = checkSubtasksCompletion(plan);
       if (totalCount === 0) return { success: true, resetCount: 0 };
       const cleanedTerminalMetadata = clearStaleCompletionMetadataForActivePlan(plan);
+      const mergeEvidence = findReachableTaskMergeEvidence({
+        projectPath,
+        specId,
+        plan,
+      });
+      if (mergeEvidence) {
+        const recovered = recoverMergedPlanBeforeFalseCompletionReset(
+          plan,
+          allSubtasks as Record<string, unknown>[],
+          mergeEvidence,
+          specId,
+        );
+        if (recovered || cleanedTerminalMetadata) {
+          if (!recovered) plan.updated_at = new Date().toISOString();
+          writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+          if (projectId) projectStore.invalidateTasksCache(projectId);
+          if (recovered) {
+            console.warn(`[plan-file-utils] Recovered merged task ${specId} from ${mergeEvidence.source} before false-completion repair.`);
+          }
+        }
+        return { success: true, resetCount: 0 };
+      }
       if (completedCount === 0) {
         const prunedStaleRecovery = removeStaleQaRecoverySubtasks(plan);
         const syncedFeedbackVerifiers = syncHumanFeedbackVerifierSubtasks(allSubtasks as Record<string, unknown>[]);

@@ -283,6 +283,64 @@ describe('plan-file runtime guards', () => {
     expect(plan.recoveryNote).toMatch(/Reset 1 invalid auto-completed subtask/);
   });
 
+  it('does not reopen subtasks when a reachable auto-merge commit already exists', async () => {
+    execFileSync('/usr/bin/git', ['init'], { cwd: tempDir, stdio: 'ignore' });
+    execFileSync('/usr/bin/git', ['config', 'user.email', 'test@example.com'], { cwd: tempDir });
+    execFileSync('/usr/bin/git', ['config', 'user.name', 'Aperant Test'], { cwd: tempDir });
+    writeFileSync(path.join(tempDir, 'README.md'), 'base\n');
+    execFileSync('/usr/bin/git', ['add', 'README.md'], { cwd: tempDir });
+    execFileSync('/usr/bin/git', ['commit', '-m', 'Initial commit'], { cwd: tempDir, stdio: 'ignore' });
+    writeFileSync(path.join(tempDir, 'merged.ts'), 'export const merged = true;\n');
+    execFileSync('/usr/bin/git', ['add', 'merged.ts'], { cwd: tempDir });
+    execFileSync('/usr/bin/git', ['commit', '-m', 'Auto-merge example: Example task'], { cwd: tempDir, stdio: 'ignore' });
+    const mergeCommit = execFileSync('/usr/bin/git', ['rev-parse', 'HEAD'], { cwd: tempDir, encoding: 'utf-8' }).trim();
+
+    writeFileSync(planPath, JSON.stringify({
+      status: 'queue',
+      planStatus: 'queued',
+      xstateState: 'queue',
+      executionPhase: 'idle',
+      phases: [
+        {
+          name: 'Implementation',
+          subtasks: [
+            {
+              id: 'P1-S1',
+              status: 'completed',
+              completed_at: '2026-05-26T10:00:00.000Z',
+              completion_note: [
+                'Auto-completed subtask after the agent reported completion and the latest verifier passed.',
+                'Command: pwd && cat ./.auto-claude/specs/example/build-progress.txt',
+                'Result: build-progress content',
+              ].join('\n'),
+            },
+            {
+              id: 'P1-S2',
+              status: 'pending',
+              last_error: 'Recovered: prior completion had no non-.auto-claude repository changes.',
+              last_attempt_outcome: 'false_completion_no_repo_evidence',
+            },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const result = await repairFalseCompletedSubtasks(planPath, tempDir, 'example', 'project-1');
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+
+    expect(result).toEqual({ success: true, resetCount: 0 });
+    expect(plan.status).toBe('ai_review');
+    expect(plan.planStatus).toBe('review');
+    expect(plan.xstateState).toBe('qa_review');
+    expect(plan.executionPhase).toBe('qa_review');
+    expect(plan.mergeCommit).toBe(mergeCommit);
+    expect(plan.lastEvent.type).toBe('ALL_SUBTASKS_DONE');
+    expect(plan.phases[0].status).toBe('completed');
+    expect(plan.phases[0].subtasks.map((subtask: { status: string }) => subtask.status)).toEqual(['completed', 'completed']);
+    expect(plan.phases[0].subtasks[1].last_error).toBeUndefined();
+    expect(plan.recoveryNote).toContain('reachable merge commit');
+  });
+
   it('reopens completed human feedback when only part of the required verifier ran', async () => {
     const requiredVerifier = 'pnpm --filter @yect/obyect typecheck && pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts';
     const partialVerifier = 'pwd && pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts';
