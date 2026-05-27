@@ -54,6 +54,7 @@ import { XSTATE_ACTIVE_STATES, XSTATE_TO_PHASE } from '../../../shared/state-mac
 const planLocks = new Map<string, Promise<void>>();
 
 export const HUMAN_FEEDBACK_REWORK_SUBTASK_ID = 'aperant-human-feedback-rework';
+const MERGE_RECOVERY_COMPLETION_PATTERN = /\bRecovered as completed because reachable merge commit\b/i;
 
 export function ensureHumanFeedbackReworkSubtask(
   plan: Record<string, any>,
@@ -1322,6 +1323,83 @@ function syncHumanFeedbackVerifierSubtasks(allSubtasks: Record<string, unknown>[
   return changed;
 }
 
+function getUnresolvedHumanFeedbackReason(subtask: Record<string, unknown>, hasMergeEvidence: boolean): string | null {
+  if (subtask.id !== HUMAN_FEEDBACK_REWORK_SUBTASK_ID) return null;
+
+  if (subtask.status !== 'completed') {
+    return hasMergeEvidence
+      ? 'human feedback rework is still pending despite reachable merge evidence'
+      : null;
+  }
+
+  if (MERGE_RECOVERY_COMPLETION_PATTERN.test(String(subtask.completion_note ?? ''))) {
+    const expectedVerifierCommand = getExpectedVerifierCommand(subtask);
+    return expectedVerifierCommand
+      ? `human feedback was completed from merge evidence without running the required verifier: ${compactRecoveryCommand(expectedVerifierCommand)}`
+      : 'human feedback was completed from merge evidence without explicit resolution evidence';
+  }
+
+  return getInvalidAutoCompletionReason(subtask);
+}
+
+function resetUnresolvedHumanFeedbackForCoding(
+  plan: Record<string, unknown>,
+  allSubtasks: Record<string, unknown>[],
+  hasMergeEvidence: boolean,
+): number {
+  const now = new Date().toISOString();
+  let resetCount = 0;
+
+  for (const subtask of allSubtasks) {
+    const reason = getUnresolvedHumanFeedbackReason(subtask, hasMergeEvidence);
+    if (!reason) continue;
+    const expectedVerifierCommand = getExpectedVerifierCommand(subtask);
+
+    if (subtask.status !== 'pending') {
+      subtask.status = 'pending';
+    }
+    subtask.started_at = null;
+    subtask.completed_at = null;
+    delete subtask.completion_note;
+    delete subtask.last_attempt_at;
+    subtask.last_error = expectedVerifierCommand
+      ? `Recovered: ${reason}. Rerun implementation and pass this verifier before marking complete: ${compactRecoveryCommand(expectedVerifierCommand)}`
+      : `Recovered: ${reason}. Rerun implementation and produce concrete resolution evidence before marking complete.`;
+    subtask.last_attempt_outcome = 'invalid_human_feedback_completion';
+    resetCount++;
+  }
+
+  if (resetCount === 0) return 0;
+
+  if (Array.isArray(plan.phases)) {
+    for (const phase of plan.phases as Array<Record<string, unknown>>) {
+      const subtasks = Array.isArray(phase.subtasks) ? phase.subtasks as Record<string, unknown>[] : [];
+      if (!subtasks.some((subtask) => subtask.id === HUMAN_FEEDBACK_REWORK_SUBTASK_ID)) continue;
+      phase.status = 'in_progress';
+    }
+  }
+
+  plan.status = 'in_progress';
+  plan.planStatus = 'in_progress';
+  plan.xstateState = 'coding';
+  plan.executionPhase = 'coding';
+  plan.human_feedback_pending = {
+    requested_at: now,
+    preview: 'Recovered unresolved human feedback rework that had been marked complete without verifier evidence.',
+    source: 'human_feedback_recovery',
+  };
+  plan.recoveryNote = `Reset ${resetCount} unresolved human-feedback rework subtask(s) at ${now}`;
+  plan.updated_at = now;
+  delete plan.reviewReason;
+  delete plan.qa_signoff;
+  delete plan.final_acceptance;
+  delete plan.mergeCommit;
+  delete plan.mergedAt;
+  delete plan.lastEvent;
+
+  return resetCount;
+}
+
 function resetInvalidAutoCompletedSubtasks(plan: Record<string, unknown>, allSubtasks: Record<string, unknown>[]): number {
   let resetCount = 0;
 
@@ -1676,6 +1754,19 @@ export async function repairFalseCompletedSubtasks(
         return { success: true, resetCount: reset ? 1 : 0 };
       }
 
+      const syncedFeedbackVerifiers = syncHumanFeedbackVerifierSubtasks(allSubtasks as Record<string, unknown>[]);
+      const unresolvedHumanFeedbackCount = resetUnresolvedHumanFeedbackForCoding(
+        plan,
+        allSubtasks as Record<string, unknown>[],
+        Boolean(mergeEvidence),
+      );
+      if (unresolvedHumanFeedbackCount > 0) {
+        writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+        if (projectId) projectStore.invalidateTasksCache(projectId);
+        console.warn(`[plan-file-utils] Reopened unresolved human feedback for ${specId}; merge evidence alone is not enough.`);
+        return { success: true, resetCount: unresolvedHumanFeedbackCount };
+      }
+
       if (mergeEvidence) {
         const recovered = recoverMergedPlanBeforeFalseCompletionReset(
           plan,
@@ -1683,7 +1774,7 @@ export async function repairFalseCompletedSubtasks(
           mergeEvidence,
           specId,
         );
-        if (recovered || cleanedTerminalMetadata) {
+        if (recovered || cleanedTerminalMetadata || syncedFeedbackVerifiers) {
           if (!recovered) plan.updated_at = new Date().toISOString();
           writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
           if (projectId) projectStore.invalidateTasksCache(projectId);
@@ -1695,7 +1786,6 @@ export async function repairFalseCompletedSubtasks(
       }
       if (completedCount === 0) {
         const prunedStaleRecovery = removeStaleQaRecoverySubtasks(plan);
-        const syncedFeedbackVerifiers = syncHumanFeedbackVerifierSubtasks(allSubtasks as Record<string, unknown>[]);
         const cleaned = clearStaleQaRecoveryForPendingPlan(
           plan,
           allSubtasks as Record<string, unknown>[],
@@ -1725,7 +1815,6 @@ export async function repairFalseCompletedSubtasks(
         return { success: true, resetCount: 0 };
       }
 
-      const syncedFeedbackVerifiers = syncHumanFeedbackVerifierSubtasks(allSubtasks as Record<string, unknown>[]);
       let resetCount = resetInvalidAutoCompletedSubtasks(plan, allSubtasks as Record<string, unknown>[]);
       let resetReason: 'invalid-auto-completion' | 'no-repo-evidence' | null =
         resetCount > 0 ? 'invalid-auto-completion' : null;

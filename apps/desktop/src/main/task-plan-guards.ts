@@ -221,16 +221,26 @@ function getRecoverySubtasks(plan: MutablePlan | null | undefined): MutablePlan[
 }
 
 function hasCompletedRecoverySubtask(plan: MutablePlan | null | undefined, id: string): boolean {
-  return getRecoverySubtasks(plan).some((subtask) => subtask?.id === id && subtask?.status === 'completed');
+  return getRecoverySubtasks(plan).some((subtask) => {
+    return subtask?.id === id
+      && subtask?.status === 'completed'
+      && !MERGE_RECOVERY_COMPLETION_PATTERN.test(String(subtask.completion_note ?? ''));
+  });
 }
 
 export function hasResolvedRecoverySubtasks(plan: MutablePlan | null | undefined): boolean {
   const recoverySubtasks = getRecoverySubtasks(plan);
-  return recoverySubtasks.length > 0 && recoverySubtasks.every((subtask) => subtask?.status === 'completed');
+  return recoverySubtasks.length > 0 && recoverySubtasks.every((subtask) => {
+    return subtask?.status === 'completed'
+      && !MERGE_RECOVERY_COMPLETION_PATTERN.test(String(subtask.completion_note ?? ''));
+  });
 }
 
 export function hasPendingRecoverySubtasks(plan: MutablePlan | null | undefined): boolean {
-  return getRecoverySubtasks(plan).some((subtask) => subtask?.status !== 'completed');
+  return getRecoverySubtasks(plan).some((subtask) => {
+    return subtask?.status !== 'completed'
+      || MERGE_RECOVERY_COMPLETION_PATTERN.test(String(subtask.completion_note ?? ''));
+  });
 }
 
 export function clearResolvedRecoveryState(plan: MutablePlan | null | undefined): boolean {

@@ -145,6 +145,23 @@ describe('resolved recovery state guards', () => {
     expect(plan.human_feedback_pending).toEqual({ requested_at: '2026-05-26T08:00:00.000Z' });
     expect(plan.recoveryNote).toBe('Reset to queue by backend stability reset at 2026-05-26T08:00:00.000Z');
   });
+
+  it('does not resolve recovery state from merge-evidence completion alone', () => {
+    const plan = planWithSubtasks([
+      {
+        id: 'aperant-human-feedback-rework',
+        status: 'completed',
+        completion_note: 'Recovered as completed because reachable merge commit abc123 already contains example.',
+      },
+    ], {
+      human_feedback_pending: { requested_at: '2026-05-26T08:00:00.000Z' },
+    });
+
+    expect(hasResolvedRecoverySubtasks(plan)).toBe(false);
+    expect(hasPendingRecoverySubtasks(plan)).toBe(true);
+    expect(clearResolvedRecoveryState(plan)).toBe(false);
+    expect(plan.human_feedback_pending).toEqual({ requested_at: '2026-05-26T08:00:00.000Z' });
+  });
 });
 
 describe('runtime completion guards', () => {

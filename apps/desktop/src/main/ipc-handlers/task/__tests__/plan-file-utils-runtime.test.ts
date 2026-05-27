@@ -342,6 +342,88 @@ describe('plan-file runtime guards', () => {
     expect(plan.recoveryNote).toContain('reachable merge commit');
   });
 
+  it('reopens merge-recovered human feedback even when a reachable auto-merge commit exists', async () => {
+    execFileSync('/usr/bin/git', ['init'], { cwd: tempDir, stdio: 'ignore' });
+    execFileSync('/usr/bin/git', ['config', 'user.email', 'test@example.com'], { cwd: tempDir });
+    execFileSync('/usr/bin/git', ['config', 'user.name', 'Aperant Test'], { cwd: tempDir });
+    writeFileSync(path.join(tempDir, 'README.md'), 'base\n');
+    execFileSync('/usr/bin/git', ['add', 'README.md'], { cwd: tempDir });
+    execFileSync('/usr/bin/git', ['commit', '-m', 'Initial commit'], { cwd: tempDir, stdio: 'ignore' });
+    writeFileSync(path.join(tempDir, 'merged.ts'), 'export const merged = true;\n');
+    execFileSync('/usr/bin/git', ['add', 'merged.ts'], { cwd: tempDir });
+    execFileSync('/usr/bin/git', ['commit', '-m', 'Auto-merge example: Example task'], { cwd: tempDir, stdio: 'ignore' });
+    const mergeCommit = execFileSync('/usr/bin/git', ['rev-parse', 'HEAD'], { cwd: tempDir, encoding: 'utf-8' }).trim();
+    const requiredVerifier = 'pnpm --filter @yect/obyect typecheck && pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts';
+
+    writeFileSync(planPath, JSON.stringify({
+      status: 'done',
+      planStatus: 'completed',
+      xstateState: 'done',
+      executionPhase: 'complete',
+      qa_signoff: {
+        status: 'approved',
+        issues_found: [],
+        source: 'project-store-merged-task-recovery:plan-commit',
+      },
+      mergeCommit,
+      mergedAt: '2026-05-26T10:30:00.000Z',
+      lastEvent: { type: 'QA_PASSED', timestamp: '2026-05-26T10:29:00.000Z' },
+      phases: [
+        {
+          name: 'Implementation',
+          status: 'completed',
+          subtasks: [
+            { id: 'P1-S1', status: 'completed' },
+          ],
+        },
+        {
+          id: 'aperant-human-feedback-rework',
+          name: 'Human review feedback',
+          type: 'human_feedback_rework',
+          status: 'completed',
+          subtasks: [
+            {
+              id: 'aperant-human-feedback-rework',
+              title: 'Address human review feedback',
+              description: [
+                'Address the latest human review feedback recorded in QA_FIX_REQUEST.md.',
+                '',
+                'Command run from Yect main:',
+                requiredVerifier,
+              ].join('\n'),
+              status: 'completed',
+              verification: {
+                type: 'command',
+                run: requiredVerifier,
+              },
+              completed_at: '2026-05-26T10:00:00.000Z',
+              completion_note: `Recovered as completed because reachable merge commit ${mergeCommit} already contains example.`,
+            },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const result = await repairFalseCompletedSubtasks(planPath, tempDir, 'example', 'project-1');
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+    const reworkPhase = plan.phases[1];
+    const reworkSubtask = reworkPhase.subtasks[0];
+
+    expect(result).toEqual({ success: true, resetCount: 1 });
+    expect(plan.status).toBe('in_progress');
+    expect(plan.planStatus).toBe('in_progress');
+    expect(plan.xstateState).toBe('coding');
+    expect(plan.executionPhase).toBe('coding');
+    expect(plan.qa_signoff).toBeUndefined();
+    expect(plan.mergeCommit).toBeUndefined();
+    expect(plan.lastEvent).toBeUndefined();
+    expect(reworkPhase.status).toBe('in_progress');
+    expect(reworkSubtask.status).toBe('pending');
+    expect(reworkSubtask.completion_note).toBeUndefined();
+    expect(reworkSubtask.last_error).toContain('merge evidence');
+    expect(reworkSubtask.last_error).toContain('required verifier');
+  });
+
   it('reopens completed human feedback when only part of the required verifier ran', async () => {
     const requiredVerifier = 'pnpm --filter @yect/obyect typecheck && pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts';
     const partialVerifier = 'pwd && pnpm --filter @yect/obyect test -- src/lib/library/__tests__/useLibraryFeed.tag-filtering.test.ts';
@@ -414,6 +496,56 @@ describe('plan-file runtime guards', () => {
       run: requiredVerifier,
     });
     expect(reworkSubtask.last_error).toContain('required verifier');
+  });
+
+  it('leaves pending human feedback active when there is no merge evidence', async () => {
+    const requiredVerifier = 'pnpm --filter @yect/obyect typecheck';
+
+    writeFileSync(planPath, JSON.stringify({
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      phases: [
+        {
+          id: 'aperant-human-feedback-rework',
+          name: 'Human review feedback',
+          type: 'human_feedback_rework',
+          status: 'in_progress',
+          subtasks: [
+            {
+              id: 'aperant-human-feedback-rework',
+              title: 'Address human review feedback',
+              description: [
+                'Address the latest human review feedback recorded in QA_FIX_REQUEST.md.',
+                '',
+                'Command run from Yect main:',
+                requiredVerifier,
+              ].join('\n'),
+              status: 'pending',
+              verification: {
+                type: 'manual',
+                instructions: 'Verify the feedback is addressed, then rerun QA.',
+              },
+            },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const result = await repairFalseCompletedSubtasks(planPath, tempDir, 'example', 'project-1');
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+    const reworkSubtask = plan.phases[0].subtasks[0];
+
+    expect(result).toEqual({ success: true, resetCount: 0 });
+    expect(plan.status).toBe('in_progress');
+    expect(plan.executionPhase).toBe('coding');
+    expect(reworkSubtask.status).toBe('pending');
+    expect(reworkSubtask.last_error).toBeUndefined();
+    expect(reworkSubtask.verification).toEqual({
+      type: 'command',
+      run: requiredVerifier,
+    });
   });
 
   it('clears stale QA recovery artifacts when false completion reset reopens normal subtasks', async () => {
