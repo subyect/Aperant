@@ -14,7 +14,7 @@ import {
   normalizeOpenAISubscriptionModel,
 } from '../shared/constants';
 import { getAutoBuildPath, isInitialized } from './project-initializer';
-import { getRegisteredWorktreeInfoMap, getTaskWorktreeDir, isValidTaskWorktree } from './worktree-paths';
+import { getRegisteredWorktreeInfoMap, getTaskWorktreeDir, getTaskWorktreePath, isValidTaskWorktree } from './worktree-paths';
 import { getToolPath } from './cli-tool-manager';
 import { findAllSpecPaths } from './utils/spec-path-helpers';
 import { ensureAbsolutePath } from './utils/path-helpers';
@@ -1014,8 +1014,11 @@ export class ProjectStore {
     const qaApproved = qaReportApproved;
     const failedQaReport = this.hasFailedQaReportVerdict(planPath);
     const incompleteWorkflowStatus = finalStatus === 'backlog' || finalStatus === 'queue' || finalStatus === 'in_progress';
+    const taskWorktreeHasUnmergedChanges = plan
+      ? this.hasUnmergedTaskWorktreeChanges(basePath, taskName)
+      : false;
 
-    if (allCompleted && plan && !failedQaReport) {
+    if (allCompleted && plan && !failedQaReport && !taskWorktreeHasUnmergedChanges) {
       const mergeEvidence = findReachableTaskMergeEvidence({
         projectPath: basePath,
         specId: taskName,
@@ -1061,7 +1064,7 @@ export class ProjectStore {
       }
     }
 
-    if (allCompleted && qaApproved && finalStatus !== 'done' && finalStatus !== 'pr_created' && plan) {
+    if (allCompleted && qaApproved && finalStatus !== 'done' && finalStatus !== 'pr_created' && plan && !taskWorktreeHasUnmergedChanges) {
       const mergeEvidence = findReachableTaskMergeEvidence({
         projectPath: basePath,
         specId: taskName,
@@ -1224,13 +1227,14 @@ export class ProjectStore {
       terminalStatus
     ) && !planMergeEvidence && !reachableMergeEvidence;
     const unreachableMergeCommit = terminalStatus && recordedMergeUnreachable && !reachableMergeEvidence;
+    const unmergedTaskWorktreeChanges = terminalStatus && this.hasUnmergedTaskWorktreeChanges(basePath, taskName);
     const failedQaReport = this.hasFailedQaReportVerdict(planPath);
     const passingQaReport = this.hasApprovedQaReportVerdict(planPath);
     const qaPlanApproved = isQASignoffApproved((plan as unknown as { qa_signoff?: Record<string, unknown> }).qa_signoff);
     const completedHumanReview = finalStatus === 'human_review' && finalReviewReason === 'completed';
     const missingPassingQaReport = !passingQaReport && !reachableMergeEvidence && (terminalStatus || completedHumanReview || qaPlanApproved);
 
-    if (!doneGuard.incomplete && !missingMergeEvidence && !unreachableMergeCommit && !failedQaReport && !missingPassingQaReport) {
+    if (!doneGuard.incomplete && !missingMergeEvidence && !unreachableMergeCommit && !unmergedTaskWorktreeChanges && !failedQaReport && !missingPassingQaReport) {
       if (reachableMergeEvidence && (!planMergeEvidence || recordedMergeUnreachable)) {
         this.persistRecoveredMergeEvidence(
           plan as unknown as Record<string, unknown>,
@@ -1266,6 +1270,28 @@ export class ProjectStore {
       return { status: finalStatus, reviewReason: finalReviewReason };
     }
     const correctedPlan = plan as unknown as Record<string, unknown>;
+    if (allCompleted && unmergedTaskWorktreeChanges) {
+      correctedPlan.status = 'human_review';
+      correctedPlan.planStatus = 'review';
+      correctedPlan.xstateState = 'human_review';
+      correctedPlan.executionPhase = 'complete';
+      correctedPlan.reviewReason = 'completed';
+      correctedPlan.recoveryNote = `Recovered terminal status for ${taskName}: task worktree has unmerged project changes; returning to completed review so merge can run.`;
+      delete correctedPlan.mergeCommit;
+      delete correctedPlan.mergedAt;
+      correctedPlan.updated_at = new Date().toISOString();
+
+      try {
+        writeFileAtomicSync(planPath, JSON.stringify(correctedPlan, null, 2));
+        Object.assign(plan, correctedPlan);
+        console.warn(`[ProjectStore] Corrected terminal status for ${taskName}; unmerged worktree changes remain.`);
+        return { status: 'human_review', reviewReason: 'completed' };
+      } catch (writeError) {
+        console.error(`[ProjectStore] Failed to persist unmerged-worktree correction for ${taskName}:`, writeError);
+        return { status: finalStatus, reviewReason: finalReviewReason };
+      }
+    }
+
     if (allCompleted && Array.isArray(correctedPlan.phases)) {
       for (const phase of correctedPlan.phases as Array<{ status?: string; subtasks?: Array<{ status?: string }> }>) {
         if (Array.isArray(phase.subtasks) && phase.subtasks.length > 0 && phase.subtasks.every((subtask) => subtask.status === 'completed')) {
@@ -1280,6 +1306,8 @@ export class ProjectStore {
         ? `Recovered terminal status for ${taskName}: qa_report.md contains a failed verdict; rerunning QA and merge.`
         : unreachableMergeCommit
         ? `Recovered terminal status for ${taskName}: recorded merge commit is not reachable from the current checkout; rerunning QA and merge.`
+        : unmergedTaskWorktreeChanges
+        ? `Recovered terminal status for ${taskName}: task worktree has unmerged project changes; returning to merge review.`
         : missingMergeEvidence
         ? `Recovered terminal status for ${taskName}: merge evidence is missing; rerunning QA and merge.`
         : missingPassingQaReport
@@ -1379,6 +1407,56 @@ export class ProjectStore {
     } catch {
       return false;
     }
+  }
+
+  private hasUnmergedTaskWorktreeChanges(basePath: string, taskName: string): boolean {
+    const worktreePath = this.resolveTaskWorktreePath(basePath, taskName);
+    if (!worktreePath || !existsSync(worktreePath)) return false;
+
+    try {
+      const output = execFileSync(getToolPath('git'), ['status', '--porcelain', '--untracked-files=all'], {
+        cwd: worktreePath,
+        encoding: 'utf-8',
+        env: getIsolatedGitEnv(),
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+
+      return output
+        .split(/\r?\n/)
+        .map((line) => this.extractGitStatusPath(line))
+        .filter((statusPath): statusPath is string => Boolean(statusPath))
+        .some((statusPath) => !this.isTaskMetadataStatusPath(statusPath));
+    } catch {
+      return false;
+    }
+  }
+
+  private resolveTaskWorktreePath(basePath: string, taskName: string): string {
+    if (
+      path.basename(basePath) === taskName
+      && existsSync(basePath)
+      && basePath.replace(/\\/g, '/').includes('/.auto-claude/worktrees/tasks/')
+    ) {
+      return basePath;
+    }
+    return getTaskWorktreePath(basePath, taskName);
+  }
+
+  private extractGitStatusPath(line: string): string | null {
+    if (!line.trim()) return null;
+    const rawPath = line.slice(3).trim();
+    if (!rawPath) return null;
+    const renameTarget = rawPath.includes(' -> ') ? rawPath.split(' -> ').pop() : rawPath;
+    return renameTarget?.replace(/^"|"$/g, '') ?? null;
+  }
+
+  private isTaskMetadataStatusPath(statusPath: string): boolean {
+    const normalized = statusPath.replace(/\\/g, '/');
+    return normalized === '.env.local'
+      || normalized.startsWith('.auto-claude/')
+      || normalized.startsWith('node_modules/')
+      || normalized.startsWith('.next/')
+      || normalized.startsWith('dist/');
   }
 
   private hasUnreachableMergeCommit(plan: Record<string, unknown>, basePath: string): boolean {

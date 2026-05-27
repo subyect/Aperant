@@ -1125,6 +1125,114 @@ describe('ProjectStore', () => {
       expect(persistedPlan.mergedAt).toBeTruthy();
     });
 
+    it('does not recover stale coding tasks to done when the task worktree has unmerged project changes', async () => {
+      const specId = '006-merged-but-dirty-coding';
+      commitAutoMergeForSpec(specId);
+
+      const worktreeSpecRoot = getRegisteredWorktreeSpecRoot(specId);
+      const worktreePath = path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId);
+      mkdirSync(path.join(worktreePath, 'packages', 'layer1-db', 'src'), { recursive: true });
+      writeFileSync(path.join(worktreePath, 'packages', 'layer1-db', 'src', 'new-reader.ts'), 'export const changed = true;\n');
+      writeSpec(worktreeSpecRoot, specId, makePlan({
+        feature: 'Worktree Metadata',
+        status: 'in_progress',
+        subtaskStatuses: ['completed'],
+        updatedAt: '2024-01-01T00:00:00Z',
+      }));
+      writeFileSync(
+        path.join(worktreeSpecRoot, specId, 'qa_report.md'),
+        'Status: PASSED\n',
+      );
+
+      const specsRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');
+      writeSpec(
+        specsRoot,
+        specId,
+        {
+          ...makePlan({
+            feature: 'Merged But Dirty Coding',
+            status: 'in_progress',
+            subtaskStatuses: ['completed', 'completed'],
+            updatedAt: '2024-01-01T00:00:00Z',
+          }),
+          planStatus: 'in_progress',
+          xstateState: 'coding',
+          executionPhase: 'coding',
+        },
+      );
+      writeFileSync(
+        path.join(specsRoot, specId, 'qa_report.md'),
+        'Status: PASSED\n',
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(specsRoot, specId, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(tasks[0].status).toBe('human_review');
+      expect(tasks[0].reviewReason).toBe('completed');
+      expect(persistedPlan.status).toBe('human_review');
+      expect(persistedPlan.reviewReason).toBe('completed');
+      expect(persistedPlan.mergeCommit).toBeUndefined();
+    });
+
+    it('returns terminal done tasks with dirty task worktrees to completed review instead of trusting stale merge evidence', async () => {
+      const specId = '006-done-but-dirty-worktree';
+      const mergeEvidence = commitAutoMergeForSpec(specId);
+
+      const worktreePath = path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId);
+      getRegisteredWorktreeSpecRoot(specId);
+      mkdirSync(path.join(worktreePath, 'packages', 'layer1-console', 'src'), { recursive: true });
+      writeFileSync(path.join(worktreePath, 'packages', 'layer1-console', 'src', 'changed.ts'), 'export const changed = true;\n');
+
+      const specsRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');
+      writeSpec(
+        specsRoot,
+        specId,
+        {
+          ...makePlan({
+            feature: 'Done But Dirty Worktree',
+            status: 'done',
+            subtaskStatuses: ['completed', 'completed'],
+            updatedAt: '2024-01-01T00:00:00Z',
+          }),
+          planStatus: 'completed',
+          xstateState: 'done',
+          executionPhase: 'complete',
+          qa_signoff: { status: 'approved', issues_found: [] },
+          mergeCommit: mergeEvidence.commitSha,
+          mergedAt: mergeEvidence.mergedAt,
+        },
+      );
+      writeFileSync(
+        path.join(specsRoot, specId, 'qa_report.md'),
+        'Status: PASSED\n',
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(specsRoot, specId, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(tasks[0].status).toBe('human_review');
+      expect(tasks[0].reviewReason).toBe('completed');
+      expect(persistedPlan.status).toBe('human_review');
+      expect(persistedPlan.reviewReason).toBe('completed');
+      expect(persistedPlan.mergeCommit).toBeUndefined();
+      expect(persistedPlan.recoveryNote).toContain('unmerged project changes');
+    });
+
     it('recovers stale in-progress tasks to done when QA is approved and merge evidence is reachable', async () => {
       execFileSync('git', ['init'], { cwd: TEST_PROJECT_PATH, stdio: 'ignore' });
       execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: TEST_PROJECT_PATH });
