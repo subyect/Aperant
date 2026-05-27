@@ -31,6 +31,7 @@ import {
   clearCompletedSubtaskDiagnostics,
   clearResolvedRecoveryState,
   doneStatusHasIncompleteSubtasks,
+  getUnresolvedQaRecoveryFailureContent,
   hasResolvedRecoverySubtasks,
   isQASignoffApproved,
   planHasMergeCompletionEvidence,
@@ -1349,10 +1350,22 @@ export class ProjectStore {
   }
 
   private hasFailedQaReportVerdict(planPath: string): boolean {
+    let hasApprovedReport = false;
     try {
       const qaReportPath = path.join(path.dirname(planPath), AUTO_BUILD_PATHS.QA_REPORT);
       const content = readFileSync(qaReportPath, 'utf-8');
-      return getQaReportVerdictFromContent(content) === 'failed';
+      const verdict = getQaReportVerdictFromContent(content);
+      if (verdict === 'failed') return true;
+      hasApprovedReport = verdict === 'approved';
+    } catch {
+      hasApprovedReport = false;
+    }
+
+    if (hasApprovedReport) return false;
+
+    try {
+      const plan = safeParseJson<Record<string, unknown>>(readFileSync(planPath, 'utf-8'));
+      return getUnresolvedQaRecoveryFailureContent(plan) !== null;
     } catch {
       return false;
     }

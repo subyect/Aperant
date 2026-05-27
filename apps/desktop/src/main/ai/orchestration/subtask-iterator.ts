@@ -289,6 +289,20 @@ export async function iterateSubtasks(
       continue;
     }
 
+    if (isNonRetryableProviderRequestFailure(result)) {
+      const reason = (
+        `Provider rejected the request before any repository tool ran. ` +
+        `Stopping this task instead of retrying the same failing payload: ${result.error?.message ?? 'provider request failed'}`
+      );
+      await markSubtaskRetryRequired(config.specDir, subtask.id, reason, result.outcome);
+      if (config.sourceSpecDir && config.sourceSpecDir !== config.specDir) {
+        await syncPhasesToMain(config.specDir, config.sourceSpecDir);
+      }
+      stuckSubtasks.push(subtask.id);
+      config.onSubtaskStuck?.(subtaskInfo, reason);
+      return { totalSubtasks, completedSubtasks, stuckSubtasks, cancelled: false };
+    }
+
     const completionState = await readSubtaskCompletionState(config.specDir, subtask.id);
     let subtaskCompleted = completionState.status === 'completed';
     let retryReasonWritten = false;
@@ -1116,6 +1130,15 @@ function shouldKeepRetryingSubtask(subtask: PlanSubtask): boolean {
   }
 
   return false;
+}
+
+function isNonRetryableProviderRequestFailure(result: SessionResult): boolean {
+  if (result.outcome !== 'error') return false;
+  if (result.error?.retryable !== false) return false;
+  if ((result.toolCallCount ?? 0) > 0) return false;
+
+  const message = result.error?.message ?? '';
+  return /\b(?:400|bad request|invalid request|invalid_request|unsupported|does not support|schema|tool(?:s)? not supported)\b/i.test(message);
 }
 
 /**

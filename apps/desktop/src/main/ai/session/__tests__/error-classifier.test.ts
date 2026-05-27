@@ -8,6 +8,7 @@ import {
   isAbortError,
   classifyError,
   classifyToolError,
+  errorToDisplayString,
   ErrorCode,
 } from '../error-classifier';
 
@@ -210,6 +211,23 @@ describe('classifyError', () => {
     const original = new Error('test');
     const result = classifyError(original);
     expect(result.sessionError.cause).toBe(original);
+  });
+
+  it('includes provider response body details for generic SDK errors', () => {
+    const error = Object.assign(new Error('Bad Request'), {
+      responseBody: '{"error":{"message":"model does not support tools"}}',
+    });
+
+    const result = classifyError(error);
+
+    expect(result.sessionError.code).toBe(ErrorCode.GENERIC);
+    expect(result.sessionError.message).toBe('Bad Request: model does not support tools');
+  });
+});
+
+describe('errorToDisplayString', () => {
+  it('formats nested object errors without [object Object]', () => {
+    expect(errorToDisplayString({ error: { message: 'subscription rejected' } })).toBe('subscription rejected');
   });
 });
 

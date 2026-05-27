@@ -73,6 +73,7 @@ const RECOVERY_LAUNCH_TIMEOUT_MS = 45_000;
 const RECOVERY_PASS_STALE_MS = 60_000;
 const RECOVERY_LAUNCH_STALE_MS = 5 * 60_000;
 const WORKTREE_CONFLICT_SCAN_TIMEOUT_MS = 10_000;
+const PID_LIVENESS_CACHE_TTL_MS = 2_000;
 const STALE_WORKER_ACTIVITY_MS: Record<ProcessType, number> = {
   'spec-creation': 10 * 60_000,
   'task-execution': 20 * 60_000,
@@ -228,6 +229,7 @@ export class AgentManager extends EventEmitter {
   private workflowRecoveryStartedAt: number | null = null;
   private workflowRecoveryToken: symbol | null = null;
   private workflowLaunchesInProgress = new Map<string, { projectId: string; specId: string; startedAt: number }>();
+  private pidLivenessCache = new Map<number, { checkedAt: number; alive: boolean }>();
 
   constructor() {
     super();
@@ -625,23 +627,32 @@ export class AgentManager extends EventEmitter {
   }
 
   private isPidAlive(pid: number): boolean {
+    const cached = this.pidLivenessCache.get(pid);
+    if (cached && Date.now() - cached.checkedAt < PID_LIVENESS_CACHE_TTL_MS) {
+      return cached.alive;
+    }
+
+    let alive = true;
     try {
+      process.kill(pid, 0);
       if (process.platform !== 'win32') {
         try {
           const stat = execFileSync(getProcessStatCommand(), ['-o', 'stat=', '-p', String(pid)], {
             encoding: 'utf-8',
             stdio: ['ignore', 'pipe', 'ignore'],
           }).trim();
-          if (stat && isZombieProcessStat(stat)) return false;
+          if (stat && isZombieProcessStat(stat)) alive = false;
         } catch {
-          // Fall back to kill(0); ps can fail for races or unsupported flags.
+          // ps can fail for races or unsupported flags; kill(0) already proved liveness.
         }
       }
-      process.kill(pid, 0);
-      return true;
     } catch (error) {
-      return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+      alive = (error as NodeJS.ErrnoException).code !== 'ESRCH';
     }
+
+    this.pidLivenessCache.set(pid, { checkedAt: Date.now(), alive });
+    if (!alive) this.pidLivenessCache.delete(pid);
+    return alive;
   }
 
   private async resumeOrphanedWorkflowTasks(projects: Project[], reason = 'workflow-recovery'): Promise<void> {

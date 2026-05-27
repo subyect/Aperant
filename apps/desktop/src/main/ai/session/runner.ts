@@ -372,8 +372,9 @@ async function executeStream(
   // Codex models (via chatgpt.com/backend-api/codex/responses) require
   // `instructions` in the request body instead of system messages in `input`.
   // Pass system prompt via providerOptions and enable store for proper Codex API behavior.
-  const modelId = typeof config.model === 'string' ? config.model : config.model.modelId;
-  const isCodex = shouldUseOpenAIInstructions({ model: config.model });
+  const modelId = config.resolvedModelId ?? (typeof config.model === 'string' ? config.model : config.model.modelId);
+  const isCodex = config.usesOpenAIResponsesApi === true
+    || shouldUseOpenAIInstructions({ model: config.model, resolvedModelId: modelId });
   const isAnthropicModel = modelId?.startsWith('claude-') ?? false;
 
   // Compute thinking/reasoning provider options from session config

@@ -1322,6 +1322,67 @@ describe('ProjectStore', () => {
       expect(persistedPlan.recoveryNote).toContain('qa_report.md contains a failed verdict');
     });
 
+    it('reopens terminal done tasks when failed QA recovery was completed only by merge evidence', async () => {
+      const specId = '006-done-auto-completed-failed-qa-recovery';
+      const mergeEvidence = commitAutoMergeForSpec(specId);
+      const plan = {
+        ...makePlan({
+          feature: 'Done With Auto Completed QA Recovery',
+          status: 'done',
+          subtaskStatuses: ['completed'],
+          updatedAt: '2024-01-01T00:00:00Z',
+        }),
+        qa_signoff: {
+          status: 'approved',
+          issues_found: [],
+          source: 'merged-task-startup-recovery:plan-commit',
+        },
+        mergeCommit: mergeEvidence.commitSha,
+        mergedAt: mergeEvidence.mergedAt,
+      };
+      (plan.phases as any[]).push({
+        id: 'aperant-qa-report-recovery',
+        phase: 2,
+        name: 'QA report recovery',
+        type: 'qa_report_recovery',
+        status: 'completed',
+        subtasks: [
+          {
+            id: 'aperant-qa-report-failure',
+            title: 'Resolve failed QA report',
+            description: [
+              'Resolve the failed QA report.',
+              '',
+              'Failed QA report:',
+              '```markdown',
+              'Status: FAILED',
+              'getBrandProfile is not a function',
+              '```',
+            ].join('\n'),
+            status: 'completed',
+            completion_note: `Recovered as completed because reachable merge commit ${mergeEvidence.commitSha} already contains ${specId}.`,
+          },
+        ],
+      });
+      writeSpec(path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs'), specId, plan);
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', specId, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(tasks.find((task) => task.specId === specId)?.status).toBe('ai_review');
+      expect(persistedPlan.status).toBe('ai_review');
+      expect(persistedPlan.qa_signoff).toBeUndefined();
+      expect(persistedPlan.mergeCommit).toBeUndefined();
+      expect(persistedPlan.recoveryNote).toContain('qa_report.md contains a failed verdict');
+    });
+
     it('reopens terminal done tasks when recorded merge commit is not on checkout HEAD', async () => {
       execFileSync('git', ['init'], { cwd: TEST_PROJECT_PATH, stdio: 'ignore' });
       execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: TEST_PROJECT_PATH });

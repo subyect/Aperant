@@ -233,7 +233,7 @@ export function createStreamHandler(onEvent: SessionEventCallback) {
       isError: true,
     });
 
-    const toolError = classifyToolError(part.toolName, part.toolCallId, errorMessage);
+    const toolError = classifyToolError(part.toolName, part.toolCallId, part.error);
     emit({ type: 'error', error: toolError });
   }
 
@@ -269,8 +269,7 @@ export function createStreamHandler(onEvent: SessionEventCallback) {
   }
 
   function handleError(part: ErrorPart): void {
-    const errorMessage = part.error instanceof Error ? part.error.message : String(part.error ?? 'Stream error');
-    const { sessionError } = classifyError(errorMessage);
+    const { sessionError } = classifyError(part.error ?? 'Stream error');
     emit({ type: 'error', error: sessionError });
   }
 

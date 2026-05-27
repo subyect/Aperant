@@ -1,5 +1,6 @@
 import type { TaskStatus } from '../shared/types';
 import { XSTATE_TO_PHASE, mapStateToLegacy } from '../shared/state-machines';
+import { getQaReportVerdictFromContent } from './agent/task-review-artifacts';
 
 type MutablePlan = Record<string, any>;
 
@@ -22,6 +23,27 @@ const RECOVERY_NOTE_PATTERNS = [
   /^Recovered (stale terminal status|from stale done status)\b/,
 ];
 
+const MERGE_RECOVERY_COMPLETION_PATTERN = /\bRecovered as completed because reachable merge commit\b/i;
+const AUTOMATIC_MERGE_SIGNOFF_SOURCE_PATTERN = /\b(?:merged-task-startup-recovery|project-store-merged-task-recovery)\b/i;
+const QA_RECOVERY_RESOLUTION_EVIDENCE_PATTERNS = [
+  /\bAuto-completed QA recovery after successful test verification\b/i,
+  /\bQA validation passed successfully\b/i,
+  /\bTest Files\s+\d+\s+passed\b/i,
+  /\bTests\s+\d+\s+passed\b/i,
+  /\bStatus\s*:\s*(?:PASSED|PASS|APPROVED)\b/i,
+  /\bFinal Status\s*:\s*(?:PASSED|PASS|APPROVED)\b/i,
+  /\bResult\s*:\s*(?:PASSED|PASS|APPROVED)\b/i,
+];
+
+function getPlanSubtasks(plan: MutablePlan | null | undefined): MutablePlan[] {
+  return Array.isArray(plan?.phases)
+    ? plan.phases.flatMap((phase: MutablePlan) => {
+      const items = phase.subtasks || phase.chunks || [];
+      return Array.isArray(items) ? items : [];
+    })
+    : [];
+}
+
 export interface PlanCompletionCounts {
   allSubtasks: MutablePlan[];
   completedCount: number;
@@ -30,12 +52,7 @@ export interface PlanCompletionCounts {
 }
 
 export function checkSubtasksCompletion(plan: MutablePlan | null | undefined): PlanCompletionCounts {
-  const allSubtasks = Array.isArray(plan?.phases)
-    ? plan.phases.flatMap((phase: MutablePlan) => {
-      const items = phase.subtasks || phase.chunks || [];
-      return Array.isArray(items) ? items : [];
-    })
-    : [];
+  const allSubtasks = getPlanSubtasks(plan);
   const completedCount = allSubtasks.filter((subtask) => subtask?.status === 'completed').length;
   const totalCount = allSubtasks.length;
   return {
@@ -53,6 +70,61 @@ export function getPlanCompletionCounts(plan: MutablePlan | null | undefined): P
 
 export function isQASignoffApproved(signoff: MutablePlan | null | undefined): boolean {
   return signoff?.approved === true || signoff?.status === 'passed' || signoff?.status === 'approved';
+}
+
+function getQaRecoverySubtasks(plan: MutablePlan | null | undefined): MutablePlan[] {
+  return getPlanSubtasks(plan).filter((subtask) => subtask?.id === QA_REPORT_RECOVERY_SUBTASK_ID);
+}
+
+function stringifyQaRecoveryEvidence(subtask: MutablePlan): string {
+  return [
+    subtask.description,
+    subtask.evidence,
+    subtask.notes,
+    subtask.last_error,
+    subtask.completion_note,
+  ]
+    .filter((value) => typeof value === 'string' && value.trim().length > 0)
+    .join('\n\n');
+}
+
+function hasPassingQaRecoveryResolutionEvidence(subtask: MutablePlan): boolean {
+  const evidence = [
+    subtask.completion_note,
+    subtask.evidence,
+    subtask.notes,
+    subtask.last_attempt_outcome,
+  ]
+    .filter((value) => typeof value === 'string' && value.trim().length > 0)
+    .join('\n\n');
+  return QA_RECOVERY_RESOLUTION_EVIDENCE_PATTERNS.some((pattern) => pattern.test(evidence));
+}
+
+function isAutomaticMergeRecoverySignoff(signoff: MutablePlan | null | undefined): boolean {
+  return AUTOMATIC_MERGE_SIGNOFF_SOURCE_PATTERN.test(String(signoff?.source ?? ''));
+}
+
+export function getUnresolvedQaRecoveryFailureContent(plan: MutablePlan | null | undefined): string | null {
+  for (const subtask of getQaRecoverySubtasks(plan)) {
+    const evidence = stringifyQaRecoveryEvidence(subtask);
+    if (!evidence) continue;
+
+    const verdict = getQaReportVerdictFromContent(evidence);
+    const hasFailureEvidence = verdict === 'failed'
+      || /\b(?:Failed QA report|QA failed|cannot sign off|does not satisfy|does not meet|not ready for sign[- ]off)\b/i.test(evidence);
+    if (!hasFailureEvidence) continue;
+
+    if (subtask.status !== 'completed') return evidence;
+    if (hasPassingQaRecoveryResolutionEvidence(subtask)) continue;
+    if (MERGE_RECOVERY_COMPLETION_PATTERN.test(String(subtask.completion_note ?? ''))) return evidence;
+    if (!isQASignoffApproved(plan?.qa_signoff) || isAutomaticMergeRecoverySignoff(plan?.qa_signoff)) return evidence;
+  }
+
+  return null;
+}
+
+export function hasUnresolvedQaRecoveryFailure(plan: MutablePlan | null | undefined): boolean {
+  return getUnresolvedQaRecoveryFailureContent(plan) !== null;
 }
 
 export function planHasMergeCompletionEvidence(plan: MutablePlan | null | undefined): boolean {

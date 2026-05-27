@@ -42,6 +42,7 @@ import {
   copyRuntimeStateFromSourcePlan,
   createApprovedQASignoffFromReport,
   doneStatusHasIncompleteSubtasks,
+  getUnresolvedQaRecoveryFailureContent,
   isQASignoffApproved,
   preserveCompletedSubtasks,
   statusRequiresCompletedSubtasks,
@@ -1055,7 +1056,17 @@ export function readFailedQaEvidenceSync(specDir: string): { reportPath: string;
   try {
     const planPath = path.join(specDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
     const plan = safeParseJson<Record<string, any>>(readFileSync(planPath, 'utf-8'));
-    if (!plan || isQASignoffApproved(plan.qa_signoff)) return null;
+    if (!plan) return null;
+
+    const unresolvedQaRecovery = getUnresolvedQaRecoveryFailureContent(plan);
+    if (unresolvedQaRecovery) {
+      return {
+        reportPath: `${planPath}#qa-recovery-state`,
+        content: normalizeQaFailureEvidenceContent(unresolvedQaRecovery),
+      };
+    }
+
+    if (isQASignoffApproved(plan.qa_signoff)) return null;
 
     const lastEventType = String(plan.lastEvent?.type ?? '');
     const lastQaStatus = String(plan.qa_stats?.last_status ?? '').toLowerCase();
@@ -1449,6 +1460,89 @@ function recoverMergedPlanBeforeFalseCompletionReset(
   return changed;
 }
 
+function resetUnresolvedQaRecoveryForCoding(
+  plan: Record<string, unknown>,
+  allSubtasks: Record<string, unknown>[],
+  failureContent: string,
+): boolean {
+  const now = new Date().toISOString();
+  let changed = false;
+
+  for (const subtask of allSubtasks) {
+    if (subtask.id !== 'aperant-qa-report-failure') continue;
+
+    if (subtask.status !== 'pending') {
+      subtask.status = 'pending';
+      changed = true;
+    }
+    if (subtask.started_at !== null) {
+      subtask.started_at = null;
+      changed = true;
+    }
+    for (const key of ['completed_at', 'completion_note', 'qa_signoff', 'last_attempt_outcome', 'last_attempt_at'] as const) {
+      if (subtask[key] !== undefined) {
+        delete subtask[key];
+        changed = true;
+      }
+    }
+    const nextError = 'Recovered: failed QA recovery was previously auto-completed from merge evidence without a passing verifier.';
+    if (subtask.last_error !== nextError) {
+      subtask.last_error = nextError;
+      changed = true;
+    }
+  }
+
+  if (Array.isArray(plan.phases)) {
+    for (const phase of plan.phases as Array<Record<string, unknown>>) {
+      const subtasks = Array.isArray(phase.subtasks) ? phase.subtasks as Record<string, unknown>[] : [];
+      if (!subtasks.some((subtask) => subtask.id === 'aperant-qa-report-failure')) continue;
+      if (phase.status !== 'in_progress') {
+        phase.status = 'in_progress';
+        changed = true;
+      }
+    }
+  }
+
+  const assignments: Record<string, unknown> = {
+    status: 'in_progress',
+    planStatus: 'in_progress',
+    xstateState: 'coding',
+    executionPhase: 'coding',
+    recoveryNote: 'QA report failed; continuing coding with QA findings as mandatory recovery work.',
+    human_feedback_pending: {
+      requested_at: now,
+      preview: failureContent.slice(0, 500),
+      source: 'qa_report',
+    },
+    lastEvent: {
+      eventId: `qa-report-recovered-${Date.now()}`,
+      sequence: 0,
+      type: 'QA_REPORT_FAILED',
+      timestamp: now,
+    },
+  };
+
+  for (const [key, value] of Object.entries(assignments)) {
+    if (JSON.stringify(plan[key]) !== JSON.stringify(value)) {
+      plan[key] = value;
+      changed = true;
+    }
+  }
+
+  for (const key of ['reviewReason', 'qa_signoff', 'final_acceptance', 'mergeCommit', 'mergedAt'] as const) {
+    if (plan[key] !== undefined) {
+      delete plan[key];
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    plan.updated_at = now;
+  }
+
+  return changed;
+}
+
 function isRecoverySubtask(subtask: Record<string, unknown>): boolean {
   return typeof subtask.id === 'string' && subtask.id.startsWith('aperant-');
 }
@@ -1566,6 +1660,22 @@ export async function repairFalseCompletedSubtasks(
         specId,
         plan,
       });
+      const unresolvedQaRecovery = getUnresolvedQaRecoveryFailureContent(plan);
+      if (unresolvedQaRecovery) {
+        const reset = resetUnresolvedQaRecoveryForCoding(
+          plan,
+          allSubtasks as Record<string, unknown>[],
+          unresolvedQaRecovery,
+        );
+        if (reset || cleanedTerminalMetadata) {
+          if (!reset) plan.updated_at = new Date().toISOString();
+          writeFileAtomicSync(planPath, JSON.stringify(plan, null, 2));
+          if (projectId) projectStore.invalidateTasksCache(projectId);
+          console.warn(`[plan-file-utils] Reopened unresolved QA recovery for ${specId}; merge evidence alone is not enough.`);
+        }
+        return { success: true, resetCount: reset ? 1 : 0 };
+      }
+
       if (mergeEvidence) {
         const recovered = recoverMergedPlanBeforeFalseCompletionReset(
           plan,

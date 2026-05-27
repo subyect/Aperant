@@ -18,7 +18,7 @@ import { join, basename } from 'node:path';
 import { runAgentSession } from '../session/runner';
 import { runContinuableSession } from '../session/continuation';
 import { createProvider } from '../providers/factory';
-import type { SupportedProvider } from '../providers/types';
+import { SupportedProvider } from '../providers/types';
 import { getModelContextWindow } from '../../../shared/constants/models';
 import { refreshOAuthTokenReactive } from '../auth/resolver';
 import { buildToolRegistry } from '../tools/build-registry';
@@ -265,6 +265,23 @@ function loadPrompt(promptName: string): string | null {
 
 let mcpClients: McpClientResult[] = [];
 
+function usesOpenAIResponsesApi(session: Pick<SerializableSessionConfig, 'provider' | 'modelId' | 'oauthTokenFilePath'>): boolean {
+  return session.provider === SupportedProvider.OpenAI
+    && (Boolean(session.oauthTokenFilePath) || session.modelId.includes('codex'));
+}
+
+function refreshedProviderConfig(
+  session: Pick<SerializableSessionConfig, 'provider' | 'baseURL' | 'oauthTokenFilePath'>,
+  newToken: string,
+) {
+  return {
+    provider: session.provider as SupportedProvider,
+    apiKey: newToken,
+    baseURL: session.baseURL,
+    oauthTokenFilePath: session.oauthTokenFilePath,
+  };
+}
+
 // =============================================================================
 // Prompt Assembly (provider-agnostic context injection)
 // =============================================================================
@@ -369,6 +386,8 @@ async function runSingleSession(
     projectDir,
     phase,
     modelShorthand: undefined,
+    resolvedModelId: phaseModelId,
+    usesOpenAIResponsesApi: usesOpenAIResponsesApi({ ...baseSession, modelId: phaseModelId }),
     sessionNumber,
     subtaskId,
     contextWindowLimit,
@@ -404,11 +423,7 @@ async function runSingleSession(
       : undefined,
     onModelRefresh: baseSession.configDir
       ? (newToken: string) => createProvider({
-          config: {
-            provider: baseSession.provider as SupportedProvider,
-            apiKey: newToken,
-            baseURL: baseSession.baseURL,
-          },
+          config: refreshedProviderConfig(baseSession, newToken),
           modelId: phaseModelId,
         })
       : undefined,
@@ -555,6 +570,8 @@ async function runDefaultSession(
     projectDir: session.projectDir,
     phase: session.phase,
     modelShorthand: session.modelShorthand,
+    resolvedModelId: session.modelId,
+    usesOpenAIResponsesApi: usesOpenAIResponsesApi(session),
     sessionNumber: session.sessionNumber,
     subtaskId: session.subtaskId,
     contextWindowLimit,
@@ -587,11 +604,7 @@ async function runDefaultSession(
         : undefined,
       onModelRefresh: session.configDir
         ? (newToken: string) => createProvider({
-            config: {
-              provider: session.provider as SupportedProvider,
-              apiKey: newToken,
-              baseURL: session.baseURL,
-            },
+            config: refreshedProviderConfig(session, newToken),
             modelId: session.modelId,
           })
         : undefined,
@@ -1193,6 +1206,8 @@ async function runAgenticSpecOrchestrator(
     specDir: session.specDir,
     projectDir: session.projectDir,
     phase: 'spec',
+    resolvedModelId: session.modelId,
+    usesOpenAIResponsesApi: usesOpenAIResponsesApi(session),
     sessionNumber: 1,
     contextWindowLimit,
   };
@@ -1222,11 +1237,7 @@ async function runAgenticSpecOrchestrator(
         : undefined,
       onModelRefresh: session.configDir
         ? (newToken: string) => createProvider({
-            config: {
-              provider: session.provider as SupportedProvider,
-              apiKey: newToken,
-              baseURL: session.baseURL,
-            },
+            config: refreshedProviderConfig(session, newToken),
             modelId: session.modelId,
           })
         : undefined,

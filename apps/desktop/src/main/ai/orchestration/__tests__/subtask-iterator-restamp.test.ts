@@ -153,6 +153,39 @@ describe('iterateSubtasks completion proof', () => {
     expect(subtask.last_error).toContain('without marking the subtask completed');
   });
 
+  it('stops immediately on non-retryable provider request errors before tools run', async () => {
+    await writeFile(planPath, JSON.stringify(planWithStatus('pending'), null, 2));
+    let attempts = 0;
+
+    const result = await iterateSubtasks({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxRetries: 5,
+      autoContinueDelayMs: 0,
+      runSubtaskSession: async () => {
+        attempts++;
+        return sessionResult('error', {
+          error: {
+            code: 'generic_error',
+            message: 'Bad Request: model does not support tools',
+            retryable: false,
+          },
+          toolCallCount: 0,
+        });
+      },
+    });
+
+    const written = JSON.parse(await readFile(planPath, 'utf-8')) as {
+      phases: Array<{ subtasks: Array<{ status: string; last_error?: string }> }>;
+    };
+    const subtask = written.phases[0].subtasks[0];
+
+    expect(attempts).toBe(1);
+    expect(result.stuckSubtasks).toEqual(['1.1']);
+    expect(subtask.status).toBe('pending');
+    expect(subtask.last_error).toContain('Provider rejected the request before any repository tool ran');
+  });
+
   it('leads retry context with the latest repo-local failure and omits nested stale summaries', async () => {
     const plan = planWithStatus('pending');
     plan.phases[0].subtasks[0] = {

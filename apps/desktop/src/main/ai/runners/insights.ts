@@ -450,7 +450,10 @@ export async function runInsightsQuery(
       } else {
         onStream?.({ type: 'error', error: terminalStreamError });
       }
-      throw error instanceof Error ? error : new Error(errorMsg);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw error;
+      }
+      throw new Error(errorMsg);
     }
   }
 

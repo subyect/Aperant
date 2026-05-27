@@ -54,6 +54,10 @@ export interface SessionConfig {
   phase?: Phase;
   /** Model shorthand used (for logging/diagnostics) */
   modelShorthand?: ModelShorthand;
+  /** Resolved provider model ID. Worker-created model instances do not always expose this. */
+  resolvedModelId?: string;
+  /** True when an OpenAI model instance is backed by the Responses/Codex endpoint. */
+  usesOpenAIResponsesApi?: boolean;
   /** Session number within the current subtask run */
   sessionNumber?: number;
   /** Subtask ID being worked on (if applicable) */

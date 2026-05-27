@@ -156,7 +156,7 @@ export interface ClassifiedError {
  * 7. Generic (not retryable)
  */
 export function classifyError(error: unknown): ClassifiedError {
-  const message = sanitizeErrorMessage(errorToString(error));
+  const message = sanitizeErrorMessage(errorToDisplayString(error));
 
   if (isAbortError(error)) {
     return {
@@ -241,7 +241,7 @@ export function classifyToolError(
 ): SessionError {
   return {
     code: ErrorCode.TOOL_ERROR,
-    message: `Tool '${toolName}' (${toolCallId}) failed: ${sanitizeErrorMessage(errorToString(error))}`,
+    message: `Tool '${toolName}' (${toolCallId}) failed: ${sanitizeErrorMessage(errorToDisplayString(error))}`,
     retryable: true,
     cause: error,
   };
@@ -255,9 +255,77 @@ export function classifyToolError(
  * Convert any error to a lowercase string for pattern matching.
  */
 function errorToString(error: unknown): string {
-  if (error instanceof Error) return error.message.toLowerCase();
-  if (typeof error === 'string') return error.toLowerCase();
-  return String(error).toLowerCase();
+  return errorToDisplayString(error).toLowerCase();
+}
+
+export function errorToDisplayString(error: unknown): string {
+  return formatErrorValue(error, new Set(), 0) || 'Unknown error';
+}
+
+const ERROR_DETAIL_KEYS = ['responseBody', 'body', 'data', 'error', 'detail', 'details', 'cause', 'statusText', 'message'];
+
+function formatErrorValue(value: unknown, seen: Set<unknown>, depth: number): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return parseErrorJsonString(value, seen, depth) || value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (depth > 8) return '';
+
+  if (typeof value !== 'object') return String(value);
+  if (seen.has(value)) return '';
+  seen.add(value);
+
+  if (value instanceof Error) {
+    const base = value.message || value.name || 'Error';
+    const detail = extractObjectErrorDetail(value as unknown as Record<string, unknown>, seen, depth + 1, new Set(['message', 'name', 'stack']));
+    if (detail && !base.toLowerCase().includes(detail.toLowerCase())) {
+      return `${base}: ${detail}`;
+    }
+    return base;
+  }
+
+  const record = value as Record<string, unknown>;
+  const detail = extractObjectErrorDetail(record, seen, depth + 1);
+  if (detail) return detail;
+
+  try {
+    return JSON.stringify(value).slice(0, 1_000);
+  } catch {
+    return String(value);
+  }
+}
+
+function parseErrorJsonString(value: string, seen: Set<unknown>, depth: number): string | null {
+  const trimmed = value.trim();
+  if (!trimmed || !/^[\[{]/.test(trimmed)) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    const parsedMessage = formatErrorValue(parsed, seen, depth + 1);
+    return parsedMessage && parsedMessage !== trimmed ? parsedMessage : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractObjectErrorDetail(
+  record: Record<string, unknown>,
+  seen: Set<unknown>,
+  depth: number,
+  skipKeys = new Set<string>(),
+): string {
+  for (const key of ERROR_DETAIL_KEYS) {
+    if (skipKeys.has(key) || record[key] === undefined) continue;
+    const detail = formatErrorValue(record[key], seen, depth + 1);
+    if (detail && detail !== '[object Object]') return detail;
+  }
+
+  for (const [key, value] of Object.entries(record)) {
+    if (skipKeys.has(key) || ERROR_DETAIL_KEYS.includes(key)) continue;
+    const detail = formatErrorValue(value, seen, depth + 1);
+    if (detail && detail !== '[object Object]') return detail;
+  }
+
+  return '';
 }
 
 /**

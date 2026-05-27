@@ -416,6 +416,27 @@ describe('runInsightsQuery', () => {
     expect(formatInsightsError(error)).toBe('Bad Request: model does not support tools');
   });
 
+  it('rethrows formatted provider response details instead of generic SDK messages', async () => {
+    const sdkError = Object.assign(new Error('Bad Request'), {
+      responseBody: '{"error":{"message":"model does not support tools"}}',
+    });
+    mockStreamText.mockReturnValue({
+      // biome-ignore lint/correctness/useYield: intentionally throwing before yield to test error path
+      fullStream: (async function* () {
+        throw sdkError;
+      })(),
+    });
+
+    const events: InsightsStreamEvent[] = [];
+    await expect(runInsightsQuery(baseConfig(), (e) => events.push(e))).rejects.toThrow(
+      'Bad Request: model does not support tools',
+    );
+
+    expect((events.find((e) => e.type === 'error') as { type: 'error'; error: string }).error).toBe(
+      'Bad Request: model does not support tools',
+    );
+  });
+
   // ---------------------------------------------------------------------------
   // Client configuration
   // ---------------------------------------------------------------------------
