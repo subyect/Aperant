@@ -1566,6 +1566,56 @@ describe('ProjectStore', () => {
       expect(tasks[0].subtasks.every((subtask) => subtask.status === 'completed')).toBe(true);
     });
 
+    it('does not rewrite stale worktree recovery plans for merged main tasks', async () => {
+      const specId = '008-terminal-main-stale-worktree-recovery';
+      const mergeEvidence = commitAutoMergeForSpec(specId);
+      writeSpec(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs'),
+        specId,
+        {
+          ...makePlan({
+            feature: 'Terminal Main Stale Worktree Recovery',
+            status: 'done',
+            subtaskStatuses: ['completed', 'completed'],
+            updatedAt: '2024-01-03T00:00:00Z',
+          }),
+          qa_signoff: { status: 'approved', issues_found: [] },
+          mergeCommit: mergeEvidence.commitSha,
+          mergedAt: mergeEvidence.mergedAt,
+          final_acceptance: ['merged'],
+        },
+      );
+
+      const worktreeSpecRoot = getRegisteredWorktreeSpecRoot(specId);
+      const worktreePlan = {
+        ...makePlan({
+          feature: 'Terminal Main Stale Worktree Recovery',
+          status: 'ai_review',
+          subtaskStatuses: ['completed', 'completed'],
+          updatedAt: '2024-01-04T00:00:00Z',
+        }),
+        planStatus: 'review',
+        xstateState: 'qa_review',
+        executionPhase: 'qa_review',
+        recoveryNote: `Recovered terminal status for ${specId}: passing qa_report.md is missing; rerunning QA before accepting completion.`,
+      };
+      writeSpec(worktreeSpecRoot, specId, worktreePlan);
+      const worktreePlanPath = path.join(worktreeSpecRoot, specId, 'implementation_plan.json');
+      const before = readFileSync(worktreePlanPath, 'utf-8');
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const after = readFileSync(worktreePlanPath, 'utf-8');
+
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].location).toBe('main');
+      expect(tasks[0].status).toBe('done');
+      expect(after).toBe(before);
+    });
+
     it('prefers active feedback recovery worktree over terminal main task', async () => {
       const specId = '008-terminal-main-feedback-rework';
       const mergeEvidence = commitAutoMergeForSpec(specId);

@@ -69,6 +69,10 @@ import {
 const DEFAULT_MAX_PARALLEL_TASKS = 3;
 const MAX_CONCURRENT_PLANNING_RECOVERIES = 1;
 const STALE_SPAWN_SETUP_MS = 2 * 60_000;
+const RECOVERY_LAUNCH_TIMEOUT_MS = 45_000;
+const RECOVERY_PASS_STALE_MS = 60_000;
+const RECOVERY_LAUNCH_STALE_MS = 5 * 60_000;
+const WORKTREE_CONFLICT_SCAN_TIMEOUT_MS = 10_000;
 const STALE_WORKER_ACTIVITY_MS: Record<ProcessType, number> = {
   'spec-creation': 10 * 60_000,
   'task-execution': 20 * 60_000,
@@ -221,6 +225,9 @@ export class AgentManager extends EventEmitter {
   private humanReviewMergeInProgress = false;
   private workflowRecoveryTimer: NodeJS.Timeout | null = null;
   private workflowRecoveryInProgress = false;
+  private workflowRecoveryStartedAt: number | null = null;
+  private workflowRecoveryToken: symbol | null = null;
+  private workflowLaunchesInProgress = new Map<string, { projectId: string; specId: string; startedAt: number }>();
 
   constructor() {
     super();
@@ -239,7 +246,7 @@ export class AgentManager extends EventEmitter {
     });
 
     // Listen for task completion to clean up context (prevent memory leak)
-    this.on('exit', (taskId: string, code: number | null, processType?: string, _projectId?: string) => {
+    this.on('exit', (taskId: string, code: number | null, processType?: string, projectId?: string) => {
       // Clean up context when:
       // 1. Task completed successfully (code === 0), or
       // 2. Task failed and won't be restarted (handled by auto-swap logic)
@@ -279,6 +286,9 @@ export class AgentManager extends EventEmitter {
 
       if (processType === 'task-execution' || processType === 'qa-process' || processType === 'spec-creation') {
         setTimeout(() => {
+          this.resumeExitedWorkflowTask(taskId, projectId, `worker-exit:${processType}`).catch((error) => {
+            console.warn('[AgentManager] Worker-exit task recovery failed:', error);
+          });
           this.runWorkflowRecoveryPass(`worker-exit:${processType}`).catch((error) => {
             console.warn('[AgentManager] Worker-exit workflow recovery failed:', error);
           });
@@ -479,8 +489,20 @@ export class AgentManager extends EventEmitter {
   }
 
   async runWorkflowRecoveryPass(reason = 'manual'): Promise<void> {
-    if (this.workflowRecoveryInProgress) return;
+    if (this.workflowRecoveryInProgress) {
+      const ageMs = this.workflowRecoveryStartedAt ? Date.now() - this.workflowRecoveryStartedAt : 0;
+      if (ageMs >= RECOVERY_PASS_STALE_MS) {
+        console.warn(
+          `[AgentManager] Previous workflow recovery pass has been running for ${Math.round(ageMs / 1000)}s; ` +
+          `skipping overlapping recovery (${reason}).`
+        );
+      }
+      return;
+    }
+    const recoveryToken = Symbol(reason);
     this.workflowRecoveryInProgress = true;
+    this.workflowRecoveryStartedAt = Date.now();
+    this.workflowRecoveryToken = recoveryToken;
     try {
       const projects = projectStore.getProjects();
       this.invalidateRecoveryTaskCaches(projects);
@@ -489,7 +511,11 @@ export class AgentManager extends EventEmitter {
       await this.resumeOrphanedWorkflowTasks(projects, reason);
       this.scheduleHumanReviewMerge(reason, 1000);
     } finally {
-      this.workflowRecoveryInProgress = false;
+      if (this.workflowRecoveryToken === recoveryToken) {
+        this.workflowRecoveryInProgress = false;
+        this.workflowRecoveryStartedAt = null;
+        this.workflowRecoveryToken = null;
+      }
     }
   }
 
@@ -592,10 +618,9 @@ export class AgentManager extends EventEmitter {
       return false;
     }
 
-    if (candidate.connected === true) {
-      return true;
-    }
-
+    // A connected IPC flag without a pid/threadId is not enough to prove the
+    // worker still exists. Child worker exits can otherwise leave tasks marked
+    // running while no OS process remains.
     return false;
   }
 
@@ -621,6 +646,7 @@ export class AgentManager extends EventEmitter {
 
   private async resumeOrphanedWorkflowTasks(projects: Project[], reason = 'workflow-recovery'): Promise<void> {
     let totalStarted = 0;
+    const launchPromises: Promise<boolean>[] = [];
 
     for (const project of projects) {
       try {
@@ -656,13 +682,15 @@ export class AgentManager extends EventEmitter {
 
         for (const task of activeTasks) {
           if (task.status === 'ai_review' && this.recoverApprovedQaForTask(project, task, `${reason}-qa-report`)) continue;
-          if (this.countRunningProjectTasks(project) >= maxParallelTasks) {
+          if (this.countRunningProjectTasks(project) + this.countRecoveringProjectLaunches(project.id) >= maxParallelTasks) {
             this.deferInactiveInProgressTaskForCapacity(project, task, reason);
             continue;
           }
           if (this.isRunning(task.id)) continue;
+          if (this.isRecoveryLaunchInProgress(task.id)) continue;
           if (this.shouldDeferPlanningRecovery(project, task)) continue;
-          if (await this.resumePersistedWorkflowTask(project, task)) totalStarted++;
+          totalStarted++;
+          launchPromises.push(this.launchRecoveredWorkflowTask(project, task, reason));
         }
 
         const queuedTasks = projectStore.getTasks(project.id)
@@ -670,19 +698,138 @@ export class AgentManager extends EventEmitter {
           .sort((a, b) => this.compareQueuedWorkflowTasks(project, a, b));
 
         for (const task of queuedTasks) {
-          if (this.countRunningProjectTasks(project) >= maxParallelTasks) break;
+          if (this.countRunningProjectTasks(project) + this.countRecoveringProjectLaunches(project.id) >= maxParallelTasks) break;
           if (this.isRunning(task.id)) continue;
+          if (this.isRecoveryLaunchInProgress(task.id)) continue;
           if (this.shouldDeferPlanningRecovery(project, task)) continue;
-          if (await this.resumePersistedWorkflowTask(project, task)) totalStarted++;
+          totalStarted++;
+          launchPromises.push(this.launchRecoveredWorkflowTask(project, task, reason));
         }
       } catch (error) {
         console.warn(`[AgentManager] Workflow recovery could not scan project ${project.name ?? project.id}:`, error);
       }
     }
 
+    await Promise.allSettled(launchPromises);
+
     if (totalStarted > 0) {
       console.warn(`[AgentManager] Startup recovery resumed ${totalStarted} task worker(s)`);
     }
+  }
+
+  private async launchRecoveredWorkflowTask(project: Project, task: Task, reason: string): Promise<boolean> {
+    if (this.isRunning(task.id) || this.isRecoveryLaunchInProgress(task.id)) return false;
+
+    this.workflowLaunchesInProgress.set(task.id, {
+      projectId: project.id,
+      specId: task.specId,
+      startedAt: Date.now(),
+    });
+
+    const launch = this.resumePersistedWorkflowTask(project, task)
+      .finally(() => {
+        this.workflowLaunchesInProgress.delete(task.id);
+      });
+
+    return this.withTimeout(
+      launch,
+      RECOVERY_LAUNCH_TIMEOUT_MS,
+      () => {
+        console.warn(
+          `[AgentManager] ${reason} recovery launch for ${task.specId} is still preparing after ` +
+          `${Math.round(RECOVERY_LAUNCH_TIMEOUT_MS / 1000)}s; continuing recovery for other tasks.`
+        );
+        return false;
+      },
+    );
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout: () => T): Promise<T> {
+    let timeout: NodeJS.Timeout | null = null;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((resolve) => {
+          timeout = setTimeout(() => resolve(onTimeout()), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
+  private isRecoveryLaunchInProgress(taskId: string): boolean {
+    const launch = this.workflowLaunchesInProgress.get(taskId);
+    if (!launch) return false;
+
+    const ageMs = Date.now() - launch.startedAt;
+    if (ageMs < RECOVERY_LAUNCH_STALE_MS || this.isRunning(taskId)) return true;
+
+    console.warn(
+      `[AgentManager] Clearing stale recovery launch marker for ${launch.specId} after ` +
+      `${Math.round(ageMs / 1000)}s without a live worker.`
+    );
+    this.workflowLaunchesInProgress.delete(taskId);
+    return false;
+  }
+
+  private countRecoveringProjectLaunches(projectId: string): number {
+    let count = 0;
+    for (const taskId of Array.from(this.workflowLaunchesInProgress.keys())) {
+      const launch = this.workflowLaunchesInProgress.get(taskId);
+      if (!launch || launch.projectId !== projectId) continue;
+      if (this.isRecoveryLaunchInProgress(taskId)) count++;
+    }
+    return count;
+  }
+
+  private async resumeExitedWorkflowTask(taskId: string, projectId: string | undefined, reason: string): Promise<boolean> {
+    if (this.isRunning(taskId) || this.isRecoveryLaunchInProgress(taskId)) return false;
+
+    let projects: Project[];
+    try {
+      projects = projectStore.getProjects() ?? [];
+    } catch {
+      return false;
+    }
+
+    const project = projects.find((candidate) => candidate.id === projectId)
+      ?? projects.find((candidate) => {
+        try {
+          return projectStore.getTasks(candidate.id).some((task) => task.id === taskId || task.specId === taskId);
+        } catch {
+          return false;
+        }
+      });
+    if (!project) return false;
+
+    let task: Task | undefined;
+    try {
+      task = projectStore.getTasks(project.id)
+        .find((candidate) => candidate.id === taskId || candidate.specId === taskId);
+    } catch {
+      return false;
+    }
+    if (!task || task.metadata?.archivedAt) return false;
+
+    if (
+      task.status !== 'in_progress'
+      && task.status !== 'ai_review'
+      && task.status !== 'queue'
+      && !this.shouldResumePlanningFailure(project, task)
+      && !this.shouldResumeIncompleteTerminalTask(project, task)
+      && !this.shouldRetryTerminalAgentError(project, task)
+    ) {
+      return false;
+    }
+
+    if (this.countRunningProjectTasks(project) + this.countRecoveringProjectLaunches(project.id) >= this.getMaxParallelTasks(project)) {
+      this.deferInactiveInProgressTaskForCapacity(project, task, reason);
+      return false;
+    }
+
+    console.warn(`[AgentManager] ${reason} directly recovering exited worker for ${task.specId}`);
+    return this.launchRecoveredWorkflowTask(project, task, reason);
   }
 
   private isRecoverableTaskStatus(status: Task['status']): boolean {
@@ -773,6 +920,7 @@ export class AgentManager extends EventEmitter {
         cwd: worktreePath,
         encoding: 'utf-8',
         env: getIsolatedGitEnv(),
+        timeout: WORKTREE_CONFLICT_SCAN_TIMEOUT_MS,
       }).trim();
       return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     } catch {

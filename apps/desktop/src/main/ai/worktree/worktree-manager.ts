@@ -79,7 +79,11 @@ async function git(
 
 async function gitSucceeds(args: string[], cwd: string): Promise<boolean> {
   try {
-    await execFileAsync('git', args, { cwd });
+    await execFileAsync('git', args, {
+      cwd,
+      timeout: GIT_COMMAND_TIMEOUT_MS,
+      killSignal: 'SIGTERM',
+    });
     return true;
   } catch {
     return false;

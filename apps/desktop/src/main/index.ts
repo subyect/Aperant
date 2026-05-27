@@ -300,10 +300,38 @@ function createWindow(): void {
 
 	  ensureRendererIndexNavigation(mainWindow);
 
+  let hasShownWindow = false;
+  const showMainWindow = (reason: string): void => {
+    if (!mainWindow || mainWindow.isDestroyed() || hasShownWindow) return;
+    hasShownWindow = true;
+    console.warn(`[main] Showing main window (${reason})`);
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.show();
+    mainWindow.focus();
+    if (isMacOS()) {
+      app.focus({ steal: true });
+    }
+  };
+
   // Show window when ready to avoid visual flash
   mainWindow.on('ready-to-show', () => {
-    mainWindow?.show();
+    showMainWindow('ready-to-show');
   });
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    showMainWindow('did-finish-load');
+  });
+
+  mainWindow.webContents.once('did-fail-load', (_event, errorCode, errorDescription) => {
+    console.warn('[main] Renderer failed to load:', { errorCode, errorDescription });
+    showMainWindow('did-fail-load');
+  });
+
+  setTimeout(() => {
+    showMainWindow('startup-timeout');
+  }, 8_000);
 
   // Capture renderer process crashes/termination reasons for diagnostics.
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
@@ -705,6 +733,12 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+      mainWindow.show();
+      mainWindow.focus();
     }
   });
 });

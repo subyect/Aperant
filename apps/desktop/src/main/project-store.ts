@@ -348,41 +348,47 @@ export class ProjectStore {
       allTasks.push(...mainTasks);
       // Track which specs exist in main project
       mainTasks.forEach(t => mainSpecIds.add(t.specId));
-    }
+      const terminalMainSpecIds = new Set(
+        mainTasks
+          .filter((task) => this.isTerminalMainTask(task))
+          .map((task) => task.specId)
+      );
 
-    // 2. Scan worktree specs directories
-    // NOTE FOR MAINTAINERS: Worktree tasks are only included if the spec also exists in main.
-    // This prevents deleted tasks from "coming back" when the worktree isn't cleaned up.
-    const worktreesDir = getTaskWorktreeDir(project.path);
-    if (existsSync(worktreesDir)) {
-      try {
-        const registeredWorktrees = getRegisteredWorktreeInfoMap(project.path);
-        const worktrees = readdirSync(worktreesDir, { withFileTypes: true });
-        for (const worktree of worktrees) {
-          if (!worktree.isDirectory()) continue;
+      // 2. Scan worktree specs directories
+      // NOTE FOR MAINTAINERS: Worktree tasks are only included if the spec also exists in main.
+      // This prevents deleted tasks from "coming back" when the worktree isn't cleaned up.
+      const worktreesDir = getTaskWorktreeDir(project.path);
+      if (existsSync(worktreesDir)) {
+        try {
+          const registeredWorktrees = getRegisteredWorktreeInfoMap(project.path);
+          const worktrees = readdirSync(worktreesDir, { withFileTypes: true });
+          for (const worktree of worktrees) {
+            if (!worktree.isDirectory()) continue;
 
-          const worktreePath = path.join(worktreesDir, worktree.name);
-          if (!isValidTaskWorktree(project.path, worktree.name, worktreePath, registeredWorktrees)) {
-            console.warn(`[ProjectStore] Skipping stale or invalid task worktree directory: ${worktree.name}`);
-            continue;
+            const worktreePath = path.join(worktreesDir, worktree.name);
+            if (!isValidTaskWorktree(project.path, worktree.name, worktreePath, registeredWorktrees)) {
+              console.warn(`[ProjectStore] Skipping stale or invalid task worktree directory: ${worktree.name}`);
+              continue;
+            }
+
+            const worktreeSpecsDir = path.join(worktreePath, specsBaseDir);
+            if (existsSync(worktreeSpecsDir)) {
+              const worktreeTasks = this.loadTasksFromSpecsDir(
+                worktreeSpecsDir,
+                worktreePath,
+                'worktree',
+                projectId,
+                specsBaseDir,
+                terminalMainSpecIds
+              );
+              // Only include worktree tasks if the spec exists in main project
+              const validWorktreeTasks = worktreeTasks.filter(t => mainSpecIds.has(t.specId));
+              allTasks.push(...validWorktreeTasks);
+            }
           }
-
-          const worktreeSpecsDir = path.join(worktreePath, specsBaseDir);
-          if (existsSync(worktreeSpecsDir)) {
-            const worktreeTasks = this.loadTasksFromSpecsDir(
-              worktreeSpecsDir,
-              worktreePath,
-              'worktree',
-              projectId,
-              specsBaseDir
-            );
-            // Only include worktree tasks if the spec exists in main project
-            const validWorktreeTasks = worktreeTasks.filter(t => mainSpecIds.has(t.specId));
-            allTasks.push(...validWorktreeTasks);
-          }
+        } catch (error) {
+          console.error('[ProjectStore] Error scanning worktrees:', error);
         }
-      } catch (error) {
-        console.error('[ProjectStore] Error scanning worktrees:', error);
       }
     }
 
@@ -633,7 +639,8 @@ export class ProjectStore {
     basePath: string,
     location: 'main' | 'worktree',
     projectId: string,
-    _specsBaseDir: string
+    _specsBaseDir: string,
+    readOnlySpecIds: Set<string> = new Set()
   ): Task[] {
     const tasks: Task[] = [];
     let specDirs: Dirent[] = [];
@@ -653,6 +660,7 @@ export class ProjectStore {
         const specPath = path.join(specsDir, dir.name);
         const planPath = path.join(specPath, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
         const specFilePath = path.join(specPath, AUTO_BUILD_PATHS.SPEC_FILE);
+        const allowPlanRepairs = location === 'main' || !readOnlySpecIds.has(dir.name);
 
         // Try to read implementation plan
         let plan: ImplementationPlan | null = null;
@@ -664,18 +672,20 @@ export class ProjectStore {
             const parsed = safeParseJson<ImplementationPlan>(content);
             if (parsed) {
               plan = parsed;
-              this.clearResolvedBaseSyncConflictIfNeeded(
-                plan as unknown as Record<string, unknown>,
-                planPath,
-                dir.name,
-                location,
-                basePath
-              );
-              this.clearResolvedRecoveryStateIfNeeded(
-                plan as unknown as Record<string, unknown>,
-                planPath,
-                dir.name
-              );
+              if (allowPlanRepairs) {
+                this.clearResolvedBaseSyncConflictIfNeeded(
+                  plan as unknown as Record<string, unknown>,
+                  planPath,
+                  dir.name,
+                  location,
+                  basePath
+                );
+                this.clearResolvedRecoveryStateIfNeeded(
+                  plan as unknown as Record<string, unknown>,
+                  planPath,
+                  dir.name
+                );
+              }
             } else {
               // safeParseJson returned null — JSON is unrepairable
               hasJsonError = true;
@@ -738,7 +748,7 @@ export class ProjectStore {
         const finalDescription = hasJsonError
           ? `${JSON_ERROR_PREFIX}${jsonErrorMessage}`
           : description;
-        if (!hasJsonError) {
+        if (!hasJsonError && allowPlanRepairs) {
           this.recoverMissingRuntimeStateForExecutablePlan(plan, planPath, specPath, dir.name);
           this.recoverUnstartedInProgressPlan(plan, planPath, specPath, dir.name, basePath);
         }
@@ -764,29 +774,33 @@ export class ProjectStore {
           });
         }) || [];
 
-        const doneGuardResult = this.correctDoneTaskWithIncompleteSubtasks(
-          hasJsonError,
-          finalStatus,
-          finalReviewReason,
-          plan,
-          planPath,
-          dir.name,
-          basePath
-        );
+        const doneGuardResult = allowPlanRepairs
+          ? this.correctDoneTaskWithIncompleteSubtasks(
+            hasJsonError,
+            finalStatus,
+            finalReviewReason,
+            plan,
+            planPath,
+            dir.name,
+            basePath
+          )
+          : { status: finalStatus, reviewReason: finalReviewReason };
 
         // Auto-correct status to human_review if all subtasks are completed
         // This handles cases where task completed but app restarted before XState persisted the status
         // (e.g., QA_PASSED event emitted but not processed before shutdown)
-        const { status: correctedStatus, reviewReason: correctedReviewReason } = this.correctStaleTaskStatus(
-          subtasks,
-          hasJsonError,
-          doneGuardResult.status,
-          doneGuardResult.reviewReason,
-          plan,
-          planPath,
-          dir.name,
-          basePath
-        );
+        const { status: correctedStatus, reviewReason: correctedReviewReason } = allowPlanRepairs
+          ? this.correctStaleTaskStatus(
+            subtasks,
+            hasJsonError,
+            doneGuardResult.status,
+            doneGuardResult.reviewReason,
+            plan,
+            planPath,
+            dir.name,
+            basePath
+          )
+          : doneGuardResult;
 
         // Extract staged status from plan (set when changes are merged with --no-commit)
         const planWithStaged = plan as unknown as { stagedInMainProject?: boolean; stagedAt?: string } | null;

@@ -802,6 +802,99 @@ describe('AgentManager workflow recovery', () => {
     expect(manager.isRunning(task.id)).toBe(false);
   });
 
+  it('does not treat connected IPC-only worker handles as live without a pid', async () => {
+    const project = {
+      id: 'project-1',
+      path: projectPath,
+      autoBuildPath: '.auto-claude',
+      settings: { maxParallelTasks: 1, mainBranch: 'main' },
+    };
+    const task = {
+      id: 'task-id-1',
+      specId: 'task-001',
+      title: 'Task',
+      description: 'Task',
+      status: 'in_progress',
+      updatedAt: new Date('2026-05-26T10:00:00.000Z'),
+      metadata: {},
+      subtasks: [{ id: '1', title: 'Pending', status: 'pending' }],
+    };
+
+    projectStoreMock.getProjects.mockReturnValue([project]);
+    projectStoreMock.getTasks.mockReturnValue([task]);
+
+    const manager = new AgentManager();
+    (manager as unknown as {
+      state: {
+        addProcess: (taskId: string, process: unknown) => void;
+      };
+    }).state.addProcess(task.id, {
+      taskId: task.id,
+      process: null,
+      worker: { connected: true, kill: vi.fn() },
+      startedAt: new Date(),
+      lastActivityAt: new Date(),
+      spawnId: 1,
+      projectId: project.id,
+      processType: 'task-execution',
+    });
+
+    expect(manager.isRunning(task.id)).toBe(false);
+  });
+
+  it('keeps timed-out recovery launches marked to prevent duplicate task starts', async () => {
+    vi.useFakeTimers();
+    writeFileSync(planPath, JSON.stringify({
+      feature: 'Task',
+      status: 'in_progress',
+      planStatus: 'in_progress',
+      xstateState: 'coding',
+      executionPhase: 'coding',
+      phases: [
+        {
+          id: 'phase-1',
+          name: 'Implementation',
+          subtasks: [
+            { id: '1', title: 'Pending', status: 'pending' },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const project = {
+      id: 'project-1',
+      path: projectPath,
+      autoBuildPath: '.auto-claude',
+      settings: { maxParallelTasks: 1, mainBranch: 'main' },
+    };
+    const task = {
+      id: 'task-id-1',
+      specId: 'task-001',
+      title: 'Task',
+      description: 'Task',
+      status: 'in_progress',
+      updatedAt: new Date('2026-05-26T10:00:00.000Z'),
+      metadata: {},
+      subtasks: [{ id: '1', title: 'Pending', status: 'pending' }],
+    };
+
+    projectStoreMock.getProjects.mockReturnValue([project]);
+    projectStoreMock.getTasks.mockReturnValue([task]);
+
+    const manager = new AgentManager();
+    const startTaskExecution = vi
+      .spyOn(manager as unknown as { startTaskExecution: (...args: unknown[]) => Promise<void> }, 'startTaskExecution')
+      .mockReturnValue(new Promise(() => undefined));
+
+    const firstPass = manager.runWorkflowRecoveryPass('first-pass');
+    await vi.advanceTimersByTimeAsync(45_000);
+    await firstPass;
+
+    await manager.runWorkflowRecoveryPass('second-pass');
+
+    expect(startTaskExecution).toHaveBeenCalledTimes(1);
+  });
+
   it('prioritizes queued implementation work over queued planning work with older timestamps', async () => {
     const implementationSpecId = 'task-010';
     const implementationSpecDir = path.join(projectPath, '.auto-claude', 'specs', implementationSpecId);
