@@ -35,7 +35,7 @@ import type {
 } from './types';
 import type { Tool as AITool } from 'ai';
 import type { SessionConfig, StreamEvent, SessionResult } from '../session/types';
-import { BuildOrchestrator } from '../orchestration/build-orchestrator';
+import { BuildOrchestrator, DEFAULT_MAX_QA_CYCLES } from '../orchestration/build-orchestrator';
 import type { SubtaskInfo } from '../orchestration/build-orchestrator';
 import { QALoop } from '../orchestration/qa-loop';
 import { SpecOrchestrator } from '../orchestration/spec-orchestrator';
@@ -655,6 +655,7 @@ async function runBuildOrchestrator(
     specDir: session.specDir,
     projectDir: session.projectDir,
     sourceSpecDir: session.sourceSpecDir,
+    maxIterations: DEFAULT_MAX_QA_CYCLES,
     abortSignal: abortController.signal,
 
     generatePrompt: async (agentType, _phase, context) => {
@@ -724,7 +725,7 @@ async function runBuildOrchestrator(
     if (phase === 'coding') {
       postTaskEvent('CODING_STARTED', { subtaskId: '', subtaskDescription: 'Starting coding phase' });
     } else if (phase === 'qa_review') {
-      postTaskEvent('QA_STARTED', { iteration: 0, maxIterations: 3 });
+      postTaskEvent('QA_STARTED', { iteration: 0, maxIterations: DEFAULT_MAX_QA_CYCLES });
     } else if (phase === 'qa_fixing') {
       postTaskEvent('QA_FIXING_STARTED', { iteration: 0 });
     }
@@ -818,7 +819,7 @@ async function runBuildOrchestrator(
     // generic CODING_FAILED which would be misleading.
     postTaskEvent('QA_MAX_ITERATIONS', {
       iteration: outcome.totalIterations,
-      maxIterations: 3,
+      maxIterations: DEFAULT_MAX_QA_CYCLES,
     });
   } else {
     // Pre-QA failure (planning or coding phase)

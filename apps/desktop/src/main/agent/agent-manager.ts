@@ -1314,7 +1314,7 @@ export class AgentManager extends EventEmitter {
         if (!plan) continue;
         const lastEventType = plan.lastEvent?.type;
         const recoveryNote = plan.recoveryNote ?? '';
-        if (lastEventType === 'QA_AGENT_ERROR' || /terminal failure blocked/i.test(recoveryNote)) {
+        if (lastEventType === 'QA_AGENT_ERROR' || lastEventType === 'QA_MAX_ITERATIONS' || /terminal failure blocked/i.test(recoveryNote)) {
           return true;
         }
       } catch {

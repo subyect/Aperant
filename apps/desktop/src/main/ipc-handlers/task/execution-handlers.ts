@@ -427,7 +427,7 @@ export function registerTaskExecutionHandlers(
       } else if (planNeedsQaValidation) {
         console.warn('[TASK_START] All subtasks are complete but QA is not approved; starting QA for:', task.specId);
         persistSpecQaReviewStateSync(project, task.specId);
-        taskStateManager.handleUiEvent(taskId, { type: 'QA_STARTED', iteration: 0, maxIterations: 3 }, task, project);
+        taskStateManager.handleUiEvent(taskId, { type: 'QA_STARTED', iteration: 0, maxIterations: 50 }, task, project);
         agentManager.startQAProcess(taskId, project.path, task.specId, project.id);
       } else {
         // Task has subtasks, start normal execution
@@ -941,7 +941,7 @@ export function registerTaskExecutionHandlers(
 	          } else if (updatePlanNeedsQaValidation) {
 	            console.warn('[TASK_UPDATE_STATUS] All subtasks complete but QA is not approved; starting QA for:', task.specId);
 	            persistSpecQaReviewStateSync(project, task.specId);
-	            taskStateManager.handleUiEvent(taskId, { type: 'QA_STARTED', iteration: 0, maxIterations: 3 }, task, project);
+	            taskStateManager.handleUiEvent(taskId, { type: 'QA_STARTED', iteration: 0, maxIterations: 50 }, task, project);
 	            agentManager.startQAProcess(taskId, project.path, task.specId, project.id);
 	          } else {
             // Task has subtasks, start normal execution

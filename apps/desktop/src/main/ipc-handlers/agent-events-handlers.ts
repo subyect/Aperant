@@ -41,6 +41,7 @@ import { processTypeCanEmitQaResult } from "./agent-events-recovery";
 
 // Timeout for fallback safety net to check if task is still stuck after process exit
 const STUCK_TASK_FALLBACK_TIMEOUT_MS = 500;
+const DEFAULT_QA_MAX_ITERATIONS = 50;
 
 // Map to store active fallback timers so they can be cancelled on task restart
 const fallbackTimers = new Map<string, NodeJS.Timeout>();
@@ -74,7 +75,7 @@ function restartContinuation(
 
   if (mode === "qa") {
     persistSpecQaReviewStateSync(project, task.specId);
-    taskStateManager.handleUiEvent(task.id, { type: 'QA_STARTED', iteration: 0, maxIterations: 3 }, task, project);
+    taskStateManager.handleUiEvent(task.id, { type: 'QA_STARTED', iteration: 0, maxIterations: DEFAULT_QA_MAX_ITERATIONS }, task, project);
     void agentManager.startQAProcess(task.id, project.path, task.specId, project.id);
     return;
   }
@@ -264,7 +265,24 @@ export function registerAgenteventsHandlers(
               type: 'QA_PASSED', iteration: 0, testsRun: {}
             }, checkTask, checkProject);
           } else {
-            // Non-zero exit code — task was stopped or crashed
+            let continuationMode: PlanContinuationMode | null = null;
+            try {
+              const plan = safeParseJson<Record<string, unknown>>(readFileSync(getPlanPath(checkProject, checkTask), 'utf-8'));
+              continuationMode = planNeedsContinuationAfterExit(plan, code);
+            } catch {
+              continuationMode = null;
+            }
+
+            if (continuationMode) {
+              console.warn(
+                `[agent-events-handlers] Task ${taskId} still has incomplete continuation work ` +
+                `${STUCK_TASK_FALLBACK_TIMEOUT_MS}ms after exit (code ${code}); restarting in ${continuationMode} mode`
+              );
+              restartContinuation(agentManager, checkTask, checkProject, continuationMode);
+              return;
+            }
+
+            // Non-zero exit code with no continuation evidence — task was stopped or crashed.
             const hasPlan = hasPlanWithSubtasks(checkProject, checkTask);
             console.warn(
               `[agent-events-handlers] Task ${taskId} still in XState ${currentState} ` +

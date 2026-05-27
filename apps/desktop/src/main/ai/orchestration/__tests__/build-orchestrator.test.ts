@@ -127,4 +127,36 @@ describe('BuildOrchestrator coding phase', () => {
       lastEvent: expect.objectContaining({ type: 'QA_PASSED' }),
     }));
   }, 20_000);
+
+  it('honors a QA cycle budget above three before failing', async () => {
+    await writeFile(planPath, JSON.stringify(plan(['completed']), null, 2));
+    const generatePrompt = vi.fn().mockResolvedValue('prompt');
+    const runSession = vi.fn(async (config) => {
+      if (config.agentType === 'qa_reviewer') {
+        await writeFile(join(tmpDir, 'qa_report.md'), 'Status: FAILED\n\nStill failing.\n');
+      }
+      return sessionResult('completed');
+    });
+
+    const orchestrator = new BuildOrchestrator({
+      specDir: tmpDir,
+      projectDir: tmpDir,
+      maxIterations: 4,
+      maxSubtaskRetries: 1,
+      autoContinueDelayMs: 0,
+      generatePrompt,
+      runSession,
+    });
+
+    const result = await (orchestrator as unknown as {
+      runQAPhase: () => Promise<{ success: boolean; error?: string }>;
+    }).runQAPhase();
+
+    expect(result).toEqual(expect.objectContaining({
+      success: false,
+      error: 'QA review failed after maximum fix cycles',
+    }));
+    expect(runSession.mock.calls.filter(([config]) => config.agentType === 'qa_reviewer')).toHaveLength(4);
+    expect(runSession.mock.calls.filter(([config]) => config.agentType === 'qa_fixer')).toHaveLength(3);
+  }, 20_000);
 });

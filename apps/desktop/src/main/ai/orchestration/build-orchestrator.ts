@@ -55,6 +55,9 @@ const MAX_PLANNING_VALIDATION_RETRIES = 3;
 /** Maximum retries for a single subtask before marking stuck on hard failures */
 const MAX_SUBTASK_RETRIES = 4;
 
+/** Default QA review/fix cycles before failing the build. */
+export const DEFAULT_MAX_QA_CYCLES = 50;
+
 /** Delay before retrying after an error (ms) */
 const ERROR_RETRY_DELAY_MS = 5_000;
 
@@ -542,7 +545,7 @@ export class BuildOrchestrator extends EventEmitter {
     // QA review
     this.transitionPhase('qa_review', 'Running QA review');
 
-    const maxQACycles = 3;
+    const maxQACycles = this.getMaxQACycles();
     for (let cycle = 0; cycle < maxQACycles; cycle++) {
       if (this.aborted) {
         return { success: false, error: 'Build cancelled' };
@@ -629,6 +632,15 @@ export class BuildOrchestrator extends EventEmitter {
     }
 
     return { success: false, error: 'QA exhausted all cycles' };
+  }
+
+  private getMaxQACycles(): number {
+    const configured = this.config.maxIterations;
+    if (configured === 0) return Number.MAX_SAFE_INTEGER;
+    if (Number.isFinite(configured) && configured && configured > 0) {
+      return Math.max(1, Math.floor(configured));
+    }
+    return DEFAULT_MAX_QA_CYCLES;
   }
 
   // ===========================================================================
