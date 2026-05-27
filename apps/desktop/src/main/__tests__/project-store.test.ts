@@ -303,6 +303,52 @@ describe('ProjectStore', () => {
       writeFileSync(path.join(specsDir, 'spec.md'), `# ${plan.feature}\n\n## Overview\n\nTest task.\n`);
     }
 
+    function ensureGitRepo(): void {
+      if (existsSync(path.join(TEST_PROJECT_PATH, '.git'))) return;
+
+      execFileSync('git', ['init', '-b', 'main'], { cwd: TEST_PROJECT_PATH, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: TEST_PROJECT_PATH });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: TEST_PROJECT_PATH });
+      writeFileSync(path.join(TEST_PROJECT_PATH, '.gitignore'), '.auto-claude/\n');
+      writeFileSync(path.join(TEST_PROJECT_PATH, 'README.md'), '# test project\n');
+      execFileSync('git', ['add', '.gitignore', 'README.md'], { cwd: TEST_PROJECT_PATH });
+      execFileSync('git', ['commit', '-m', 'initial'], { cwd: TEST_PROJECT_PATH, stdio: 'ignore' });
+    }
+
+    function getRegisteredWorktreeSpecRoot(specId: string): string {
+      ensureGitRepo();
+      const worktreePath = path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId);
+      if (!existsSync(path.join(worktreePath, '.git'))) {
+        execFileSync('git', ['worktree', 'add', '-b', `auto-claude/${specId}`, worktreePath, 'HEAD'], {
+          cwd: TEST_PROJECT_PATH,
+          stdio: 'ignore',
+        });
+      }
+      return path.join(worktreePath, '.auto-claude', 'specs');
+    }
+
+    function commitAutoMergeForSpec(specId: string): { commitSha: string; mergedAt: string } {
+      ensureGitRepo();
+      const markerDir = path.join(TEST_PROJECT_PATH, 'merge-markers');
+      mkdirSync(markerDir, { recursive: true });
+      writeFileSync(path.join(markerDir, `${specId}.txt`), `${specId}\n`);
+      execFileSync('git', ['add', 'merge-markers'], { cwd: TEST_PROJECT_PATH });
+      execFileSync('git', ['commit', '-m', `Auto-merge ${specId}: Existing merge`], {
+        cwd: TEST_PROJECT_PATH,
+        stdio: 'ignore',
+      });
+      return {
+        commitSha: execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: TEST_PROJECT_PATH,
+          encoding: 'utf-8',
+        }).trim(),
+        mergedAt: execFileSync('git', ['show', '-s', '--format=%cI', 'HEAD'], {
+          cwd: TEST_PROJECT_PATH,
+          encoding: 'utf-8',
+        }).trim(),
+      };
+    }
+
     it('should return empty array for non-existent project', async () => {
       const { ProjectStore } = await import('../project-store');
       const store = new ProjectStore();
@@ -1296,7 +1342,7 @@ describe('ProjectStore', () => {
         }),
       );
       writeSpec(
-        path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId, '.auto-claude', 'specs'),
+        getRegisteredWorktreeSpecRoot(specId),
         specId,
         makePlan({
           feature: 'Worktree Progress',
@@ -1321,16 +1367,8 @@ describe('ProjectStore', () => {
     it('preserves main overview text when an active worktree plan has no description', async () => {
       const specId = '007-worktree-empty-description';
       const mainSpecRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');
-      const worktreeSpecDir = path.join(
-        TEST_PROJECT_PATH,
-        '.auto-claude',
-        'worktrees',
-        'tasks',
-        specId,
-        '.auto-claude',
-        'specs',
-        specId,
-      );
+      const worktreeSpecRoot = getRegisteredWorktreeSpecRoot(specId);
+      const worktreeSpecDir = path.join(worktreeSpecRoot, specId);
 
       writeSpec(
         mainSpecRoot,
@@ -1383,16 +1421,9 @@ describe('ProjectStore', () => {
     it('preserves main subtasks when an active recovery worktree has an empty plan', async () => {
       const specId = '007-worktree-empty-plan';
       const mainSpecRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');
-      const worktreeSpecDir = path.join(
-        TEST_PROJECT_PATH,
-        '.auto-claude',
-        'worktrees',
-        'tasks',
-        specId,
-        '.auto-claude',
-        'specs',
-        specId,
-      );
+      const worktreeSpecRoot = getRegisteredWorktreeSpecRoot(specId);
+      const worktreeSpecDir = path.join(worktreeSpecRoot, specId);
+      const mergeEvidence = commitAutoMergeForSpec(specId);
 
       writeSpec(
         mainSpecRoot,
@@ -1405,8 +1436,8 @@ describe('ProjectStore', () => {
             updatedAt: '2024-01-03T00:00:00Z',
           }),
           qa_signoff: { status: 'approved', issues_found: [] },
-          mergeCommit: 'abc1234',
-          mergedAt: '2024-01-03T00:00:00Z',
+          mergeCommit: mergeEvidence.commitSha,
+          mergedAt: mergeEvidence.mergedAt,
         },
       );
       writeFileSync(
@@ -1437,11 +1468,12 @@ describe('ProjectStore', () => {
       expect(tasks[0].location).toBe('worktree');
       expect(tasks[0].status).toBe('in_progress');
       expect(tasks[0].subtasks).toHaveLength(2);
-      expect(tasks[0].mergeCommit).toBe('abc1234');
+      expect(tasks[0].mergeCommit).toBe(mergeEvidence.commitSha);
     });
 
     it('keeps main terminal task over lingering active worktree data', async () => {
       const specId = '008-terminal-main';
+      const mergeEvidence = commitAutoMergeForSpec(specId);
       writeSpec(
         path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs'),
         specId,
@@ -1453,8 +1485,8 @@ describe('ProjectStore', () => {
             updatedAt: '2024-01-03T00:00:00Z',
           }),
           qa_signoff: { status: 'approved', issues_found: [] },
-          mergeCommit: 'abc1234',
-          mergedAt: '2024-01-03T00:00:00Z',
+          mergeCommit: mergeEvidence.commitSha,
+          mergedAt: mergeEvidence.mergedAt,
           final_acceptance: ['merged'],
         },
       );
@@ -1463,7 +1495,7 @@ describe('ProjectStore', () => {
         'Status: PASSED\n',
       );
       writeSpec(
-        path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId, '.auto-claude', 'specs'),
+        getRegisteredWorktreeSpecRoot(specId),
         specId,
         makePlan({
           feature: 'Terminal Main',
@@ -1487,6 +1519,7 @@ describe('ProjectStore', () => {
 
     it('prefers active feedback recovery worktree over terminal main task', async () => {
       const specId = '008-terminal-main-feedback-rework';
+      const mergeEvidence = commitAutoMergeForSpec(specId);
       writeSpec(
         path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs'),
         specId,
@@ -1498,8 +1531,8 @@ describe('ProjectStore', () => {
             updatedAt: '2024-01-03T00:00:00Z',
           }),
           qa_signoff: { status: 'approved', issues_found: [] },
-          mergeCommit: 'abc1234',
-          mergedAt: '2024-01-03T00:00:00Z',
+          mergeCommit: mergeEvidence.commitSha,
+          mergedAt: mergeEvidence.mergedAt,
           final_acceptance: ['merged'],
         },
       );
@@ -1508,7 +1541,7 @@ describe('ProjectStore', () => {
         'Status: PASSED\n',
       );
       writeSpec(
-        path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId, '.auto-claude', 'specs'),
+        getRegisteredWorktreeSpecRoot(specId),
         specId,
         {
           ...makePlan({
@@ -1708,12 +1741,9 @@ describe('ProjectStore', () => {
     it('clears resolved base-sync conflict metadata from active worktree tasks', async () => {
       const specId = '011-resolved-worktree-conflict';
       const specRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');
-      const worktreeRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId);
-      const worktreeSpecRoot = path.join(worktreeRoot, '.auto-claude', 'specs');
+      const worktreeSpecRoot = getRegisteredWorktreeSpecRoot(specId);
       const worktreeSpecDir = path.join(worktreeSpecRoot, specId);
       mkdirSync(worktreeSpecDir, { recursive: true });
-
-      execFileSync('git', ['init'], { cwd: worktreeRoot, stdio: 'ignore' });
 
       writeSpec(specRoot, specId, makePlan({
         feature: 'Resolved Worktree Conflict',

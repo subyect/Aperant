@@ -6,7 +6,10 @@
  */
 
 import path from 'path';
-import { existsSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { existsSync, realpathSync } from 'fs';
+import { getToolPath } from './cli-tool-manager';
+import { getIsolatedGitEnv } from './utils/git-isolation';
 
 // Path constants for worktree directories
 export const TASK_WORKTREE_DIR = '.auto-claude/worktrees/tasks';
@@ -54,6 +57,73 @@ export function isPathWithinBase(resolvedPath: string, basePath: string): boolea
   return normalizedPath.startsWith(normalizedBase + path.sep) || normalizedPath === normalizedBase;
 }
 
+function getRealPath(filePath: string): string | null {
+  try {
+    return realpathSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function gitOutput(cwd: string, args: string[]): string | null {
+  try {
+    return execFileSync(getToolPath('git'), args, {
+      cwd,
+      encoding: 'utf-8',
+      env: getIsolatedGitEnv(),
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+export function getRegisteredWorktreePaths(projectPath: string): Set<string> {
+  const output = gitOutput(projectPath, ['worktree', 'list', '--porcelain']);
+  const paths = new Set<string>();
+  if (!output) return paths;
+
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.startsWith('worktree ')) continue;
+    const worktreePath = line.slice('worktree '.length).trim();
+    const realPath = getRealPath(worktreePath) ?? path.resolve(worktreePath);
+    paths.add(realPath);
+  }
+
+  return paths;
+}
+
+/**
+ * Validate that a task path is a real registered git worktree for this spec.
+ *
+ * A stale directory under .auto-claude/worktrees/tasks can otherwise make git walk
+ * up to the main checkout and report the main repo as the task worktree.
+ */
+export function isValidTaskWorktree(
+  projectPath: string,
+  specId: string,
+  candidatePath: string,
+  registeredPaths = getRegisteredWorktreePaths(projectPath)
+): boolean {
+  if (!existsSync(candidatePath)) return false;
+
+  const projectRealPath = getRealPath(projectPath) ?? path.resolve(projectPath);
+  const candidateRealPath = getRealPath(candidatePath) ?? path.resolve(candidatePath);
+  if (candidateRealPath === projectRealPath) return false;
+  if (!isPathWithinBase(candidateRealPath, projectRealPath)) return false;
+
+  const topLevel = gitOutput(candidatePath, ['rev-parse', '--show-toplevel']);
+  if (!topLevel) return false;
+  const topLevelRealPath = getRealPath(topLevel) ?? path.resolve(topLevel);
+  if (topLevelRealPath !== candidateRealPath) return false;
+
+  const expectedBranch = `auto-claude/${specId}`;
+  const branch = gitOutput(candidatePath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  if (branch !== expectedBranch) return false;
+
+  return registeredPaths.has(candidateRealPath);
+}
+
 /**
  * Find a task worktree path, checking new location first then legacy
  * Returns the path if found, null otherwise
@@ -82,7 +152,7 @@ export function findTaskWorktree(projectPath: string, specId: string): string | 
     return null;
   }
 
-  if (existsSync(resolvedNewPath)) return resolvedNewPath;
+  if (isValidTaskWorktree(projectPath, specId, resolvedNewPath)) return resolvedNewPath;
 
   // Legacy fallback
   const legacyPath = path.join(projectPath, LEGACY_WORKTREE_DIR, specId);
@@ -94,7 +164,7 @@ export function findTaskWorktree(projectPath: string, specId: string): string | 
     return null;
   }
 
-  if (existsSync(resolvedLegacyPath)) return resolvedLegacyPath;
+  if (isValidTaskWorktree(projectPath, specId, resolvedLegacyPath)) return resolvedLegacyPath;
 
   return null;
 }
