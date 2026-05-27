@@ -329,12 +329,13 @@ describe('plan-file runtime guards', () => {
     const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
 
     expect(result).toEqual({ success: true, resetCount: 0 });
-    expect(plan.status).toBe('ai_review');
-    expect(plan.planStatus).toBe('review');
-    expect(plan.xstateState).toBe('qa_review');
-    expect(plan.executionPhase).toBe('qa_review');
+    expect(plan.status).toBe('done');
+    expect(plan.planStatus).toBe('completed');
+    expect(plan.xstateState).toBe('done');
+    expect(plan.executionPhase).toBe('complete');
     expect(plan.mergeCommit).toBe(mergeCommit);
-    expect(plan.lastEvent.type).toBe('ALL_SUBTASKS_DONE');
+    expect(plan.qa_signoff.status).toBe('approved');
+    expect(plan.lastEvent.type).toBe('QA_PASSED');
     expect(plan.phases[0].status).toBe('completed');
     expect(plan.phases[0].subtasks.map((subtask: { status: string }) => subtask.status)).toEqual(['completed', 'completed']);
     expect(plan.phases[0].subtasks[1].last_error).toBeUndefined();

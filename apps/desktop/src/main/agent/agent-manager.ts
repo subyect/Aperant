@@ -456,7 +456,11 @@ export class AgentManager extends EventEmitter {
       }
 
       this.invalidateRecoveryTaskCaches(projects);
-      await this.resumeOrphanedWorkflowTasks(projects, 'startup-recovery');
+      setTimeout(() => {
+        this.runWorkflowRecoveryPass('startup-deferred').catch((error) => {
+          console.warn('[AgentManager] Deferred startup workflow recovery failed:', error);
+        });
+      }, 10_000);
       this.scheduleHumanReviewMerge('startup-recovery', 1000);
     } catch (err) {
       console.error('[AgentManager] Startup recovery scan failed:', err);

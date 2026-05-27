@@ -997,7 +997,54 @@ export class ProjectStore {
     const allCompleted = completedCount === subtasks.length;
     const qaReportApproved = this.hasApprovedQaReportVerdict(planPath);
     const qaApproved = qaReportApproved;
+    const failedQaReport = this.hasFailedQaReportVerdict(planPath);
     const incompleteWorkflowStatus = finalStatus === 'backlog' || finalStatus === 'queue' || finalStatus === 'in_progress';
+
+    if (allCompleted && plan && !failedQaReport) {
+      const mergeEvidence = findReachableTaskMergeEvidence({
+        projectPath: basePath,
+        specId: taskName,
+        plan: plan as unknown as Record<string, unknown>,
+      });
+
+      if (mergeEvidence && finalStatus !== 'done' && finalStatus !== 'pr_created') {
+        const correctedPlan = plan as unknown as Record<string, unknown>;
+        correctedPlan.status = 'done';
+        correctedPlan.planStatus = 'completed';
+        correctedPlan.xstateState = 'done';
+        correctedPlan.executionPhase = 'complete';
+        correctedPlan.qa_signoff = isQASignoffApproved((correctedPlan as { qa_signoff?: Record<string, unknown> }).qa_signoff)
+          ? correctedPlan.qa_signoff
+          : {
+            status: 'approved',
+            issues_found: [],
+            timestamp: new Date().toISOString(),
+            source: `project-store-merged-task-recovery:${mergeEvidence.source}`,
+          };
+        correctedPlan.mergeCommit = mergeEvidence.commitSha;
+        correctedPlan.mergedAt = mergeEvidence.mergedAt;
+        correctedPlan.lastEvent = {
+          type: 'QA_PASSED',
+          timestamp: new Date().toISOString(),
+          source: `project-store-merged-task-recovery:${mergeEvidence.source}`,
+        };
+        correctedPlan.recoveryNote = `Recovered done status for ${taskName}: all subtasks are complete and reachable merge commit ${mergeEvidence.commitSha} exists.`;
+        delete correctedPlan.reviewReason;
+        clearResolvedRecoveryState(correctedPlan);
+        correctedPlan.updated_at = new Date().toISOString();
+
+        try {
+          writeFileAtomicSync(planPath, JSON.stringify(correctedPlan, null, 2));
+          Object.assign(plan, correctedPlan);
+          this.clearResolvedTaskMetadata(correctedPlan, planPath, taskName);
+          console.warn(`[ProjectStore] Recovered merged done status for ${taskName} at ${mergeEvidence.commitSha}.`);
+          return { status: 'done', reviewReason: undefined };
+        } catch (writeError) {
+          console.error(`[ProjectStore] Failed to persist merged done recovery for ${taskName}:`, writeError);
+          return { status: finalStatus, reviewReason: finalReviewReason };
+        }
+      }
+    }
 
     if (allCompleted && qaApproved && finalStatus !== 'done' && finalStatus !== 'pr_created' && plan) {
       const mergeEvidence = findReachableTaskMergeEvidence({
@@ -1166,7 +1213,7 @@ export class ProjectStore {
     const passingQaReport = this.hasApprovedQaReportVerdict(planPath);
     const qaPlanApproved = isQASignoffApproved((plan as unknown as { qa_signoff?: Record<string, unknown> }).qa_signoff);
     const completedHumanReview = finalStatus === 'human_review' && finalReviewReason === 'completed';
-    const missingPassingQaReport = !passingQaReport && (terminalStatus || completedHumanReview || qaPlanApproved);
+    const missingPassingQaReport = !passingQaReport && !reachableMergeEvidence && (terminalStatus || completedHumanReview || qaPlanApproved);
 
     if (!doneGuard.incomplete && !missingMergeEvidence && !unreachableMergeCommit && !failedQaReport && !missingPassingQaReport) {
       if (reachableMergeEvidence && (!planMergeEvidence || recordedMergeUnreachable)) {

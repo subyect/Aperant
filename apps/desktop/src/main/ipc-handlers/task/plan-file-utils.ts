@@ -1391,11 +1391,11 @@ function recoverMergedPlanBeforeFalseCompletionReset(
   }
 
   const qaApproved = isQASignoffApproved(plan.qa_signoff as Record<string, unknown> | undefined);
-  const nextStatus = qaApproved ? 'done' : 'ai_review';
-  const nextPlanStatus = qaApproved ? 'completed' : 'review';
-  const nextXstateState = qaApproved ? 'done' : 'qa_review';
-  const nextExecutionPhase = qaApproved ? 'complete' : 'qa_review';
-  const nextLastEventType = qaApproved ? 'QA_PASSED' : 'ALL_SUBTASKS_DONE';
+  const nextStatus = 'done';
+  const nextPlanStatus = 'completed';
+  const nextXstateState = 'done';
+  const nextExecutionPhase = 'complete';
+  const nextLastEventType = 'QA_PASSED';
   const nextLastEventSource = `merged-task-startup-recovery:${mergeEvidence.source}`;
 
   const assign = (key: string, value: unknown) => {
@@ -1417,6 +1417,14 @@ function recoverMergedPlanBeforeFalseCompletionReset(
   assign('executionPhase', nextExecutionPhase);
   assign('mergeCommit', mergeEvidence.commitSha);
   assign('mergedAt', mergeEvidence.mergedAt);
+  if (!qaApproved) {
+    assign('qa_signoff', {
+      status: 'approved',
+      issues_found: [],
+      timestamp: now,
+      source: nextLastEventSource,
+    });
+  }
 
   const currentLastEvent = plan.lastEvent as Record<string, unknown> | undefined;
   if (currentLastEvent?.type !== nextLastEventType || currentLastEvent?.source !== nextLastEventSource) {
@@ -1430,13 +1438,9 @@ function recoverMergedPlanBeforeFalseCompletionReset(
 
   const nextRecoveryNote = qaApproved
     ? `Recovered done status for ${specId}: all subtasks are complete, QA is approved, and merge commit ${mergeEvidence.commitSha} is reachable.`
-    : `Recovered merged task ${specId}: reachable merge commit ${mergeEvidence.commitSha} exists, so startup false-completion repair must not reopen implementation subtasks; routing to AI review.`;
+    : `Recovered done status for ${specId}: reachable merge commit ${mergeEvidence.commitSha} exists, so startup false-completion repair must not reopen implementation subtasks.`;
   assign('recoveryNote', nextRecoveryNote);
   remove('reviewReason');
-  if (!qaApproved) {
-    remove('qa_signoff');
-    remove('final_acceptance');
-  }
 
   if (changed) {
     plan.updated_at = now;

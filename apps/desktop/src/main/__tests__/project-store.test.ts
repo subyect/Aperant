@@ -948,7 +948,7 @@ describe('ProjectStore', () => {
       expect(tasks[0].mergedAt).toBe('2024-01-01T00:00:00Z');
     });
 
-    it('reopens terminal done tasks that have approved signoff and merge evidence but no qa_report.md', async () => {
+    it('keeps terminal done tasks that have approved signoff and merge evidence but no qa_report.md', async () => {
       execFileSync('git', ['init'], { cwd: TEST_PROJECT_PATH, stdio: 'ignore' });
       execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: TEST_PROJECT_PATH });
       execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: TEST_PROJECT_PATH });
@@ -1011,11 +1011,11 @@ describe('ProjectStore', () => {
         'utf-8',
       ));
 
-      expect(tasks[0].status).toBe('ai_review');
-      expect(persistedPlan.status).toBe('ai_review');
-      expect(persistedPlan.qa_signoff).toBeUndefined();
+      expect(tasks[0].status).toBe('done');
+      expect(persistedPlan.status).toBe('done');
+      expect(persistedPlan.qa_signoff.status).toBe('approved');
       expect(persistedPlan.mergeCommit).toBe(commitSha);
-      expect(persistedPlan.recoveryNote).toContain('passing qa_report.md is missing');
+      expect(String(persistedPlan.recoveryNote ?? '')).not.toContain('passing qa_report.md is missing');
     });
 
     it('reopens terminal done tasks that have QA but no merge evidence', async () => {
@@ -1176,6 +1176,55 @@ describe('ProjectStore', () => {
       expect(persistedPlan.qa_signoff.status).toBe('approved');
       expect(persistedPlan.mergeCommit).toMatch(/^[0-9a-f]{40}$/);
       expect(persistedPlan.recoveryNote).toContain('Recovered done status');
+    });
+
+    it('recovers stale AI review tasks to done when merge evidence is reachable without qa_report.md', async () => {
+      execFileSync('git', ['init'], { cwd: TEST_PROJECT_PATH, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: TEST_PROJECT_PATH });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: TEST_PROJECT_PATH });
+
+      const specId = '006-merged-but-stale-ai-review';
+      writeFileSync(path.join(TEST_PROJECT_PATH, 'README.md'), '# merged stale review\n');
+      execFileSync('git', ['add', 'README.md'], { cwd: TEST_PROJECT_PATH });
+      execFileSync('git', ['commit', '-m', `Auto-merge ${specId}: Existing merge`], {
+        cwd: TEST_PROJECT_PATH,
+        stdio: 'ignore',
+      });
+
+      writeSpec(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs'),
+        specId,
+        {
+          ...makePlan({
+            feature: 'Merged But Stale Review',
+            status: 'ai_review',
+            subtaskStatuses: ['completed', 'completed'],
+            updatedAt: '2024-01-01T00:00:00Z',
+          }),
+          planStatus: 'review',
+          xstateState: 'qa_review',
+          executionPhase: 'qa_review',
+        },
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs', specId, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(tasks[0].status).toBe('done');
+      expect(persistedPlan.status).toBe('done');
+      expect(persistedPlan.planStatus).toBe('completed');
+      expect(persistedPlan.xstateState).toBe('done');
+      expect(persistedPlan.executionPhase).toBe('complete');
+      expect(persistedPlan.qa_signoff.status).toBe('approved');
+      expect(persistedPlan.mergeCommit).toMatch(/^[0-9a-f]{40}$/);
+      expect(persistedPlan.recoveryNote).toContain('reachable merge commit');
     });
 
     it('routes all-completed queued tasks without QA approval to AI review', async () => {

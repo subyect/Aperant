@@ -43,6 +43,7 @@ const SPEC_SUPPORT_PATHS_TO_SYNC = [
   'feedback_images',
 ];
 const YECT_LOCAL_TEST_DB_URL = 'postgresql://yect:yect@localhost:54329/yect_dev';
+const GIT_COMMAND_TIMEOUT_MS = 30_000;
 const DB_ENV_KEYS = new Set([
   'DATABASE_URL',
   'DATABASE_URL_DIRECT',
@@ -61,7 +62,11 @@ async function git(
   allowFailure = false,
 ): Promise<string> {
   try {
-    const { stdout } = await execFileAsync('git', args, { cwd });
+    const { stdout } = await execFileAsync('git', args, {
+      cwd,
+      timeout: GIT_COMMAND_TIMEOUT_MS,
+      killSignal: 'SIGTERM',
+    });
     return stdout.trim();
   } catch (err: unknown) {
     if (allowFailure) {
