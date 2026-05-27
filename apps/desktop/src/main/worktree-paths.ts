@@ -78,19 +78,84 @@ function gitOutput(cwd: string, args: string[]): string | null {
   }
 }
 
-export function getRegisteredWorktreePaths(projectPath: string): Set<string> {
-  const output = gitOutput(projectPath, ['worktree', 'list', '--porcelain']);
-  const paths = new Set<string>();
-  if (!output) return paths;
+export interface RegisteredWorktreeInfo {
+  branch: string | null;
+  prunable: boolean;
+}
 
-  for (const line of output.split(/\r?\n/)) {
-    if (!line.startsWith('worktree ')) continue;
-    const worktreePath = line.slice('worktree '.length).trim();
-    const realPath = getRealPath(worktreePath) ?? path.resolve(worktreePath);
-    paths.add(realPath);
+interface RegisteredWorktreeCacheEntry {
+  expiresAt: number;
+  worktrees: Map<string, RegisteredWorktreeInfo>;
+}
+
+const REGISTERED_WORKTREE_CACHE_TTL_MS = 2_000;
+const registeredWorktreeCache = new Map<string, RegisteredWorktreeCacheEntry>();
+
+function normalizeWorktreeBranch(branchRef: string): string | null {
+  const branch = branchRef.trim();
+  if (!branch) return null;
+  return branch.replace(/^refs\/heads\//, '');
+}
+
+function getCacheKey(projectPath: string): string {
+  return getRealPath(projectPath) ?? path.resolve(projectPath);
+}
+
+export function clearWorktreePathCache(projectPath?: string): void {
+  if (!projectPath) {
+    registeredWorktreeCache.clear();
+    return;
+  }
+  registeredWorktreeCache.delete(getCacheKey(projectPath));
+}
+
+export function getRegisteredWorktreeInfoMap(projectPath: string): ReadonlyMap<string, RegisteredWorktreeInfo> {
+  const cacheKey = getCacheKey(projectPath);
+  const cached = registeredWorktreeCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.worktrees;
   }
 
-  return paths;
+  const output = gitOutput(projectPath, ['worktree', 'list', '--porcelain']);
+  const worktrees = new Map<string, RegisteredWorktreeInfo>();
+  if (!output) {
+    registeredWorktreeCache.set(cacheKey, {
+      expiresAt: Date.now() + REGISTERED_WORKTREE_CACHE_TTL_MS,
+      worktrees,
+    });
+    return worktrees;
+  }
+
+  let currentPath: string | null = null;
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) {
+      const worktreePath = line.slice('worktree '.length).trim();
+      currentPath = getRealPath(worktreePath) ?? path.resolve(worktreePath);
+      worktrees.set(currentPath, { branch: null, prunable: false });
+      continue;
+    }
+
+    if (!currentPath) continue;
+    const info = worktrees.get(currentPath);
+    if (!info) continue;
+    if (line.startsWith('branch ')) {
+      info.branch = normalizeWorktreeBranch(line.slice('branch '.length));
+    } else if (line === 'prunable' || line.startsWith('prunable ')) {
+      info.prunable = true;
+    } else if (line.trim() === '') {
+      currentPath = null;
+    }
+  }
+
+  registeredWorktreeCache.set(cacheKey, {
+    expiresAt: Date.now() + REGISTERED_WORKTREE_CACHE_TTL_MS,
+    worktrees,
+  });
+  return worktrees;
+}
+
+export function getRegisteredWorktreePaths(projectPath: string): Set<string> {
+  return new Set(getRegisteredWorktreeInfoMap(projectPath).keys());
 }
 
 /**
@@ -103,7 +168,7 @@ export function isValidTaskWorktree(
   projectPath: string,
   specId: string,
   candidatePath: string,
-  registeredPaths = getRegisteredWorktreePaths(projectPath)
+  registeredWorktrees = getRegisteredWorktreeInfoMap(projectPath)
 ): boolean {
   if (!existsSync(candidatePath)) return false;
 
@@ -112,16 +177,12 @@ export function isValidTaskWorktree(
   if (candidateRealPath === projectRealPath) return false;
   if (!isPathWithinBase(candidateRealPath, projectRealPath)) return false;
 
-  const topLevel = gitOutput(candidatePath, ['rev-parse', '--show-toplevel']);
-  if (!topLevel) return false;
-  const topLevelRealPath = getRealPath(topLevel) ?? path.resolve(topLevel);
-  if (topLevelRealPath !== candidateRealPath) return false;
-
   const expectedBranch = `auto-claude/${specId}`;
-  const branch = gitOutput(candidatePath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
-  if (branch !== expectedBranch) return false;
+  const registeredInfo = registeredWorktrees.get(candidateRealPath);
+  if (!registeredInfo || registeredInfo.prunable) return false;
+  if (registeredInfo.branch !== expectedBranch) return false;
 
-  return registeredPaths.has(candidateRealPath);
+  return true;
 }
 
 /**

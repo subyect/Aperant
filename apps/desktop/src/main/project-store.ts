@@ -14,7 +14,7 @@ import {
   normalizeOpenAISubscriptionModel,
 } from '../shared/constants';
 import { getAutoBuildPath, isInitialized } from './project-initializer';
-import { getRegisteredWorktreePaths, getTaskWorktreeDir, isValidTaskWorktree } from './worktree-paths';
+import { getRegisteredWorktreeInfoMap, getTaskWorktreeDir, isValidTaskWorktree } from './worktree-paths';
 import { getToolPath } from './cli-tool-manager';
 import { findAllSpecPaths } from './utils/spec-path-helpers';
 import { ensureAbsolutePath } from './utils/path-helpers';
@@ -356,13 +356,13 @@ export class ProjectStore {
     const worktreesDir = getTaskWorktreeDir(project.path);
     if (existsSync(worktreesDir)) {
       try {
-        const registeredWorktreePaths = getRegisteredWorktreePaths(project.path);
+        const registeredWorktrees = getRegisteredWorktreeInfoMap(project.path);
         const worktrees = readdirSync(worktreesDir, { withFileTypes: true });
         for (const worktree of worktrees) {
           if (!worktree.isDirectory()) continue;
 
           const worktreePath = path.join(worktreesDir, worktree.name);
-          if (!isValidTaskWorktree(project.path, worktree.name, worktreePath, registeredWorktreePaths)) {
+          if (!isValidTaskWorktree(project.path, worktree.name, worktreePath, registeredWorktrees)) {
             console.warn(`[ProjectStore] Skipping stale or invalid task worktree directory: ${worktree.name}`);
             continue;
           }

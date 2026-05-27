@@ -20,7 +20,7 @@ import { rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { getToolPath } from '../cli-tool-manager';
 import { getIsolatedGitEnv } from './git-isolation';
-import { getTaskWorktreeDir, getTerminalWorktreeDir, isPathWithinBase } from '../worktree-paths';
+import { clearWorktreePathCache, getTaskWorktreeDir, getTerminalWorktreeDir, isPathWithinBase } from '../worktree-paths';
 
 /**
  * Options for worktree cleanup operation
@@ -243,6 +243,7 @@ export async function cleanupWorktree(options: WorktreeCleanupOptions): Promise<
       env: getIsolatedGitEnv(),
       timeout
     });
+    clearWorktreePathCache(projectPath);
     console.warn(`${logPrefix} Git worktree references pruned`);
   } catch (pruneError) {
     // Non-critical - the worktree is already gone, prune is just cleanup

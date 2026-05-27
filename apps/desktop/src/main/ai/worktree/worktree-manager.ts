@@ -22,6 +22,7 @@ import { dirname, join, resolve } from 'path';
 import { promisify } from 'util';
 
 import { getSpecsDir } from '../../../shared/constants';
+import { clearWorktreePathCache } from '../../worktree-paths';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -134,6 +135,7 @@ export async function createOrGetWorktree(
   // ------------------------------------------------------------------
   console.warn('[WorktreeManager] Pruning stale worktree references...');
   await git(['worktree', 'prune'], projectPath, /* allowFailure */ true);
+  clearWorktreePathCache(projectPath);
 
   // ------------------------------------------------------------------
   // Step 2: Return early when worktree already exists and is registered
@@ -148,6 +150,7 @@ export async function createOrGetWorktree(
       await syncWorktreeWithBaseBranch(projectPath, worktreePath, baseBranch);
       await syncSpecDirectoryIntoWorktree(projectPath, worktreePath, specId, autoBuildPath);
       await syncLocalEnvFilesIntoWorktree(projectPath, worktreePath);
+      clearWorktreePathCache(projectPath);
       return { worktreePath: resolve(worktreePath), branch: branchName };
     }
 
@@ -172,6 +175,7 @@ export async function createOrGetWorktree(
           'This may be due to permission issues or file locks.',
       );
     }
+    clearWorktreePathCache(projectPath);
   }
 
   // ------------------------------------------------------------------
@@ -291,6 +295,7 @@ export async function createOrGetWorktree(
   await syncSpecDirectoryIntoWorktree(projectPath, worktreePath, specId, autoBuildPath);
   await syncLocalEnvFilesIntoWorktree(projectPath, worktreePath);
 
+  clearWorktreePathCache(projectPath);
   return { worktreePath: resolve(worktreePath), branch: branchName };
 }
 
