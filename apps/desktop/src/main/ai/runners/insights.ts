@@ -382,22 +382,28 @@ export async function runInsightsQuery(
       await sleep(process.env.NODE_ENV === 'test' ? 0 : 750 * attempt);
     }
 
-    const result = streamText({
-      model: client.model,
-      system: isCodexInsights ? undefined : client.systemPrompt,
-      prompt: fullPrompt,
-      tools: client.tools,
-      stopWhen: stepCountIs(client.maxSteps),
-      abortSignal,
-      ...(isCodexInsights ? {
+    const result = isCodexInsights
+      ? streamText({
+        model: client.model,
+        messages: [{ role: 'user', content: fullPrompt }],
+        tools: client.tools,
+        stopWhen: stepCountIs(client.maxSteps),
+        abortSignal,
         providerOptions: {
           openai: {
             instructions: client.systemPrompt,
             store: false,
           },
         },
-      } : {}),
-    });
+      })
+      : streamText({
+        model: client.model,
+        system: client.systemPrompt,
+        prompt: fullPrompt,
+        tools: client.tools,
+        stopWhen: stepCountIs(client.maxSteps),
+        abortSignal,
+      });
 
     try {
       for await (const part of result.fullStream) {

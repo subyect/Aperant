@@ -75,12 +75,13 @@ import { parseLLMJson } from '../../schema/structured-output';
 
 const fakeModel = { modelId: 'claude-sonnet-test' };
 
-function makeMockClient(systemPrompt = 'You are an AI assistant.') {
+function makeMockClient(systemPrompt = 'You are an AI assistant.', overrides: Record<string, unknown> = {}) {
   return {
     model: fakeModel,
     systemPrompt,
     tools: {},
     maxSteps: 30,
+    ...overrides,
   };
 }
 
@@ -523,5 +524,34 @@ describe('runInsightsQuery', () => {
 
     const callArgs = mockStreamText.mock.calls[0][0];
     expect(callArgs.prompt).toBe('What is the entry point?');
+  });
+
+  it('uses message-list input for Codex subscription responses', async () => {
+    mockCreateSimpleClient.mockResolvedValue(makeMockClient('Codex instructions', {
+      queueAuth: { source: 'codex-oauth' },
+      resolvedModelId: 'gpt-5.5',
+    }));
+    mockStreamText.mockReturnValue(makeStream([]));
+
+    await runInsightsQuery(
+      baseConfig({
+        message: 'What about refresh tokens?',
+        history: [
+          { role: 'user', content: 'How does auth work?' },
+          { role: 'assistant', content: 'It uses JWT.' },
+        ],
+      }),
+    );
+
+    const callArgs = mockStreamText.mock.calls[0][0];
+    expect(callArgs.prompt).toBeUndefined();
+    expect(callArgs.messages).toEqual([
+      {
+        role: 'user',
+        content: expect.stringContaining('Current question: What about refresh tokens?'),
+      },
+    ]);
+    expect(callArgs.system).toBeUndefined();
+    expect(callArgs.providerOptions.openai.instructions).toBe('Codex instructions');
   });
 });

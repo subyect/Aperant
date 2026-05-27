@@ -168,6 +168,8 @@ describe("IPC Handlers", { timeout: 30000 }, () => {
     startQAProcess: ReturnType<typeof vi.fn>;
     killTask: ReturnType<typeof vi.fn>;
     configure: ReturnType<typeof vi.fn>;
+    hasFailedQaReport: ReturnType<typeof vi.fn>;
+    resumeCodingForFailedQaReport: ReturnType<typeof vi.fn>;
   };
   let mockTerminalManager: {
     create: ReturnType<typeof vi.fn>;
@@ -203,6 +205,8 @@ describe("IPC Handlers", { timeout: 30000 }, () => {
       startQAProcess: vi.fn(),
       killTask: vi.fn(),
       configure: vi.fn(),
+      hasFailedQaReport: vi.fn(() => false),
+      resumeCodingForFailedQaReport: vi.fn(() => Promise.resolve(false)),
     });
 
     // Create mock terminal manager
@@ -578,9 +582,9 @@ describe("IPC Handlers", { timeout: 30000 }, () => {
           crossProviderPriorityOrder: string[];
         };
       }).data;
-      expect(data.defaultModel).toBe("gpt-5.3-codex");
-      expect(data.globalDefaultModel).toBe("gpt-5.3-codex");
-      expect(data.model).toBe("gpt-5.3-codex");
+      expect(data.defaultModel).toBe("gpt-5.5");
+      expect(data.globalDefaultModel).toBe("gpt-5.5");
+      expect(data.model).toBe("gpt-5.5");
       expect(data.globalPriorityOrder[0]).toBe(openaiAccount.id);
       expect(data.crossProviderPriorityOrder[0]).toBe(openaiAccount.id);
 
@@ -704,9 +708,9 @@ describe("IPC Handlers", { timeout: 30000 }, () => {
       expect(mockMainWindow.webContents.send).toHaveBeenCalledWith(
         "task:statusChange",
         "task-1",
-        "human_review",
+        "in_progress",
         expect.any(String), // projectId for multi-project filtering
-        "errors"
+        undefined
       );
     });
   });

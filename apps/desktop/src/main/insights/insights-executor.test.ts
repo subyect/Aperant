@@ -18,7 +18,7 @@ describe('InsightsExecutor', () => {
     vi.clearAllMocks();
     mockResolveInsightsModelConfig.mockReturnValue({
       profileId: 'balanced',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.5',
       thinkingLevel: 'xhigh',
     });
     mockRunInsightsQuery.mockResolvedValue({
@@ -46,7 +46,7 @@ describe('InsightsExecutor', () => {
     });
     expect(mockRunInsightsQuery).toHaveBeenCalledWith(
       expect.objectContaining({
-        modelShorthand: 'gpt-5.3-codex',
+        modelShorthand: 'gpt-5.5',
         thinkingLevel: 'xhigh',
       }),
       expect.any(Function),

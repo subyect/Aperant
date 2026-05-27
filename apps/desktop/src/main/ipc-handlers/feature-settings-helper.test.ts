@@ -52,7 +52,7 @@ describe('getActiveProviderFeatureSettings', () => {
         billingModel: 'subscription',
       }],
       featureModels: {
-        insights: 'gpt-5.5',
+        insights: 'gpt-5.3-codex',
       },
       featureThinking: {
         insights: 'medium',
@@ -60,7 +60,7 @@ describe('getActiveProviderFeatureSettings', () => {
     });
 
     expect(getActiveProviderFeatureSettings('insights')).toEqual({
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.5',
       thinkingLevel: 'medium',
     });
   });
@@ -79,7 +79,7 @@ describe('getActiveProviderFeatureSettings', () => {
       },
     });
 
-    expect(getActiveProviderFeatureSettings('insights').model).toBe('gpt-5.3-codex');
+    expect(getActiveProviderFeatureSettings('insights').model).toBe('gpt-5.5');
   });
 
   it('upgrades deprecated OpenAI Codex subscription models', () => {
@@ -96,7 +96,7 @@ describe('getActiveProviderFeatureSettings', () => {
       },
     });
 
-    expect(getActiveProviderFeatureSettings('utility').model).toBe('gpt-5.3-codex');
+    expect(getActiveProviderFeatureSettings('utility').model).toBe('gpt-5.5');
   });
 
   it('normalizes explicit feature model choices against the active OpenAI subscription account', () => {
@@ -110,8 +110,8 @@ describe('getActiveProviderFeatureSettings', () => {
       }],
     });
 
-    expect(resolveActiveProviderFeatureModel('insights', 'gpt-5.5')).toBe('gpt-5.3-codex');
-    expect(resolveActiveProviderFeatureModel('insights', 'opus')).toBe('gpt-5.3-codex');
+    expect(resolveActiveProviderFeatureModel('insights', 'gpt-5.5')).toBe('gpt-5.5');
+    expect(resolveActiveProviderFeatureModel('insights', 'opus')).toBe('gpt-5.5');
   });
 
   it('treats stored Codex OAuth tokens as the active OpenAI subscription account', () => {
@@ -127,7 +127,7 @@ describe('getActiveProviderFeatureSettings', () => {
     });
 
     expect(getActiveProviderFeatureSettings('insights')).toEqual({
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.5',
       thinkingLevel: 'medium',
     });
   });

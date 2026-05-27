@@ -37,11 +37,11 @@ describe('resolveInsightsModelConfig', () => {
 
     expect(resolveInsightsModelConfig({
       profileId: 'custom',
-      model: 'gpt-5.5',
+      model: 'gpt-5.3-codex',
       thinkingLevel: 'high',
     })).toEqual({
       profileId: 'custom',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.5',
       thinkingLevel: 'high',
     });
   });
@@ -58,7 +58,7 @@ describe('resolveInsightsModelConfig', () => {
       providerAgentConfig: {
         openai: {
           featureModels: {
-            insights: 'gpt-5.3-codex',
+            insights: 'gpt-5.5',
           },
           featureThinking: {
             insights: 'xhigh',
@@ -71,6 +71,6 @@ describe('resolveInsightsModelConfig', () => {
       profileId: 'balanced',
       model: 'sonnet',
       thinkingLevel: 'medium',
-    }).model).toBe('gpt-5.3-codex');
+    }).model).toBe('gpt-5.5');
   });
 });

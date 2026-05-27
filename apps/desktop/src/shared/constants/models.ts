@@ -10,11 +10,14 @@ import type { BuiltinProvider } from '../types/provider-account';
 // Available Models
 // ============================================
 
-export const OPENAI_CODEX_DEFAULT_MODEL = 'gpt-5.3-codex';
+export const OPENAI_CODEX_DEFAULT_MODEL = 'gpt-5.5';
 export const OPENAI_GENERAL_DEFAULT_MODEL = 'gpt-5.5';
 
 const OPENAI_SUBSCRIPTION_MODEL_REPLACEMENTS: Record<string, string> = {
-  'gpt-5.5': OPENAI_CODEX_DEFAULT_MODEL,
+  'gpt-5.4': OPENAI_CODEX_DEFAULT_MODEL,
+  'gpt-5.4-mini': OPENAI_CODEX_DEFAULT_MODEL,
+  'gpt-5.3-codex': OPENAI_CODEX_DEFAULT_MODEL,
+  'gpt-5.3-codex-spark': OPENAI_CODEX_DEFAULT_MODEL,
   'gpt-5.2-codex': OPENAI_CODEX_DEFAULT_MODEL,
   'gpt-5.1-codex-mini': OPENAI_CODEX_DEFAULT_MODEL,
   'gpt-5-codex': OPENAI_CODEX_DEFAULT_MODEL,
@@ -55,8 +58,11 @@ export const ALL_AVAILABLE_MODELS: ModelOption[] = [
   { value: 'opus-4.5', label: 'Claude Opus 4.5', provider: 'anthropic', description: 'Legacy', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 200000 } },
   { value: 'haiku', label: 'Claude Haiku 4.5', provider: 'anthropic', description: 'Fast', capabilities: { thinking: false, tools: true, vision: true, contextWindow: 200000 } },
   // OpenAI
-  { value: 'gpt-5.5', label: 'GPT-5.5', provider: 'openai', description: 'Frontier (API key)', apiKeyOnly: true, capabilities: { thinking: true, tools: true, vision: true, contextWindow: 400000 } },
-  { value: OPENAI_CODEX_DEFAULT_MODEL, label: 'GPT-5.3 Codex', provider: 'openai', description: 'Latest Codex', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 400000 } },
+  { value: OPENAI_CODEX_DEFAULT_MODEL, label: 'GPT-5.5', provider: 'openai', description: 'Latest Codex subscription model', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 400000 } },
+  { value: 'gpt-5.4', label: 'GPT-5.4', provider: 'openai', description: 'Previous Codex model', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 272000 } },
+  { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', provider: 'openai', description: 'Fast Codex model', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 272000 } },
+  { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', provider: 'openai', description: 'Legacy Codex alias', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 400000 } },
+  { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark', provider: 'openai', description: 'Legacy fast Codex alias', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 400000 } },
   { value: 'gpt-5.2', label: 'GPT-5.2', provider: 'openai', description: 'Flagship', apiKeyOnly: true, capabilities: { thinking: true, tools: true, vision: true, contextWindow: 400000 } },
   { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex', provider: 'openai', description: 'Deprecated coding', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 1047576 } },
   { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini', provider: 'openai', description: 'Deprecated fast coding', capabilities: { thinking: true, tools: true, vision: true, contextWindow: 400000 } },
