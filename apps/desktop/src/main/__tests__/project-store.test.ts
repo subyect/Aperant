@@ -1182,6 +1182,53 @@ describe('ProjectStore', () => {
       expect(persistedPlan.mergeCommit).toBeUndefined();
     });
 
+    it('recovers completed review tasks when the stale task directory is not a registered worktree', async () => {
+      const specId = '006-merged-with-stale-task-directory';
+      const mergeEvidence = commitAutoMergeForSpec(specId);
+
+      const staleTaskPath = path.join(TEST_PROJECT_PATH, '.auto-claude', 'worktrees', 'tasks', specId);
+      mkdirSync(path.join(staleTaskPath, 'packages', 'layer1-db', 'src'), { recursive: true });
+      writeFileSync(path.join(staleTaskPath, 'packages', 'layer1-db', 'src', 'stale.ts'), 'export const stale = true;\n');
+      writeFileSync(path.join(TEST_PROJECT_PATH, 'README.md'), '# dirty main after merge\n');
+
+      const specsRoot = path.join(TEST_PROJECT_PATH, '.auto-claude', 'specs');
+      writeSpec(
+        specsRoot,
+        specId,
+        {
+          ...makePlan({
+            feature: 'Merged With Stale Task Directory',
+            status: 'human_review',
+            subtaskStatuses: ['completed', 'completed'],
+            updatedAt: '2024-01-01T00:00:00Z',
+          }),
+          planStatus: 'review',
+          reviewReason: 'completed',
+          xstateState: 'human_review',
+          executionPhase: 'complete',
+        },
+      );
+      writeFileSync(
+        path.join(specsRoot, specId, 'qa_report.md'),
+        'Status: PASSED\n',
+      );
+
+      const { ProjectStore } = await import('../project-store');
+      const store = new ProjectStore();
+
+      const project = store.addProject(TEST_PROJECT_PATH);
+      const tasks = store.getTasks(project.id);
+      const persistedPlan = JSON.parse(readFileSync(
+        path.join(specsRoot, specId, 'implementation_plan.json'),
+        'utf-8',
+      ));
+
+      expect(tasks[0].status).toBe('done');
+      expect(tasks[0].mergeCommit).toBe(mergeEvidence.commitSha);
+      expect(persistedPlan.status).toBe('done');
+      expect(persistedPlan.mergeCommit).toBe(mergeEvidence.commitSha);
+    });
+
     it('returns terminal done tasks with dirty task worktrees to completed review instead of trusting stale merge evidence', async () => {
       const specId = '006-done-but-dirty-worktree';
       const mergeEvidence = commitAutoMergeForSpec(specId);

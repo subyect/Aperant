@@ -1,5 +1,5 @@
 import { app } from 'electron';
-import { readFileSync, existsSync, mkdirSync, readdirSync, rmSync, Dirent } from 'fs';
+import { readFileSync, existsSync, mkdirSync, readdirSync, rmSync, realpathSync, Dirent } from 'fs';
 import { execFileSync } from 'child_process';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
@@ -1412,6 +1412,7 @@ export class ProjectStore {
   private hasUnmergedTaskWorktreeChanges(basePath: string, taskName: string): boolean {
     const worktreePath = this.resolveTaskWorktreePath(basePath, taskName);
     if (!worktreePath || !existsSync(worktreePath)) return false;
+    if (!this.isStandaloneGitWorktreePath(worktreePath)) return false;
 
     try {
       const output = execFileSync(getToolPath('git'), ['status', '--porcelain', '--untracked-files=all'], {
@@ -1426,6 +1427,23 @@ export class ProjectStore {
         .map((line) => this.extractGitStatusPath(line))
         .filter((statusPath): statusPath is string => Boolean(statusPath))
         .some((statusPath) => !this.isTaskMetadataStatusPath(statusPath));
+    } catch {
+      return false;
+    }
+  }
+
+  private isStandaloneGitWorktreePath(worktreePath: string): boolean {
+    try {
+      const topLevel = execFileSync(getToolPath('git'), ['rev-parse', '--show-toplevel'], {
+        cwd: worktreePath,
+        encoding: 'utf-8',
+        env: getIsolatedGitEnv(),
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+
+      const resolvedTopLevel = realpathSync(topLevel);
+      const resolvedWorktreePath = realpathSync(worktreePath);
+      return resolvedTopLevel === resolvedWorktreePath;
     } catch {
       return false;
     }
